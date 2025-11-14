@@ -7,6 +7,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from agentic_ai.agents.base import BaseAgent, State
 
 
@@ -23,7 +24,8 @@ class ToolAgent(BaseAgent):
         llm: BaseChatModel,
         tools: List[BaseTool],
         name: str = "ToolAgent",
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        checkpointer: Optional[BaseCheckpointSaver] = None
     ):
         self.tools = tools
         self.tool_node = ToolNode(tools)
@@ -37,7 +39,8 @@ class ToolAgent(BaseAgent):
         super().__init__(
             llm=llm.bind_tools(tools),  # Bind tools to the LLM
             name=name,
-            system_prompt=system_prompt or default_prompt
+            system_prompt=system_prompt or default_prompt,
+            checkpointer=checkpointer
         )
     
     def _build_graph(self) -> None:
@@ -64,8 +67,8 @@ class ToolAgent(BaseAgent):
         # Add edge from tools back to agent
         workflow.add_edge("tools", "agent")
         
-        # Compile the graph
-        self.graph = workflow.compile()
+        # Compile the graph (uses checkpointer if provided)
+        self.compile_graph(workflow)
     
     def call_model(self, state: State) -> State:
         """
@@ -150,30 +153,37 @@ class ToolAgent(BaseAgent):
 # Example usage and testing
 if __name__ == "__main__":
     # This would normally use real tools and LLM, but here's how you'd set it up:
-    """
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    from agentic_ai.tools import CalculatorTool, WeatherTool
+    from dotenv import load_dotenv
+    from langchain.chat_models import init_chat_model
+    from langgraph.checkpoint.memory import InMemorySaver
+    from agentic_ai.tools import CalculatorTool
     
+    load_dotenv()
+
     # Initialize LLM
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        temperature=0.7
-    )
+    llm = init_chat_model("gemini-2.5-flash-lite", model_provider="google_genai")
+
+    memory = InMemorySaver()
     
     # Create tools
     calculator = CalculatorTool()
-    weather = WeatherTool()
-    tools = [calculator.to_langchain_tool(), weather.to_langchain_tool()]
+    tools = [calculator.to_langchain_tool()]
     
     # Create agent
-    agent = ToolAgent(llm, tools, name="ToolBot")
+    agent = ToolAgent(llm, tools, name="ToolBot", checkpointer=memory)
     
     # Test the agent
-    response = agent.run("What is 25 * 4 + 10?")
-    print(f"Agent: {response}")
-    
-    response = agent.run("What's the weather like in Paris?")
-    print(f"Agent: {response}")
-    """
-    
-    print("ToolAgent class defined. Import and use with real LLM and tools to test.")
+    config = {"configurable": {"thread_id": "trace_example"}}
+    response = agent.run("What is 25 * 4 + 10?", config)
+
+    print("Full Conversation History:")
+    print("=" * 50)
+    history = agent.get_conversation_history(config)
+
+    for i, msg in enumerate(history):
+        print(f"\n{i+1}. {msg.__class__.__name__}:")
+        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            print(f"   Tool Calls: {msg.tool_calls}")
+        if hasattr(msg, 'tool_call_id'):
+            print(f"   Tool Call ID: {msg.tool_call_id}")
+        print(f"   Content: {str(msg.content)[:200]}..." if len(str(msg.content)) > 200 else f"   Content: {msg.content}")

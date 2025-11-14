@@ -31,9 +31,19 @@ class SimpleAgent(BaseAgent):
         self.compile_graph(workflow)
 
     def llm_node(self, state: State):
-        # Add system message if not present
-        messages = self.add_system_message(state["messages"])
-        response = self.llm.invoke(messages)
+        # Get current messages from state
+        # System message should already be first (added in run() for new threads)
+        current_messages = state["messages"]
+        
+        # Ensure system message is present (fallback safety check)
+        # This handles edge cases where system message might not be in state
+        messages_for_llm = self.add_system_message(current_messages)
+        
+        # Get response from LLM
+        response = self.llm.invoke(messages_for_llm)
+        
+        # Return only the response - system message is already in state
+        # MessagesState reducer will append the response to existing messages
         return {"messages": [response]}
 
 
@@ -53,4 +63,13 @@ if __name__ == "__main__":
     
     agent.run("Hello, I am called Testuser. what is your name?")['messages'][-1].pretty_print()
     agent.run("Do you remember my name?")['messages'][-1].pretty_print()
+    
+    # Check conversation history
+    history = agent.get_conversation_history(thread_id="default")
+    for i, msg in enumerate(history):
+        print(f"  {i+1}. {msg.__class__.__name__}: {msg.content}")
+
+    print("\n" + "="*50 + "\n")
+
+    #print(agent.graph.get_state({"configurable": {"thread_id": "default"}}))
 

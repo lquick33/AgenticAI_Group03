@@ -78,13 +78,28 @@ class BaseAgent(ABC):
         if not self.graph:
             raise RuntimeError("Graph not built. Call _build_graph() and compile_graph() first.")
         
-        # Create initial state with proper message format
-        initial_state = {"messages": [HumanMessage(content=message)]}
-        
         # Configure for persistence
         config = {"configurable": {"thread_id": thread_id}}
         if user_id:
             config["configurable"]["user_id"] = user_id
+        
+        # Check if this is a new thread or existing thread
+        snapshot = self.graph.get_state(config)
+        is_new_thread = snapshot is None or not snapshot.values or not snapshot.values.get("messages")
+        
+        # Prepare initial messages
+        # For new threads, ensure system message is first
+        # For existing threads, just add the new HumanMessage (system message already exists)
+        if is_new_thread:
+            # New thread: prepend system message if available
+            messages = []
+            if self.system_prompt and self.system_prompt.strip():
+                messages.append(SystemMessage(content=self.system_prompt))
+            messages.append(HumanMessage(content=message))
+            initial_state = {"messages": messages}
+        else:
+            # Existing thread: just add the new HumanMessage
+            initial_state = {"messages": [HumanMessage(content=message)]}
             
         # Run the graph
         result = self.graph.invoke(initial_state, config)
@@ -107,13 +122,28 @@ class BaseAgent(ABC):
         if not self.graph:
             raise RuntimeError("Graph not built. Call _build_graph() and compile_graph() first.")
         
-        # Create initial state with proper message format
-        initial_state = {"messages": [HumanMessage(content=message)]}
-        
         # Configure for persistence
         config = {"configurable": {"thread_id": thread_id}}
         if user_id:
             config["configurable"]["user_id"] = user_id
+        
+        # Check if this is a new thread or existing thread
+        snapshot = self.graph.get_state(config)
+        is_new_thread = snapshot is None or not snapshot.values or not snapshot.values.get("messages")
+        
+        # Prepare initial messages
+        # For new threads, ensure system message is first
+        # For existing threads, just add the new HumanMessage (system message already exists)
+        if is_new_thread:
+            # New thread: prepend system message if available
+            messages = []
+            if self.system_prompt and self.system_prompt.strip():
+                messages.append(SystemMessage(content=self.system_prompt))
+            messages.append(HumanMessage(content=message))
+            initial_state = {"messages": messages}
+        else:
+            # Existing thread: just add the new HumanMessage
+            initial_state = {"messages": [HumanMessage(content=message)]}
 
         # Stream the graph execution
         for chunk in self.graph.stream(initial_state, config):
@@ -161,9 +191,21 @@ class BaseAgent(ABC):
             
         return [item.value for item in items]
 
-    def get_conversation_history(self, state: State) -> List[BaseMessage]:
-        """Get the conversation history from state."""
-        return state.get("messages", [])
+    def get_conversation_history(self, thread_id: str = "default"):
+        """
+        Get the full conversation history for a thread.
+        
+        Args:
+            thread_id: The thread identifier
+            
+        Returns:
+            List of messages in the conversation
+        """
+        config = {"configurable": {"thread_id": thread_id}}
+        snapshot = self.graph.get_state(config)
+        if snapshot and snapshot.values:
+            return snapshot.values.get("messages", [])
+        return []
     
     def add_system_message(self, messages: List[BaseMessage]) -> List[BaseMessage]:
         """
@@ -184,8 +226,8 @@ class BaseAgent(ABC):
         
         if not has_system_message:
             # Ensure system prompt is not None or empty
-            if self.system_prompt and self.system_prompt.strip():
-                return [SystemMessage(content=self.system_prompt)] + messages
+            if self.system_prompt:
+                return [SystemMessage(content=self.system_prompt.format())] + messages
         return messages
     
     def __str__(self) -> str:
