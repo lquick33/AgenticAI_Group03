@@ -3,9 +3,8 @@ Base classes for tools that can be used by AI agents.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional
 from langchain_core.tools import BaseTool as LangChainBaseTool
-from pydantic import BaseModel
 
 
 class BaseTool(ABC):

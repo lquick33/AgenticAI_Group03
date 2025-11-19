@@ -14,7 +14,13 @@ class SimpleAgent(BaseAgent):
     of LangGraph and agent interactions.
     """
     
-    def __init__(self, llm, name, system_prompt=None, checkpointer=None):
+    def __init__(
+        self,
+        llm,
+        name,
+        system_prompt=None,
+        checkpointer=None
+    ):
         super().__init__(
             llm=llm,
             name=name,
@@ -70,6 +76,3 @@ if __name__ == "__main__":
         print(f"  {i+1}. {msg.__class__.__name__}: {msg.content}")
 
     print("\n" + "="*50 + "\n")
-
-    #print(agent.graph.get_state({"configurable": {"thread_id": "default"}}))
-

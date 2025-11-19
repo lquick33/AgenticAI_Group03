@@ -6,7 +6,7 @@ import ast
 import operator
 from typing import Union
 from langchain_core.tools import Tool
-from .base import BaseTool
+from langchain_core.tools import BaseTool
 
 
 class CalculatorTool(BaseTool):
@@ -30,10 +30,18 @@ class CalculatorTool(BaseTool):
     def __init__(self):
         super().__init__(
             name="calculator",
-            description="Perform basic mathematical calculations. Supports +, -, *, /, ** (power), and parentheses. Example: '2 + 3 * 4'"
+            description="""
+            Perform basic mathematical calculations. Supports +, -, *, /, ** (power), and parentheses. Example: '2 + 3 * 4'
+            
+            Args:
+                expression: Mathematical expression as a string
+                
+            Returns:
+                Result of the calculation or error message
+            """
         )
     
-    def run(self, expression: str) -> Union[float, int, str]:
+    def _run(self, expression: str) -> Union[float, int, str]:
         """
         Evaluate a mathematical expression safely.
         
@@ -95,7 +103,7 @@ if __name__ == "__main__":
         "-5 + 3",
         "invalid expression"
     ]
-    
+
     for expr in test_expressions:
-        result = calc.run(expr)
+        result = calc._run(expr)
         print(f"{expr} = {result}")
