@@ -50,7 +50,7 @@ This command will:
 
 #### 3. Activate the Environment (Optional)
 
-We most likely won't need this as we try to alway work with the `uv`command.
+We most likely won't need this as we try to always work with the `uv`command.
 
 ```bash
 # Activate the virtual environment

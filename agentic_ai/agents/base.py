@@ -93,7 +93,7 @@ class BaseAgent(ABC):
         if is_new_thread:
             # New thread: prepend system message if available
             messages = []
-            if self.system_prompt and self.system_prompt.strip():
+            if self.system_prompt:
                 messages.append(SystemMessage(content=self.system_prompt))
             messages.append(HumanMessage(content=message))
             initial_state = {"messages": messages}
@@ -103,6 +103,50 @@ class BaseAgent(ABC):
             
         # Run the graph
         result = self.graph.invoke(initial_state, config)
+
+        return result
+
+    async def arun(self, message: str, thread_id: str = "default", user_id: Optional[str] = None, **kwargs) -> str:
+        """
+        Run the agent with a message.
+        
+        Args:
+            message: User message to process
+            thread_id: Unique identifier for the conversation thread.
+            user_id: Optional unique identifier for the user (for long-term memory).
+            **kwargs: Additional arguments
+            
+        Returns:
+            Agent's response
+        """
+        if not self.graph:
+            raise RuntimeError("Graph not built. Call _build_graph() and compile_graph() first.")
+        
+        # Configure for persistence
+        config = {"configurable": {"thread_id": thread_id}}
+        if user_id:
+            config["configurable"]["user_id"] = user_id
+        
+        # Check if this is a new thread or existing thread
+        snapshot = self.graph.get_state(config)
+        is_new_thread = snapshot is None or not snapshot.values or not snapshot.values.get("messages")
+        
+        # Prepare initial messages
+        # For new threads, ensure system message is first
+        # For existing threads, just add the new HumanMessage (system message already exists)
+        if is_new_thread:
+            # New thread: prepend system message if available
+            messages = []
+            if self.system_prompt:
+                messages.append(SystemMessage(content=self.system_prompt))
+            messages.append(HumanMessage(content=message))
+            initial_state = {"messages": messages}
+        else:
+            # Existing thread: just add the new HumanMessage
+            initial_state = {"messages": [HumanMessage(content=message)]}
+            
+        # Run the graph
+        result = await self.graph.ainvoke(initial_state, config)
 
         return result
     
@@ -137,7 +181,7 @@ class BaseAgent(ABC):
         if is_new_thread:
             # New thread: prepend system message if available
             messages = []
-            if self.system_prompt and self.system_prompt.strip():
+            if self.system_prompt:
                 messages.append(SystemMessage(content=self.system_prompt))
             messages.append(HumanMessage(content=message))
             initial_state = {"messages": messages}
