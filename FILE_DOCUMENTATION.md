@@ -258,6 +258,77 @@ frontend/
 
 ---
 
+### `frontend/components/dashboard/upload-dialog.tsx`
+
+**Purpose**: Client-side dialog component for uploading course materials (PDF files) to existing or newly created courses.
+
+**Key Components**:
+- **Dialog UI**: Uses shadcn/ui Dialog component for modal interface
+- **Mode Selection**: Toggle between "Select Existing" course or "Create New" course
+- **Course Selection**: Dropdown to select from existing courses (using Select component)
+- **Course Creation Form**: Form fields for creating new course (title, description, exam_date)
+- **File Upload**: File input for PDF file selection with validation
+- **API Integration**: 
+  - Creates courses via Supabase client
+  - Uploads PDF files to backend API endpoint (`/api/upload`)
+- **State Management**: 
+  - Form state via React Hook Form
+  - Loading states during upload
+  - Error and success message display
+
+**Key Features**:
+- **Dual Mode**: Switch between selecting existing course or creating new one
+- **Form Validation**: Required fields validation (course selection/creation, PDF file)
+- **File Type Validation**: Only accepts PDF files
+- **Loading States**: Shows loading spinner during upload process
+- **Error Handling**: Displays error messages for failed operations
+- **Success Feedback**: Shows success message before closing dialog
+- **Auto Refresh**: Reloads page after successful upload to show new course/material
+
+**Key Functions**:
+- `createCourse(data: CourseFormData)`: Creates a new course in Supabase
+- `uploadFile(courseId: string, file: File)`: Uploads PDF to backend API
+- `onSubmit(data: CourseFormData)`: Handles form submission and orchestrates course creation + file upload
+
+**Dependencies**: 
+- `react-hook-form` - Form state management
+- `@/components/ui/dialog` - Dialog modal component
+- `@/components/ui/select` - Course selection dropdown
+- `@/components/ui/button`, `@/components/ui/input`, `@/components/ui/label` - UI components
+- `@/lib/supabase/client` - Supabase client for course creation
+- `lucide-react` - Icons (Upload, Loader2, Plus)
+
+**Environment Variables**:
+- `NEXT_PUBLIC_API_URL` - Backend API URL (defaults to `http://localhost:8000` if not set)
+
+**Usage**: 
+```tsx
+import { UploadDialog } from '@/components/dashboard/upload-dialog'
+
+<UploadDialog courses={coursesList} />
+```
+
+**Props**:
+- `courses: Course[]` - Array of existing courses for selection dropdown
+
+**User Flow**:
+1. User clicks "Upload Material" button (triggers dialog)
+2. User chooses to select existing course or create new one
+3. If creating new: Fill in course form (title, description, exam_date)
+4. Select PDF file to upload
+5. Click "Upload" button
+6. System creates course (if new) and uploads PDF to backend
+7. Backend processes PDF in background (multimodal analysis)
+8. Dialog shows success message and closes
+9. Page refreshes to show new course/material
+
+**Related Files**: 
+- `frontend/app/(dashboard)/dashboard/page.tsx` - Dashboard page that uses this component
+- `backend/app/api/endpoints.py` - Backend upload endpoint that receives the file
+- `frontend/types/index.ts` - Course type definition
+
+---
+
 ## Documentation Files
 
 ### `AGENT_DEVELOPMENT_RULES.md`
