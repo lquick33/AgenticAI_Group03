@@ -9,17 +9,15 @@ import logging
 import traceback
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks
 from pdf2image import convert_from_bytes
 from PIL import Image
 
 from app.models.schemas import UploadResponse, ErrorResponse
-from app.services.analyzer import analyze_pdf_page
+from app.services.pdf_processor import process_pdf_background
 from app.services.storage import (
     upload_pdf_to_storage,
     create_course_material,
-    update_processing_status,
-    save_page_analysis,
     validate_user_exists,
     get_course
 )
@@ -47,34 +45,38 @@ def pil_image_to_bytes(image: Image.Image, format: str = "JPEG") -> bytes:
 
 @router.post("/upload", response_model=UploadResponse, status_code=200)
 async def upload_pdf(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user_id: str = Form(..., description="User ID (UUID)"),
     course_id: str = Form(..., description="Course ID (required - must exist)")
 ) -> UploadResponse:
     """
-    Upload and process a PDF file.
+    Upload and process a PDF file (asynchronous background processing).
     
     This endpoint:
     1. Validates user exists
     2. Validates course exists and belongs to user
     3. Accepts PDF file upload
-    4. Converts PDF pages to images
-    5. Analyzes each page using Gemini vision model
-    6. Stores results in Supabase database
+    4. Uploads PDF to storage
+    5. Creates course_material record with status 'uploading'
+    6. Starts background task for PDF processing
+    7. Returns immediately with status 'queued'
     
     Note: Course must be created beforehand (e.g., via web app).
     This endpoint does not create courses automatically.
+    Processing happens asynchronously in the background with parallel page analysis.
     
     Args:
+        background_tasks: FastAPI BackgroundTasks for async processing
         file: PDF file to upload
         user_id: User ID (required)
         course_id: Course ID (required - must be created beforehand)
         
     Returns:
-        UploadResponse with processing status and results
+        UploadResponse with status 'queued' and material_id
         
     Raises:
-        HTTPException: If processing fails or course doesn't exist
+        HTTPException: If validation fails or course doesn't exist
     """
     # Validate file type
     if not file.filename or not file.filename.lower().endswith('.pdf'):
@@ -193,65 +195,39 @@ async def upload_pdf(
                 detail=f"Failed to create course material record: {str(e)}"
             )
         
-        # Update status to processing
+        # Get page count for response (quick check without full processing)
         try:
-            update_processing_status(material_id, "processing")
+            logger.info("Getting page count from PDF...")
+            images = convert_from_bytes(
+                file_bytes,
+                dpi=300,
+                fmt='jpeg'
+            )
+            page_count = len(images)
+            logger.info(f"PDF has {page_count} pages")
         except Exception as e:
-            # Log error but continue
-            print(f"Warning: Failed to update status: {str(e)}")
+            logger.error(f"Failed to get page count: {str(e)}", exc_info=True)
+            # Continue anyway, background task will handle it
+            page_count = 0
         
-        # Process each page
-        pages_analyzed = 0
-        errors = []
+        # Start background processing task
+        logger.info(f"Starting background processing task for material {material_id}")
+        background_tasks.add_task(
+            process_pdf_background,
+            material_id=material_id,
+            file_bytes=file_bytes,
+            user_id=user_id,
+            max_concurrent=5  # Process 5 pages in parallel
+        )
         
-        for page_num, image in enumerate(images, start=1):
-            try:
-                # Convert PIL Image to bytes
-                image_bytes = pil_image_to_bytes(image)
-                
-                # Analyze page
-                analysis = analyze_pdf_page(image_bytes)
-                
-                # Save to database
-                save_page_analysis(
-                    course_material_id=material_id,
-                    page_number=page_num,
-                    analysis=analysis,
-                    user_id=user_id
-                )
-                
-                pages_analyzed += 1
-                
-            except Exception as e:
-                error_msg = f"Failed to process page {page_num}: {str(e)}"
-                errors.append(error_msg)
-                print(f"Error: {error_msg}")
-                # Continue with next page
-        
-        # Update final status
-        if pages_analyzed == page_count:
-            status = "completed"
-            error_message = None
-        elif pages_analyzed > 0:
-            status = "completed"  # Partially completed
-            error_message = f"Some pages failed: {', '.join(errors)}"
-        else:
-            status = "error"
-            error_message = f"All pages failed: {', '.join(errors)}"
-        
-        try:
-            update_processing_status(material_id, status, error_message)
-        except Exception as e:
-            print(f"Warning: Failed to update final status: {str(e)}")
-        
-        # Return response
+        # Return immediately with queued status
         return UploadResponse(
-            message=f"PDF processed: {pages_analyzed}/{page_count} pages analyzed",
+            message="PDF upload successful. Processing started in background.",
             course_material_id=material_id,
             page_count=page_count,
-            pages_analyzed=pages_analyzed,
-            status=status,
-            error_message=error_message if errors else None
+            pages_analyzed=0,  # Will be updated by background task
+            status="queued",
+            error_message=None
         )
     
     except HTTPException:

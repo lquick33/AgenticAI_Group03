@@ -398,6 +398,68 @@ analysis = analyze_pdf_page(image_bytes)
 
 **Related Files**: 
 - `backend/poc_vision_gemini.py` - Original PoC implementation (this service extracted from PoC)
+- `backend/app/services/pdf_processor.py` - Background processing service that uses this analyzer
+
+**Note**: As of latest update, `analyze_pdf_page` is now async (`async def`) to support parallel processing.
+
+---
+
+### `backend/app/services/pdf_processor.py`
+
+**Purpose**: Asynchronous background processing service for PDF files with parallel page analysis.
+
+**Key Components**:
+- `process_pdf_background(material_id, file_bytes, user_id, max_concurrent=5) -> None`: Main background processing function
+- `process_single_page(semaphore, material_id, page_number, image, user_id) -> tuple`: Async task for processing a single page
+- `pil_image_to_bytes(image, format) -> bytes`: Helper to convert PIL Image to bytes
+
+**Key Features**:
+- **Asynchronous Processing**: Runs in background via FastAPI BackgroundTasks
+- **Parallel Page Analysis**: Processes up to 5 pages simultaneously (configurable via `max_concurrent`)
+- **Rate Limit Protection**: Uses `asyncio.Semaphore` to limit concurrent API requests
+- **Status Management**: Updates `course_materials.processing_status` throughout lifecycle:
+  - `uploading` → `processing` → `completed` / `error`
+- **Error Handling**: Continues processing even if individual pages fail
+- **Progress Tracking**: Logs progress and errors for monitoring
+
+**Processing Flow**:
+1. Set status to 'processing'
+2. Convert PDF bytes to images using `pdf2image`
+3. Create async tasks for all pages
+4. Process pages in parallel batches (semaphore-limited)
+5. For each page:
+   - Convert PIL Image to bytes
+   - Call `analyze_pdf_page()` (async)
+   - Save result to `page_analyses` table
+6. Update final status based on results
+
+**Error Handling**:
+- Failed page conversions: Log error, continue with other pages
+- API failures: Individual page errors logged, processing continues
+- All pages failed: Status set to 'error' with error message
+- Partial success: Status set to 'completed' with warning about failed pages
+
+**Dependencies**: 
+- `asyncio` - Async/await support and semaphore
+- `pdf2image` - PDF to image conversion
+- `pillow` - Image processing
+- `app.services.analyzer` - Page analysis service (async)
+- `app.services.storage` - Database operations
+
+**Usage**: Called automatically by FastAPI BackgroundTasks from upload endpoint:
+```python
+background_tasks.add_task(
+    process_pdf_background,
+    material_id=material_id,
+    file_bytes=file_bytes,
+    user_id=user_id,
+    max_concurrent=5
+)
+```
+
+**Related Files**: 
+- `backend/app/api/endpoints.py` - Upload endpoint that triggers background processing
+- `backend/app/services/analyzer.py` - Async page analysis function
 
 ---
 
@@ -437,42 +499,61 @@ analysis = analyze_pdf_page(image_bytes)
 **Purpose**: FastAPI route handlers for PDF upload and processing.
 
 **Key Components**:
-- `POST /api/upload`: PDF upload endpoint that:
-  1. Accepts PDF file via `UploadFile`
-  2. Converts PDF to images using `pdf2image`
-  3. Analyzes each page using Gemini vision model
-  4. Stores results in Supabase database
-  5. Returns processing status and results
+- `POST /api/upload`: PDF upload endpoint with asynchronous background processing:
+  1. Validates user and course
+  2. Accepts PDF file via `UploadFile`
+  3. Uploads PDF to Supabase Storage
+  4. Creates `course_material` record with status 'uploading'
+  5. Starts background task for parallel page processing
+  6. Returns immediately with status 'queued'
 
 **Endpoint Flow**:
 1. Validate PDF file type
-2. Read file bytes into memory
-3. Convert PDF pages to images (300 DPI, JPEG format)
-4. Upload PDF to Supabase Storage
-5. Create `course_material` record
-6. For each page:
-   - Convert PIL Image to bytes
-   - Analyze using `analyze_pdf_page()`
-   - Save to `page_analyses` table
-7. Update processing status
-8. Return response with summary
+2. Validate user exists
+3. Validate course exists and belongs to user
+4. Read file bytes into memory
+5. Upload PDF to Supabase Storage
+6. Get page count (quick check)
+7. Create `course_material` record with status 'uploading'
+8. Start background task (`process_pdf_background`)
+9. Return immediately with status 'queued'
+
+**Background Processing** (handled by `pdf_processor.py`):
+- Converts PDF pages to images (300 DPI, JPEG format)
+- Processes pages in parallel (max 5 concurrent requests)
+- For each page:
+  - Convert PIL Image to bytes
+  - Analyze using `analyze_pdf_page()` (async)
+  - Save to `page_analyses` table
+- Updates status to 'processing', then 'completed' or 'error'
 
 **Key Features**:
 - Async endpoint (`async def`)
+- Background processing (no timeouts for large PDFs)
+- Parallel page analysis (5 pages at once)
+- Rate limit protection (semaphore-based)
 - File validation (PDF only)
 - Error handling with HTTPException
 - Continues processing even if individual pages fail
-- Returns detailed status and error messages
+- Immediate response with queued status
 
-**Query Parameters**:
+**Form Parameters**:
 - `file`: PDF file (required, via multipart/form-data)
-- `course_id`: Optional course ID
-- `user_id`: Required user ID
+- `course_id`: Course ID (required - must exist)
+- `user_id`: User ID (required)
+
+**Response Status Values**:
+- `queued`: Upload successful, processing started
+- `uploading`: PDF uploaded, material record created
+- `processing`: Background task running
+- `completed`: All pages processed successfully
+- `error`: Processing failed
 
 **Dependencies**: 
-- `fastapi` - Web framework
+- `fastapi` - Web framework (with BackgroundTasks)
 - `pdf2image` - PDF to image conversion
 - `pillow` - Image processing
+- `app.services.pdf_processor` - Background processing service
 - `app.services.analyzer` - Analysis service
 - `app.services.storage` - Storage service
 - `app.models.schemas` - Response models
@@ -495,7 +576,8 @@ backend/app/
 │   └── endpoints.py     # API route handlers
 ├── services/
 │   ├── __init__.py
-│   ├── analyzer.py      # Multimodal analysis service
+│   ├── analyzer.py      # Multimodal analysis service (async)
+│   ├── pdf_processor.py  # Background PDF processing with parallel page analysis
 │   └── storage.py       # Supabase operations
 ├── core/
 │   ├── __init__.py

@@ -104,9 +104,9 @@ def image_bytes_to_base64(image_bytes: bytes, format: str = "jpeg") -> str:
         raise ValueError(f"Failed to process image bytes: {str(e)}")
 
 
-def analyze_pdf_page(image_bytes: bytes, api_key: Optional[str] = None) -> SlideAnalysis:
+async def analyze_pdf_page(image_bytes: bytes, api_key: Optional[str] = None) -> SlideAnalysis:
     """
-    Analyze a PDF page image using Google Gemini vision model.
+    Analyze a PDF page image using Google Gemini vision model (async).
     
     This function accepts image bytes (from pdf2image conversion) and returns
     structured analysis results. Designed to be used in async contexts and
@@ -122,6 +122,8 @@ def analyze_pdf_page(image_bytes: bytes, api_key: Optional[str] = None) -> Slide
     Raises:
         ValueError: If API key is missing or analysis fails
     """
+    import asyncio
+    
     # Load API key if not provided
     if api_key is None:
         api_key = settings.GOOGLE_API_KEY
@@ -151,9 +153,11 @@ schreibe 'Kein Diagramm' für diagram_description."""
         ]
     )
     
-    # Invoke LLM and get structured output
+    # Invoke LLM and get structured output (run in thread pool since LangChain is sync)
     try:
-        result = structured_llm.invoke([message])
+        # Run synchronous invoke in thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: structured_llm.invoke([message]))
         return result
     except Exception as e:
         raise ValueError(f"Failed to analyze slide: {str(e)}")
