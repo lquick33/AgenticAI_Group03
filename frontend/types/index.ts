@@ -21,7 +21,7 @@ export interface UserPreferences {
 export interface Course {
   id: string
   user_id: string
-  name: string
+  title: string
   description?: string | null
   exam_date?: string | null
   created_at: string
