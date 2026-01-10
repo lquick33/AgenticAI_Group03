@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Application Settings
     APP_NAME: str = "Lernkompanien API"
     APP_VERSION: str = "1.0.0"
-    DEBUG: bool = False
+    DEBUG: bool = True  # Enable debug mode for development
     
     model_config = SettingsConfigDict(
         # Try .env in current directory, then parent directory (project root)

@@ -8,7 +8,6 @@ for course materials and page analyses.
 from typing import Optional
 
 from supabase import create_client, Client
-from supabase.lib.client_options import ClientOptions
 
 from app.core.config import settings
 from app.models.schemas import SlideAnalysis
@@ -28,13 +27,10 @@ def get_supabase_client() -> Client:
     global _supabase_client
     
     if _supabase_client is None:
+        # Simplified client creation - ClientOptions not needed for basic usage
         _supabase_client = create_client(
             settings.SUPABASE_URL,
-            settings.SUPABASE_KEY,
-            options=ClientOptions(
-                auto_refresh_token=True,
-                persist_session=False
-            )
+            settings.SUPABASE_KEY
         )
     
     return _supabase_client
@@ -44,7 +40,7 @@ def upload_pdf_to_storage(
     file_bytes: bytes,
     filename: str,
     user_id: str,
-    bucket_name: str = "course-materials"
+    bucket_name: str = "course_materials"
 ) -> str:
     """
     Upload PDF file to Supabase Storage.
@@ -53,7 +49,7 @@ def upload_pdf_to_storage(
         file_bytes: PDF file bytes
         filename: Original filename
         user_id: User ID for organizing files
-        bucket_name: Storage bucket name (default: "course-materials")
+        bucket_name: Storage bucket name (default: "course_materials")
         
     Returns:
         Storage path of uploaded file
@@ -151,6 +147,74 @@ def update_processing_status(
     
     except Exception as e:
         raise Exception(f"Failed to update processing status: {str(e)}")
+
+
+def validate_user_exists(user_id: str) -> bool:
+    """
+    Validate that user exists in profiles table.
+    
+    Note: Thanks to the SQL trigger, profiles are automatically synced
+    with auth.users, so this check works reliably.
+    
+    Args:
+        user_id: User ID to validate
+        
+    Returns:
+        True if user exists, False otherwise
+        
+    Raises:
+        Exception: If database query fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("profiles").select("id").eq(
+            "id", user_id
+        ).execute()
+        
+        return response.data and len(response.data) > 0
+    except Exception as e:
+        raise Exception(f"Failed to validate user: {str(e)}")
+
+
+def get_course(
+    user_id: str,
+    course_id: str
+) -> dict:
+    """
+    Get existing course and validate it belongs to user.
+    
+    Course must be created beforehand (e.g., via web app).
+    This function only validates and retrieves existing courses.
+    
+    Args:
+        user_id: User ID
+        course_id: Course ID (required)
+        
+    Returns:
+        Course record as dict
+        
+    Raises:
+        ValueError: If course doesn't exist or doesn't belong to user
+        Exception: If database operation fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("courses").select("*").eq(
+            "id", course_id
+        ).eq("user_id", user_id).execute()
+        
+        if response.data and len(response.data) > 0:
+            return response.data[0]
+        else:
+            raise ValueError(
+                f"Course {course_id} not found or access denied"
+            )
+    except ValueError:
+        raise
+    except Exception as e:
+        raise Exception(f"Failed to get course: {str(e)}")
 
 
 def save_page_analysis(

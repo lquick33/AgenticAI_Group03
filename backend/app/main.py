@@ -4,12 +4,25 @@ FastAPI Application Entry Point
 Main application initialization and configuration.
 """
 
+import logging
+import traceback
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.api.endpoints import router as api_router
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG if settings.DEBUG else logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Reduce noise from multipart library
+logging.getLogger("python_multipart").setLevel(logging.WARNING)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -82,6 +95,10 @@ async def value_error_handler(request, exc):
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
     """Handle general exceptions."""
+    # Always log the full error
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    logger.error(f"Traceback: {traceback.format_exc()}")
+    
     if settings.DEBUG:
         # In debug mode, return full error details
         return JSONResponse(
@@ -89,7 +106,8 @@ async def general_exception_handler(request, exc):
             content={
                 "error": str(exc),
                 "code": "INTERNAL_ERROR",
-                "type": type(exc).__name__
+                "type": type(exc).__name__,
+                "traceback": traceback.format_exc() if settings.DEBUG else None
             }
         )
     else:
