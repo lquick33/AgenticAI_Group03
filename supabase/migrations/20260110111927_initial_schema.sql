@@ -179,6 +179,8 @@ ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
 CREATE OR REPLACE FUNCTION auth_uid() 
 RETURNS uuid 
 LANGUAGE sql STABLE 
+SECURITY DEFINER
+SET search_path = public, pg_temp
 AS $$ 
   SELECT auth.uid(); 
 $$;
@@ -207,12 +209,16 @@ CREATE POLICY "Users can CRUD own messages" ON messages FOR ALL USING (
 
 -- 7. Automatische `updated_at` Trigger Funktion
 CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER 
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
 BEGIN
     NEW.updated_at = now();
     RETURN NEW;
 END;
-$$ language 'plpgsql';
+$$;
 
 -- Trigger anwenden
 CREATE TRIGGER update_profiles_modtime BEFORE UPDATE ON profiles FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
