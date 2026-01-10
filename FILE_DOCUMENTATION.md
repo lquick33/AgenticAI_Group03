@@ -329,6 +329,365 @@ import { UploadDialog } from '@/components/dashboard/upload-dialog'
 
 ---
 
+### `frontend/components/dashboard/sidebar.tsx`
+
+**Purpose**: Client-side sidebar navigation component for the dashboard, using the shadcn sidebar structure with TeamSwitcher, collapsible navigation items, and projects section.
+
+**Key Components**:
+- **TeamSwitcher**: Brand/team selector in header (currently shows "Lernkompanien")
+- **NavMainCollapsible**: Main navigation with collapsible submenus (Dashboard, Kurse with sub-items, Quick Chat, Einstellungen with sub-items)
+- **NavProjects**: Quick access to specific courses/projects
+- **NavUser**: User profile display with avatar, name, and email
+- **SidebarRail**: Visual rail indicator for collapsed state
+- **Responsive**: Icon-only collapsed mode on mobile/desktop
+
+**Key Features**:
+- Uses Next.js `Link` component for client-side navigation
+- Active route detection using `usePathname()` hook
+- Integrates with shadcn/ui Sidebar components
+- User data passed from server component (dashboard page)
+- Branding: "Lernkompanien" with SparklesIcon
+
+**Key Functions**:
+- Navigation items with active state based on current pathname
+- Quick Chat button linking to `/dashboard/chat` (to be created)
+- Kurse link to `/dashboard/courses` (to be created)
+
+**Dependencies**: 
+- `next/navigation` - Link and usePathname for routing
+- `@/components/ui/sidebar` - shadcn/ui sidebar components (SidebarProvider, SidebarRail, etc.)
+- `@/components/nav-main-collapsible` - Navigation with collapsible submenus
+- `@/components/nav-projects` - Projects/courses quick access
+- `@/components/nav-user` - User profile component
+- `@/components/team-switcher` - Team/brand selector
+- `lucide-react` - Icons (Sparkles, Bot, BookOpen, etc.)
+
+**Usage**: 
+```tsx
+import { DashboardSidebar } from '@/components/dashboard/sidebar'
+
+<DashboardSidebar user={userData} variant="inset" />
+```
+
+**Props**:
+- `user: { name: string; email: string; avatar: string }` - User data for sidebar display
+
+**Related Files**: 
+- `frontend/app/(dashboard)/dashboard/page.tsx` - Dashboard page that uses this sidebar
+- `frontend/components/ui/sidebar.tsx` - Base sidebar component from shadcn/ui
+- `frontend/components/nav-main-collapsible.tsx` - Collapsible navigation component
+- `frontend/components/team-switcher.tsx` - Team switcher component
+- `frontend/components/nav-projects.tsx` - Projects navigation component
+
+---
+
+### `frontend/components/nav-main-collapsible.tsx`
+
+**Purpose**: Navigation component that supports collapsible submenus for sidebar navigation items.
+
+**Key Components**:
+- **Collapsible Items**: Navigation items with submenus that can be expanded/collapsed
+- **Active State**: Highlights active routes and automatically opens parent items if child is active
+- **Submenu Support**: Renders nested navigation items using SidebarMenuSub components
+- **Link Integration**: Uses Next.js Link for client-side navigation
+
+**Key Features**:
+- Supports both simple navigation items (no submenu) and collapsible items (with submenu)
+- Automatic active state detection based on pathname
+- Chevron icon rotates when submenu is open
+- Type-safe with TypeScript
+
+**Dependencies**: 
+- `@/components/ui/collapsible` - Collapsible component from shadcn/ui
+- `@/components/ui/sidebar` - SidebarMenuSub, SidebarMenuSubButton, etc.
+- `next/navigation` - Link and usePathname
+- `lucide-react` - ChevronRight icon
+
+**Usage**: Used by DashboardSidebar component
+
+---
+
+### `frontend/components/team-switcher.tsx`
+
+**Purpose**: Team/brand switcher component for sidebar header, allowing users to switch between different teams or workspaces.
+
+**Key Components**:
+- **Dropdown Menu**: Shows current team and allows switching
+- **Team Display**: Shows team logo, name, and plan
+- **Team List**: Dropdown with all available teams
+- **Keyboard Shortcuts**: Number shortcuts for quick team switching
+
+**Key Features**:
+- Currently configured for single team ("Lernkompanien")
+- Can be extended to support multiple teams/workspaces
+- Responsive: adjusts dropdown position on mobile vs desktop
+- Visual team logo/icon display
+
+**Dependencies**: 
+- `@/components/ui/dropdown-menu` - Dropdown menu component
+- `@/components/ui/sidebar` - SidebarMenu, SidebarMenuButton
+- `lucide-react` - ChevronsUpDown icon
+
+**Usage**: Used in DashboardSidebar header
+
+**Future Enhancement**: Can be extended to fetch teams from Supabase or support workspace switching
+
+---
+
+### `frontend/components/nav-projects.tsx`
+
+**Purpose**: Quick access navigation component for projects/courses in the sidebar.
+
+**Key Components**:
+- **Project List**: Displays list of projects/courses with icons
+- **Group Label**: "Kurse" label for the section
+- **Link Navigation**: Uses Next.js Link for client-side navigation
+
+**Key Features**:
+- Currently shows sample courses (KI Grundlagen, Programmierung, Datenbanken)
+- Hidden when sidebar is in icon-only mode
+- Simple list format with icons
+
+**Dependencies**: 
+- `@/components/ui/sidebar` - SidebarGroup, SidebarMenu, etc.
+- `next/link` - Next.js Link component
+- `lucide-react` - Icons for projects
+
+**Usage**: Used in DashboardSidebar to show quick course access
+
+**Future Enhancement**: Will fetch actual courses from Supabase and display user's courses
+
+---
+
+### `frontend/components/dashboard/kpi-cards.tsx`
+
+**Purpose**: Server component displaying Key Performance Indicator (KPI) cards for learning metrics with dummy data.
+
+**Key Components**:
+- **Four KPI Cards**: 
+  1. Aktive Kurse (Active Courses) - Shows number of active courses
+  2. Abgeschlossene Lerneinheiten (Completed Units) - Shows completed learning units
+  3. Gesamtzeit gelernt (Total Study Time) - Shows total study hours
+  4. Durchschnittlicher Fortschritt (Average Progress) - Shows average progress percentage
+- **Trend Indicators**: Each card shows trend (e.g., "+2", "+5%") with up/down arrows
+- **Responsive Grid**: Adapts from 1 column (mobile) to 4 columns (desktop)
+
+**Key Features**:
+- Dummy data structure for testing layout
+- Trend badges with icons (TrendingUpIcon)
+- Card descriptions and additional info
+- Responsive design using Tailwind container queries (`@container/card`)
+- Gradient backgrounds for visual appeal
+
+**Dummy Data Structure**:
+```typescript
+{
+  activeCourses: { value: "5", trend: "+2", description: "Kurse diesen Monat" },
+  completedUnits: { value: "23", trend: "+5", description: "Diese Woche abgeschlossen" },
+  totalStudyTime: { value: "42.5h", trend: "+3.2h", description: "Diese Woche gelernt" },
+  averageProgress: { value: "78%", trend: "+5%", description: "Durchschnitt über alle Kurse" }
+}
+```
+
+**Dependencies**: 
+- `@/components/ui/card` - Card components (CardHeader, CardTitle, etc.)
+- `@/components/ui/badge` - Badge component for trends
+- `lucide-react` - Icons (TrendingUpIcon, TrendingDownIcon)
+
+**Usage**: 
+```tsx
+import { KPICards } from '@/components/dashboard/kpi-cards'
+
+<KPICards />
+```
+
+**Future Integration**: Will be updated to fetch real data from Supabase (courses count, learning units, study time, progress calculations)
+
+**Related Files**: 
+- `frontend/app/(dashboard)/dashboard/page.tsx` - Dashboard page that displays KPI cards
+- `frontend/types/index.ts` - LearningUnit and Course types for future data integration
+
+---
+
+### `frontend/components/dashboard/progress-chart.tsx`
+
+**Purpose**: Client component displaying a line chart showing learning progress over time with dummy data.
+
+**Key Components**:
+- **Area Chart**: Dual-line area chart showing progress vs. target
+- **Time Range Selector**: Toggle between "Last 3 months", "Last 30 days", "Last 7 days"
+- **Responsive**: Mobile-friendly with dropdown selector on small screens
+- **Chart Tooltip**: Interactive tooltips showing exact values on hover
+
+**Key Features**:
+- Uses Recharts library for chart rendering
+- Dummy data generated for last 90 days
+- Two data series: `progress` (actual) and `target` (goal)
+- Progress line: solid with gradient fill
+- Target line: dashed with different gradient
+- Responsive time range selection (mobile uses dropdown, desktop uses toggle buttons)
+- Chart automatically adjusts data based on selected time range
+
+**Dummy Data Generation**:
+- Generates 90 days of data points
+- Progress: Random values between 60-100%
+- Target: Random values between 70-90%
+- Dates formatted using `date-fns`
+
+**Dependencies**: 
+- `recharts` - Chart library (AreaChart, Area, XAxis, etc.)
+- `date-fns` - Date formatting utilities
+- `@/components/ui/chart` - shadcn/ui chart wrapper components
+- `@/components/ui/card` - Card container
+- `@/components/ui/select` - Dropdown for mobile
+- `@/components/ui/toggle-group` - Toggle buttons for desktop
+- `@/hooks/use-mobile` - Mobile detection hook
+
+**Usage**: 
+```tsx
+import { ProgressChart } from '@/components/dashboard/progress-chart'
+
+<ProgressChart />
+```
+
+**Future Integration**: Will fetch real progress data from Supabase `learning_units` table, calculating actual completion rates and comparing to planned targets.
+
+**Related Files**: 
+- `frontend/app/(dashboard)/dashboard/page.tsx` - Dashboard page that displays the chart
+- `frontend/types/index.ts` - LearningUnit type for future data integration
+
+---
+
+### `frontend/components/dashboard/learning-units-table.tsx`
+
+**Purpose**: Client component displaying a table of learning units with dummy data, adapted from shadcn dashboard-01 data-table.
+
+**Key Components**:
+- **Table Columns**:
+  - Checkbox (for multi-select)
+  - Lerneinheit (Topic name)
+  - Kurs (Course name)
+  - Status (Badge with icon: Abgeschlossen, In Bearbeitung, Übersprungen, Verschoben)
+  - Fortschritt (Progress percentage)
+  - Verständnis (Comprehension score or "N/A")
+  - Geplant für (Planned date and time)
+  - Actions (Dropdown menu)
+- **Row Selection**: Checkbox selection for bulk actions (future feature)
+- **Status Badges**: Color-coded badges with icons for different statuses
+- **Actions Menu**: Dropdown with options (Bearbeiten, Details, Löschen)
+
+**Key Features**:
+- Dummy data based on `LearningUnit` type from `@/types`
+- Status visualization with icons (CheckCircle2Icon for completed, LoaderIcon for in progress)
+- Date formatting using `date-fns`
+- Responsive table design
+- Selection counter showing selected rows
+
+**Dummy Data**:
+- 6 sample learning units with various statuses (completed, planned, skipped)
+- Mix of different courses (KI Grundlagen, Programmierung, Datenbanken)
+- Different progress values (0%, 45%, 100%)
+- Comprehension scores where applicable
+
+**Status Mapping**:
+- `completed` → "Abgeschlossen" (green checkmark icon)
+- `planned` → "In Bearbeitung" (spinning loader icon)
+- `skipped` → "Übersprungen" (plain badge)
+- `rescheduled` → "Verschoben" (plain badge)
+
+**Dependencies**: 
+- `@/components/ui/table` - Table components (Table, TableHeader, TableBody, etc.)
+- `@/components/ui/badge` - Badge component for status
+- `@/components/ui/checkbox` - Checkbox for row selection
+- `@/components/ui/dropdown-menu` - Actions menu
+- `date-fns` - Date formatting
+- `lucide-react` - Icons (CheckCircle2Icon, LoaderIcon, MoreVerticalIcon)
+- `@/types` - LearningUnit type definition
+
+**Usage**: 
+```tsx
+import { LearningUnitsTable } from '@/components/dashboard/learning-units-table'
+
+<LearningUnitsTable />
+```
+
+**Future Integration**: 
+- Fetch real data from Supabase `learning_units` table
+- Add filtering and sorting capabilities
+- Implement bulk actions (delete, mark as completed, etc.)
+- Add pagination for large datasets
+- Link to course detail pages
+
+**Related Files**: 
+- `frontend/app/(dashboard)/dashboard/page.tsx` - Dashboard page that displays the table
+- `frontend/types/index.ts` - LearningUnit type definition
+
+---
+
+### `frontend/app/(dashboard)/dashboard/page.tsx` (Updated)
+
+**Purpose**: Main dashboard page integrating all dashboard components (Sidebar, KPI Cards, Progress Chart, Learning Units Table) with authentication.
+
+**Key Components**:
+- **Authentication**: Uses `requireAuth()` to ensure user is logged in
+- **User Data Fetching**: Gets user data from Supabase for sidebar
+- **Layout Structure**: 
+  - `SidebarProvider` - Wraps entire dashboard for sidebar state management
+  - `DashboardSidebar` - Left sidebar navigation
+  - `SidebarInset` - Main content area
+  - `KPICards` - Top KPI metrics
+  - `ProgressChart` - Middle progress visualization
+  - `LearningUnitsTable` - Bottom learning units table
+
+**Key Features**:
+- Server Component for authentication and data fetching
+- Integrates all dashboard components in a cohesive layout
+- Responsive design with sidebar that collapses on mobile
+- Error handling for user data fetching failures
+
+**Layout Structure**:
+```tsx
+<SidebarProvider>
+  <DashboardSidebar user={userData} />
+  <SidebarInset>
+    <KPICards />
+    <ProgressChart />
+    <LearningUnitsTable />
+  </SidebarInset>
+</SidebarProvider>
+```
+
+**Dependencies**: 
+- `@/lib/auth` - Authentication utilities (requireAuth)
+- `@/lib/supabase/server` - Server-side Supabase client
+- `@/components/dashboard/sidebar` - Dashboard sidebar component
+- `@/components/dashboard/kpi-cards` - KPI cards component
+- `@/components/dashboard/progress-chart` - Progress chart component
+- `@/components/dashboard/learning-units-table` - Learning units table component
+- `@/components/ui/sidebar` - SidebarProvider and SidebarInset
+
+**Usage**: Accessible at `/dashboard` route (protected, requires authentication)
+
+**User Flow**:
+1. User navigates to `/dashboard`
+2. Server checks authentication (redirects to `/login` if not authenticated)
+3. Fetches user data from Supabase
+4. Renders dashboard with sidebar and all components
+5. All components display dummy data (ready for backend integration)
+
+**Future Enhancements**:
+- Fetch real KPI data from Supabase
+- Load actual progress data for chart
+- Display real learning units from database
+- Add loading states during data fetching
+- Add error boundaries for component failures
+
+**Related Files**: 
+- All dashboard component files (sidebar, kpi-cards, progress-chart, learning-units-table)
+- `frontend/lib/auth.ts` - Authentication utilities
+
+---
+
 ## Documentation Files
 
 ### `AGENT_DEVELOPMENT_RULES.md`
