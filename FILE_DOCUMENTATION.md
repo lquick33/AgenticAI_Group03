@@ -72,6 +72,53 @@ pip install -r requirements.txt
 
 ---
 
+### `backend/poc_vision_gemini.py`
+
+**Purpose**: Proof of Concept script demonstrating vision-first slide analysis using Google Gemini's multimodal capabilities via LangChain with structured Pydantic output.
+
+**Key Components**:
+- **SlideAnalysis Pydantic Model**: Defines structured output schema with `summary`, `key_terms`, `exam_questions` (exactly 2), and `diagram_description` fields
+- **Image Processing**: `load_image_as_base64()` function that loads local images and converts them to base64 data URI format for LangChain
+- **Gemini Model Setup**: `get_gemini_model()` function with automatic model selection (tries `gemini-2.0-flash-exp` first, falls back to `gemini-1.5-flash`)
+- **Structured Output**: Uses LangChain's `with_structured_output()` to ensure type-safe Pydantic model responses
+- **Analysis Function**: `analyze_slide()` function that processes slide images and returns structured analysis results
+- **LangGraph Compatibility**: Code structure designed for future extraction into LangGraph node functions
+
+**Key Functions**:
+- `load_image_as_base64(image_path: str) -> str`: Loads and encodes images as base64 data URIs
+- `get_gemini_model(api_key: str) -> ChatGoogleGenerativeAI`: Initializes Gemini model with fallback logic
+- `analyze_slide(image_path: str, api_key: Optional[str] = None) -> SlideAnalysis`: Main analysis function that processes slides
+
+**Dependencies**: 
+- `langchain-google-genai` - Google Gemini integration
+- `pydantic` - Structured output validation
+- `python-dotenv` - Environment variable loading
+- `pillow` - Image processing
+
+**Usage**:
+```bash
+# With default test_slide.jpg in backend/ directory:
+python backend/poc_vision_gemini.py
+
+# With custom image path:
+python backend/poc_vision_gemini.py path/to/slide.jpg
+```
+
+**Environment Variables**:
+- `GOOGLE_API_KEY` - Required Google API key for Gemini access (must be set in `.env` file)
+
+**Future Integration**:
+This PoC script will be refactored into:
+- Service: `backend/app/services/multimodal_analyzer.py` - Production service for slide analysis
+- LangGraph Node: Extracted `analyze_slide()` function will become an async node function that accepts state and returns updated state with analysis results
+- Database Integration: Results will be stored in `page_analyses` table in Supabase
+
+**Related Files**:
+- `PROJECT_PLAN.md` - Documents the vision-first multimodal analysis approach
+- `AGENT_DEVELOPMENT_RULES.md` - Guidelines for LangGraph node function patterns
+
+---
+
 ## Frontend Configuration Files
 
 ### `frontend/package.json`
