@@ -291,3 +291,220 @@ frontend/
 - `old_repo/agentic_ai/` - Source of patterns and examples
 
 ---
+
+## Backend Application Files
+
+### `backend/app/main.py`
+
+**Purpose**: FastAPI application entry point and initialization.
+
+**Key Components**:
+- FastAPI app instance with metadata (title, version, description)
+- CORS middleware configuration for Next.js frontend
+- API router mounting at `/api` prefix
+- Health check endpoint at `/health`
+- Root endpoint with welcome message
+- Global exception handlers for error responses
+- Uvicorn server configuration for development
+
+**Dependencies**: 
+- `fastapi` - Web framework
+- `uvicorn` - ASGI server
+- `app.core.config` - Application settings
+- `app.api.endpoints` - API route handlers
+
+**Usage**: 
+```bash
+# Development
+python -m app.main
+
+# Or with uvicorn
+uvicorn app.main:app --reload
+```
+
+---
+
+### `backend/app/core/config.py`
+
+**Purpose**: Centralized configuration management using Pydantic Settings.
+
+**Key Components**:
+- `Settings` class extending `BaseSettings` from `pydantic-settings`
+- Environment variable loading from `.env` file
+- Required settings: `GOOGLE_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`
+- Optional settings: `OPENAI_API_KEY`, `APP_NAME`, `APP_VERSION`, `DEBUG`
+- Singleton pattern with exported `settings` instance
+
+**Environment Variables**:
+- `GOOGLE_API_KEY` - Google Gemini API key (required)
+- `OPENAI_API_KEY` - OpenAI API key (optional)
+- `SUPABASE_URL` - Supabase project URL (required)
+- `SUPABASE_KEY` - Supabase service role key (required)
+
+**Dependencies**: Requires `pydantic-settings` package
+
+**Usage**: Import settings throughout the application: `from app.core.config import settings`
+
+---
+
+### `backend/app/models/schemas.py`
+
+**Purpose**: Pydantic models for request/response validation and data structures.
+
+**Key Components**:
+- **SlideAnalysis**: Structured analysis result from multimodal LLM (summary, key_terms, exam_questions, diagram_description)
+- **PageAnalysisResponse**: Response model for single page analysis
+- **UploadResponse**: Response model for PDF upload endpoint
+- **ErrorResponse**: Standardized error format
+
+**Key Features**:
+- Type-safe data validation
+- Field descriptions for API documentation
+- Validation constraints (e.g., exam_questions must be exactly 2)
+
+**Dependencies**: Requires `pydantic` package
+
+**Usage**: Import schemas in endpoints and services: `from app.models.schemas import SlideAnalysis, UploadResponse`
+
+---
+
+### `backend/app/services/analyzer.py`
+
+**Purpose**: Multimodal slide analysis service using Google Gemini vision model.
+
+**Key Components**:
+- `analyze_pdf_page(image_bytes: bytes) -> SlideAnalysis`: Main analysis function that processes image bytes
+- `get_gemini_model(api_key: str) -> ChatGoogleGenerativeAI`: Model initialization with fallback logic
+- `image_bytes_to_base64(image_bytes: bytes, format: str) -> str`: Image encoding helper
+
+**Key Features**:
+- Accepts image bytes (from pdf2image conversion) instead of file paths
+- Model selection: tries `gemini-2.5-flash` first, falls back to `gemini-1.5-flash`
+- Structured output using LangChain's `with_structured_output()`
+- Error handling with specific exceptions
+- Designed for async/await usage
+
+**Dependencies**: 
+- `langchain-google-genai` - Gemini integration
+- `pillow` - Image processing
+- `app.core.config` - Settings
+- `app.models.schemas` - SlideAnalysis model
+
+**Usage**: 
+```python
+from app.services.analyzer import analyze_pdf_page
+analysis = analyze_pdf_page(image_bytes)
+```
+
+**Related Files**: 
+- `backend/poc_vision_gemini.py` - Original PoC implementation (this service extracted from PoC)
+
+---
+
+### `backend/app/services/storage.py`
+
+**Purpose**: Supabase Storage and Database operations for file uploads and analysis storage.
+
+**Key Components**:
+- `get_supabase_client() -> Client`: Singleton Supabase client initialization
+- `upload_pdf_to_storage(file_bytes, filename, user_id) -> str`: Upload PDF to Supabase Storage bucket
+- `create_course_material(...) -> dict`: Create course_material record in database
+- `update_processing_status(material_id, status, error_message) -> None`: Update processing status
+- `save_page_analysis(course_material_id, page_number, analysis, user_id) -> dict`: Save analysis to `page_analyses` table
+
+**Key Features**:
+- Supabase client singleton pattern
+- Storage bucket operations (default: "course-materials")
+- Database operations using Supabase query builder (not raw SQL)
+- Handles both structured fields and JSONB storage for `raw_analysis`
+- Error handling for storage and database failures
+
+**Database Tables Used**:
+- `course_materials`: Stores PDF metadata and processing status
+- `page_analyses`: Stores structured analysis results per page
+
+**Dependencies**: 
+- `supabase` - Supabase Python client
+- `app.core.config` - Settings for Supabase credentials
+- `app.models.schemas` - SlideAnalysis model
+
+**Usage**: Import functions in endpoints: `from app.services.storage import upload_pdf_to_storage, save_page_analysis`
+
+---
+
+### `backend/app/api/endpoints.py`
+
+**Purpose**: FastAPI route handlers for PDF upload and processing.
+
+**Key Components**:
+- `POST /api/upload`: PDF upload endpoint that:
+  1. Accepts PDF file via `UploadFile`
+  2. Converts PDF to images using `pdf2image`
+  3. Analyzes each page using Gemini vision model
+  4. Stores results in Supabase database
+  5. Returns processing status and results
+
+**Endpoint Flow**:
+1. Validate PDF file type
+2. Read file bytes into memory
+3. Convert PDF pages to images (300 DPI, JPEG format)
+4. Upload PDF to Supabase Storage
+5. Create `course_material` record
+6. For each page:
+   - Convert PIL Image to bytes
+   - Analyze using `analyze_pdf_page()`
+   - Save to `page_analyses` table
+7. Update processing status
+8. Return response with summary
+
+**Key Features**:
+- Async endpoint (`async def`)
+- File validation (PDF only)
+- Error handling with HTTPException
+- Continues processing even if individual pages fail
+- Returns detailed status and error messages
+
+**Query Parameters**:
+- `file`: PDF file (required, via multipart/form-data)
+- `course_id`: Optional course ID
+- `user_id`: Required user ID
+
+**Dependencies**: 
+- `fastapi` - Web framework
+- `pdf2image` - PDF to image conversion
+- `pillow` - Image processing
+- `app.services.analyzer` - Analysis service
+- `app.services.storage` - Storage service
+- `app.models.schemas` - Response models
+
+**Usage**: Endpoint accessible at `POST /api/upload` when FastAPI app is running
+
+---
+
+### Backend Directory Structure
+
+**Purpose**: Organized folder structure following FastAPI best practices and project requirements.
+
+**Structure**:
+```
+backend/app/
+├── __init__.py           # Package initialization
+├── main.py              # FastAPI entry point
+├── api/
+│   ├── __init__.py
+│   └── endpoints.py     # API route handlers
+├── services/
+│   ├── __init__.py
+│   ├── analyzer.py      # Multimodal analysis service
+│   └── storage.py       # Supabase operations
+├── core/
+│   ├── __init__.py
+│   └── config.py        # Configuration management
+└── models/
+    ├── __init__.py
+    └── schemas.py        # Pydantic models
+```
+
+**Dependencies**: Follows FastAPI application structure patterns
+
+---
