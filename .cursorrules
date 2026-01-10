@@ -1,0 +1,439 @@
+# Cursor Rules for Lernkompanien Project
+
+## Project Context
+
+This is the **Lernkompanien** (Adaptive Learning Assistant) project - an AI-powered learning ecosystem that helps students with planning, tutoring, and motivation. The system uses LangGraph for agent orchestration, Next.js for the frontend, and Python FastAPI for the backend.
+
+**Key Goals**:
+- Intelligent calendar management and learning plan creation
+- AI tutor that explains lecture materials
+- Proactive communication and adaptive learning paths
+- Personalization based on learning style and progress
+
+## Mandatory Tech Stack
+
+### Frontend (Strict Requirements)
+- **Framework**: Next.js 14/15 with App Router (NOT Pages Router)
+- **Language**: TypeScript (strict mode enabled)
+- **Styling**: Tailwind CSS + shadcn/ui components
+- **PDF Rendering**: react-pdf library
+- **Calendar**: react-big-calendar for calendar views
+- **Panels**: react-resizable-panels for split-screen layouts
+- **Forms**: React Hook Form for form handling
+- **State**: React Context API or Zustand (avoid Redux unless necessary)
+
+### Backend (Strict Requirements)
+- **Framework**: FastAPI (Python 3.11+)
+- **AI Orchestration**: LangGraph for agent state machines
+- **AI Framework**: LangChain for LLM integration and tools
+- **LLM Provider**: OpenAI or Google Gemini (configurable via env)
+- **PDF Processing**: pdf2image for converting PDF pages to images
+- **Image Processing**: Pillow (PIL) for image manipulation
+- **Multimodal Analysis**: OpenAI GPT-4o Vision API for structured content extraction
+- **API Server**: LangServe for serving LangGraph agents
+- **Async**: Use async/await throughout, not threading
+
+### Database & Infrastructure (Strict Requirements)
+- **Database**: Supabase (PostgreSQL) - NO other databases
+- **File Storage**: Supabase Storage (NOT S3 or other)
+- **Structured Data**: JSONB columns for storing multimodal analysis results
+- **Authentication**: Supabase Auth (NOT custom auth)
+- **Real-time**: Supabase Realtime subscriptions when needed
+
+### Deployment
+- **Frontend**: Vercel (preferred) or similar Next.js-optimized platform
+- **Backend**: Railway or Render for Python FastAPI
+- **Database**: Supabase Cloud (managed)
+
+## Code Standards
+
+### TypeScript (Frontend)
+- **Strict Mode**: Always enabled (`strict: true` in tsconfig.json)
+- **Type Safety**: No `any` types - use `unknown` if type is truly unknown
+- **Interfaces**: Prefer `interface` over `type` for object shapes
+- **Naming**: 
+  - Components: PascalCase (`StudyReader.tsx`)
+  - Hooks: camelCase with `use` prefix (`useStudySession.ts`)
+  - Utilities: camelCase (`formatDate.ts`)
+  - Constants: UPPER_SNAKE_CASE (`API_BASE_URL`)
+
+### Python (Backend)
+- **Type Hints**: REQUIRED for all function parameters and return types
+- **Python Version**: 3.11 or higher (use modern features)
+- **Formatting**: Black (line length 88) or Ruff
+- **Linting**: Ruff for linting, mypy for type checking
+- **Naming**:
+  - Functions/variables: snake_case (`process_pdf`)
+  - Classes: PascalCase (`SupervisorAgent`)
+  - Constants: UPPER_SNAKE_CASE (`MAX_RETRIES`)
+- **Async**: Use `async def` and `await` for I/O operations
+- **Error Handling**: Use specific exceptions, not bare `except:`
+
+### File Organization
+
+```
+/frontend (or /app for Next.js root)
+  /app                    # Next.js App Router pages
+    /(auth)              # Auth routes
+    /(dashboard)         # Protected routes
+  /components            # React components
+    /ui                  # shadcn/ui components
+    /features            # Feature-specific components
+  /lib                   # Utilities, helpers
+  /types                 # TypeScript type definitions
+  /hooks                 # Custom React hooks
+
+/backend (or /api)
+  /app
+    /api/routes          # FastAPI route handlers
+    /agents              # LangGraph agents
+      /supervisor
+      /tutor
+      /flashcard
+    /services            # Business logic services
+    /tools               # LangChain tools
+    /models              # Database models (SQLAlchemy)
+    /schemas             # Pydantic schemas
+    /utils               # Utilities
+  main.py               # FastAPI app entry point
+```
+
+## Agent Development Guidelines
+
+### LangGraph Patterns
+
+**State Definition**:
+- Always use TypedDict for state (not plain dict)
+- Include type hints for all state fields
+- Example:
+```python
+from typing import TypedDict
+
+class AgentState(TypedDict):
+    user_id: str
+    conversation_id: str
+    messages: list[dict]
+    current_page: int
+```
+
+**Node Functions**:
+- Nodes must be async functions
+- Accept state as parameter, return updated state
+- Use type hints
+- Example:
+```python
+async def tutor_node(state: AgentState) -> AgentState:
+    # Process state
+    state["messages"].append(new_message)
+    return state
+```
+
+**Tool Definitions**:
+- Use LangChain `@tool` decorator
+- Include docstrings (used as tool description)
+- Type hints required
+- Example:
+```python
+from langchain.tools import tool
+
+@tool
+def calculator(expression: str) -> float:
+    """Evaluates a mathematical expression and returns the result."""
+    # Implementation
+```
+
+**Streaming Responses**:
+- Use LangServe streaming endpoints
+- Frontend should use Server-Sent Events (SSE) or WebSocket
+- Never block on LLM responses
+
+### Agent Architecture Rules
+
+1. **Supervisor Agent**: Runs in background, monitors progress, adjusts plans
+2. **Tutor Agent**: Handles study sessions, answers questions, checks comprehension
+3. **Flashcard Agent**: Generates flashcards from page content and conversation
+4. **State Management**: Each agent has its own state schema
+5. **Tool Routing**: Agents decide which tools to use (don't hardcode tool calls)
+
+## Database Guidelines
+
+### Supabase Client Usage
+
+**Frontend**:
+- Use `@supabase/supabase-js` client
+- Create client in `/lib/supabase.ts`
+- Use Row Level Security (RLS) policies
+- Never expose service role key to frontend
+
+**Backend**:
+- Use Supabase Python client (`supabase-py`)
+- Use service role key for admin operations (server-side only)
+- Always use environment variables for credentials
+
+### Database Operations
+
+- **Queries**: Use Supabase query builder, not raw SQL
+- **Migrations**: Use Supabase CLI migrations (not manual SQL)
+- **JSONB Queries**: Use JSONB operators for querying structured analysis data
+- **Transactions**: Use Supabase transactions for multi-step operations
+
+### Schema Changes
+
+- Always create migrations (don't modify tables directly)
+- Test migrations on local Supabase instance first
+- Include rollback scripts if possible
+
+## API Design Patterns
+
+### FastAPI Endpoints
+
+- Use Pydantic models for request/response validation
+- Use dependency injection for database clients
+- Include proper HTTP status codes
+- Document endpoints with OpenAPI/Swagger
+
+**Example**:
+```python
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+
+router = APIRouter(prefix="/api/courses")
+
+class CourseCreate(BaseModel):
+    name: str
+    exam_date: date | None = None
+
+@router.post("", status_code=201)
+async def create_course(
+    course: CourseCreate,
+    db: SupabaseClient = Depends(get_db)
+) -> CourseResponse:
+    # Implementation
+```
+
+### Error Handling
+
+- Use FastAPI HTTPException for API errors
+- Return consistent error format: `{"error": "message", "code": "ERROR_CODE"}`
+- Log errors server-side, don't expose internals to client
+- Use try/except with specific exceptions
+
+## Frontend Patterns
+
+### Next.js App Router
+
+- Use Server Components by default
+- Use Client Components (`"use client"`) only when needed (interactivity, hooks)
+- Use Server Actions for mutations (not API routes when possible)
+- Use `next/navigation` for routing (not `next/router`)
+
+### Component Structure
+
+- One component per file
+- Export default for page components
+- Named exports for reusable components
+- Co-locate related components in feature folders
+
+### State Management
+
+- Use React Context for global state (auth, user preferences)
+- Use local state (`useState`) for component-specific state
+- Use `useEffect` sparingly (prefer Server Components or Server Actions)
+- Consider Zustand for complex global state (optional)
+
+### Data Fetching
+
+- Use Server Components for initial data fetching
+- Use `fetch` with Next.js caching (`cache: "force-cache"`)
+- Use React Query/SWR only for client-side data that changes frequently
+- Handle loading and error states
+
+## Testing Requirements
+
+### Unit Tests
+- **Python**: pytest for all agent logic and services
+- **TypeScript**: Jest + React Testing Library for components
+- Target: 70%+ code coverage for critical paths
+
+### Integration Tests
+- Test API endpoints with test database
+- Test Supabase operations (use test instance)
+- Test LangGraph agent flows
+
+### E2E Tests
+- Use Playwright or Cypress
+- Test critical user journeys:
+  - Onboarding → Upload → Study → Completion
+  - Calendar sync flow
+  - Chat interaction
+
+## Documentation Requirements
+
+### Code Comments
+- Document complex algorithms and business logic
+- Use docstrings for all public functions/classes
+- Explain "why" not "what" (code should be self-explanatory)
+
+### File Documentation
+- **REQUIRED**: Update `FILE_DOCUMENTATION.md` when adding new files
+- Include: file purpose, key functions/classes, dependencies
+
+### API Documentation
+- FastAPI auto-generates OpenAPI docs (ensure endpoints are documented)
+- Include request/response examples in docstrings
+
+## Git Workflow
+
+### Branch Naming
+- `feature/description` - New features
+- `fix/description` - Bug fixes
+- `refactor/description` - Code refactoring
+- `docs/description` - Documentation updates
+
+### Commit Messages
+- Format: `type: brief description`
+- Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`
+- Example: `feat: add PDF viewer component with page navigation`
+
+### Pull Requests
+- Include description of changes
+- Reference related issues
+- Ensure tests pass
+- Request review from at least one team member
+
+## Environment Variables
+
+### Required Variables
+
+**Frontend (.env.local)**:
+```
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_API_URL=
+```
+
+**Backend (.env)**:
+```
+OPENAI_API_KEY=
+SUPABASE_URL=
+SUPABASE_SERVICE_KEY=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+DATABASE_URL=
+```
+
+- Never commit `.env` files
+- Use `.env.example` as template
+- Document all required variables
+
+## Performance Guidelines
+
+### Frontend
+- Use Next.js Image component for images
+- Lazy load heavy components
+- Optimize bundle size (check with `next build --analyze`)
+- Use React.memo for expensive components
+
+### Backend
+- Use async/await for I/O operations
+- Cache expensive computations (Redis optional)
+- Use connection pooling for database
+- Stream large responses (don't load all into memory)
+
+### Database
+- Add indexes for frequently queried columns (especially `page_analyses.course_material_id, page_number`)
+- Use pagination for large result sets
+- Optimize JSONB queries for structured data retrieval
+
+## Security Guidelines
+
+- Never expose API keys or secrets in client code
+- Use Supabase RLS policies for data access control
+- Validate all user inputs (Pydantic models, TypeScript types)
+- Sanitize file uploads (check file type, size limits)
+- Use HTTPS in production
+- Encrypt sensitive data (Google Calendar tokens)
+
+## Common Patterns to Follow
+
+### PDF Processing (Multimodal Ingestion)
+```python
+# Convert PDF pages to images using pdf2image
+# Send each page image to multimodal LLM (GPT-4o)
+# Store structured JSON analysis per page in page_analyses table
+# Track page numbers and link to course_material_id
+# Handle errors and retries for failed pages
+```
+
+### Agent Communication
+```python
+# Use streaming for chat responses
+# Update state atomically
+# Handle errors gracefully (don't crash agent)
+```
+
+### Calendar Sync
+```python
+# Refresh tokens before expiry
+# Handle API rate limits
+# Sync in background (cron job)
+```
+
+### Multimodal PDF Ingestion Workflow
+```python
+# 1. Convert PDF to images (pdf2image)
+from pdf2image import convert_from_path
+images = convert_from_path(pdf_path, dpi=300, fmt='jpg')
+
+# 2. For each page image, call multimodal LLM
+from openai import OpenAI
+client = OpenAI()
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Analyze this lecture slide. Return JSON with: summary, key_terms (array), exam_questions (array), diagram_descriptions"},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+        ]
+    }],
+    response_format={"type": "json_object"}
+)
+
+# 3. Parse and validate JSON response
+import json
+analysis_data = json.loads(response.choices[0].message.content)
+
+# 4. Store in page_analyses table
+# Link to course_material_id and page_number
+# Handle errors with retry logic
+```
+
+## Anti-Patterns (DO NOT)
+
+- ❌ Don't use Pages Router in Next.js (use App Router)
+- ❌ Don't use raw SQL queries (use Supabase client)
+- ❌ Don't block on LLM calls (use streaming)
+- ❌ Don't store secrets in code (use env variables)
+- ❌ Don't use `any` type in TypeScript
+- ❌ Don't create agents without LangGraph (use state machines)
+- ❌ Don't hardcode API keys or URLs
+- ❌ Don't skip error handling
+- ❌ Don't commit `.env` files or secrets
+- ❌ Don't use RAG/vector embeddings (use direct structured JSON storage)
+- ❌ Don't extract text from PDFs (convert to images and use multimodal LLM)
+
+## When in Doubt
+
+1. Check `PROJECT_PLAN.md` for architecture decisions
+2. Follow existing code patterns in the project
+3. Ask team members for clarification
+4. Prefer type safety and explicit over implicit
+5. Write tests for new features
+6. Update documentation when adding features
+
+---
+
+**Last Updated**: 2024
+**Version**: 1.0
