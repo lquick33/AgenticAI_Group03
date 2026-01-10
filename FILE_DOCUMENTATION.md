@@ -210,3 +210,37 @@ frontend/
 **Dependencies**: Follows Next.js 14/15 App Router conventions (NOT Pages Router)
 
 ---
+
+## Documentation Files
+
+### `AGENT_DEVELOPMENT_RULES.md`
+
+**Purpose**: Comprehensive rulebook and guidelines document for developing AI agents in the Lernkompanien project, based on the Agentic AI course requirements from `old_repo`.
+
+**Key Components**:
+- **Architecture Overview**: BaseAgent pattern, State schema definition, Graph building patterns
+- **Agent Development**: Step-by-step guide for creating new agents, graph structure definition, node function implementation, conditional edges and routing
+- **State Management**: MessagesState usage, custom state fields, state reducers
+- **Tool Development**: BaseTool pattern, LangChain tool conversion, async tool support, tool registry pattern
+- **Memory & Persistence**: Checkpointing setup, thread management, long-term memory (Store), conversation history
+- **Async & Streaming**: Async node functions, streaming responses, error handling in async context
+- **Best Practices**: System message handling, error handling, logging & debugging, testing patterns
+- **Code Examples**: Complete examples for SimpleAgent, ToolAgent, AsyncToolAgent, and DynamicPromptAgent patterns
+
+**Key Rules Documented**:
+- ✅ MUSS-Regeln (Mandatory): All agents must inherit from BaseAgent, State must extend MessagesState, Type hints required, etc.
+- 💡 SOLLTE-Regeln (Best Practices): Use async for I/O, streaming for long responses, error handling, etc.
+- ❌ NICHT-Regeln (Anti-Patterns): Don't use plain dict for state, don't throw exceptions in nodes, etc.
+
+**Dependencies**: Based on patterns from `old_repo/agentic_ai/agents/` and `old_repo/agentic_ai/tools/`
+
+**Usage**: 
+- Reference for all team members when developing agents
+- Integrated into `.cursorrules` for Cursor AI assistance
+- Should be consulted before creating new agents or tools
+
+**Related Files**: 
+- `.cursorrules` - References this document in Agent Development Guidelines section
+- `old_repo/agentic_ai/` - Source of patterns and examples
+
+---

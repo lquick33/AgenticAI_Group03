@@ -100,6 +100,8 @@ This is the **Lernkompanien** (Adaptive Learning Assistant) project - an AI-powe
 
 ## Agent Development Guidelines
 
+**IMPORTANT**: For comprehensive agent development rules, patterns, and best practices, see `AGENT_DEVELOPMENT_RULES.md`. This document contains detailed guidelines based on the Agentic AI course requirements.
+
 ### LangGraph Patterns
 
 **State Definition**:
@@ -426,12 +428,13 @@ analysis_data = json.loads(response.choices[0].message.content)
 
 ## When in Doubt
 
-1. Check `PROJECT_PLAN.md` for architecture decisions
-2. Follow existing code patterns in the project
-3. Ask team members for clarification
-4. Prefer type safety and explicit over implicit
-5. Write tests for new features
-6. Update documentation when adding features
+1. Check `AGENT_DEVELOPMENT_RULES.md` for agent development patterns and best practices
+2. Check `PROJECT_PLAN.md` for architecture decisions
+3. Follow existing code patterns in the project
+4. Ask team members for clarification
+5. Prefer type safety and explicit over implicit
+6. Write tests for new features
+7. Update documentation when adding features
 
 ---
 
