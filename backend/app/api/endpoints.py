@@ -9,17 +9,18 @@ import logging
 import traceback
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path
 from pdf2image import convert_from_bytes
 from PIL import Image
 
-from app.models.schemas import UploadResponse, ErrorResponse
+from app.models.schemas import UploadResponse, ErrorResponse, CourseResponse, CourseUpdateRequest
 from app.services.pdf_processor import process_pdf_background
 from app.services.storage import (
     upload_pdf_to_storage,
     create_course_material,
     validate_user_exists,
-    get_course
+    get_course,
+    get_supabase_client
 )
 
 logger = logging.getLogger(__name__)
@@ -241,4 +242,114 @@ async def upload_pdf(
         raise HTTPException(
             status_code=500,
             detail=f"Unexpected error during PDF processing: {str(e)}"
+        )
+
+
+@router.get("/courses/{course_id}", response_model=CourseResponse, status_code=200)
+async def get_course_endpoint(
+    course_id: str = Path(..., description="Course ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> CourseResponse:
+    """
+    Get course details by ID.
+    
+    Validates that the course exists and belongs to the user.
+    
+    Args:
+        course_id: Course ID (UUID)
+        user_id: User ID (UUID) - required for authorization
+        
+    Returns:
+        CourseResponse with course data
+        
+    Raises:
+        HTTPException: If course not found or access denied
+    """
+    try:
+        course_data = get_course(user_id=user_id, course_id=course_id)
+        return CourseResponse(**course_data)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error fetching course: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch course: {str(e)}"
+        )
+
+
+@router.put("/courses/{course_id}", response_model=CourseResponse, status_code=200)
+async def update_course_endpoint(
+    course_id: str = Path(..., description="Course ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)"),
+    course_update: CourseUpdateRequest = ...
+) -> CourseResponse:
+    """
+    Update course data.
+    
+    Validates that the course exists and belongs to the user.
+    Only provided fields will be updated.
+    
+    Args:
+        course_id: Course ID (UUID)
+        user_id: User ID (UUID) - required for authorization
+        course_update: CourseUpdateRequest with fields to update
+        
+    Returns:
+        CourseResponse with updated course data
+        
+    Raises:
+        HTTPException: If course not found or access denied
+    """
+    # First validate course exists and belongs to user
+    try:
+        get_course(user_id=user_id, course_id=course_id)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=str(e)
+        )
+    
+    # Build update dict (only include non-None fields)
+    update_data = {}
+    if course_update.title is not None:
+        update_data["title"] = course_update.title
+    if course_update.description is not None:
+        update_data["description"] = course_update.description
+    if course_update.exam_date is not None:
+        # Handle empty string as null
+        update_data["exam_date"] = course_update.exam_date if course_update.exam_date else None
+    if course_update.color_code is not None:
+        update_data["color_code"] = course_update.color_code
+    
+    if not update_data:
+        raise HTTPException(
+            status_code=400,
+            detail="No fields provided for update"
+        )
+    
+    # Update course
+    client = get_supabase_client()
+    try:
+        response = client.table("courses").update(update_data).eq(
+            "id", course_id
+        ).eq("user_id", user_id).execute()
+        
+        if response.data and len(response.data) > 0:
+            return CourseResponse(**response.data[0])
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to update course"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating course: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update course: {str(e)}"
         )

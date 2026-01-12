@@ -64,3 +64,25 @@ class ErrorResponse(BaseModel):
     error: str
     code: str
     details: Optional[dict] = None
+
+
+class CourseResponse(BaseModel):
+    """Response model for course data."""
+    
+    id: str
+    user_id: str
+    title: str
+    description: Optional[str] = None
+    exam_date: Optional[str] = None  # ISO date string (YYYY-MM-DD)
+    color_code: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class CourseUpdateRequest(BaseModel):
+    """Request model for updating course data."""
+    
+    title: Optional[str] = None
+    description: Optional[str] = None
+    exam_date: Optional[str] = None  # ISO date string (YYYY-MM-DD) or null
+    color_code: Optional[str] = None

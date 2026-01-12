@@ -1211,6 +1211,59 @@ import { CourseMaterialsList } from '@/components/courses/course-materials-list'
 
 ---
 
+### `frontend/components/courses/exam-date-editor.tsx`
+
+**Purpose**: Client Component to view and update the exam date of a course with a calendar picker and Save action.
+
+**Key Components**:
+- Uses shadcn `Calendar` component (`components/ui/calendar`)
+- Save button triggers Supabase update of `courses.exam_date`
+- Displays errors and loading state, then refreshes page
+
+**Props**:
+- `courseId: string` - Target course
+- `initialDate?: string | null` - Pre-filled date from DB
+
+**Flow**:
+1. User selects date in calendar
+2. Clicks "Prüfungsdatum speichern"
+3. Supabase `update` on `courses` sets `exam_date` (ISO date)
+4. `router.refresh()` to show updated date
+
+**Dependencies**:
+- `@/lib/supabase/client` - Supabase client
+- `@/components/ui/calendar`, `@/components/ui/button`
+- `next/navigation` - router refresh
+
+**Usage**:
+```tsx
+<ExamDateEditor courseId={id} initialDate={course.exam_date} />
+```
+
+**Related Files**:
+- `frontend/app/(dashboard)/dashboard/courses/[id]/page.tsx` - Uses this component
+- `frontend/components/ui/calendar.tsx` - Calendar UI
+
+---
+
+### `frontend/components/calendar-01.tsx`
+
+**Purpose**: Example calendar block (shadcn `calendar-01`) showing a single-date selector with default date.
+
+**Key Components**:
+- Wraps `Calendar` from `components/ui/calendar`
+- Manages local state for selected date
+
+**Usage**:
+```tsx
+import Calendar01 from '@/components/calendar-01'
+<Calendar01 />
+```
+
+**Note**: Primarily a reference/demo; production use is via `ExamDateEditor`.
+
+---
+
 ### `frontend/app/(dashboard)/dashboard/courses/page.tsx`
 
 **Purpose**: Server Component page displaying the courses overview with table and create course dialog.

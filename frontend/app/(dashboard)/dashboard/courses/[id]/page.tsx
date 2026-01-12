@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { DashboardSidebar } from '@/components/dashboard/sidebar'
 import { UploadSection } from '@/components/courses/upload-section'
 import { CourseMaterialsList } from '@/components/courses/course-materials-list'
+import { ExamDateEditor } from '@/components/courses/exam-date-editor'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -110,7 +111,7 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
           <div className="@container/main flex flex-1 flex-col gap-2">
             <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
               {/* Course Info Card */}
-              <div className="px-4 lg:px-6">
+              <div className="px-4 lg:px-6 grid gap-4">
                 <Card>
                   <CardHeader>
                     <CardTitle>{course.title}</CardTitle>
@@ -141,6 +142,7 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
                     )}
                   </CardContent>
                 </Card>
+                <ExamDateEditor courseId={id} userId={user.id} initialDate={course.exam_date} />
               </div>
 
               {/* Upload Section */}
