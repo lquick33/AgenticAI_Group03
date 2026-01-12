@@ -86,3 +86,37 @@ class CourseUpdateRequest(BaseModel):
     description: Optional[str] = None
     exam_date: Optional[str] = None  # ISO date string (YYYY-MM-DD) or null
     color_code: Optional[str] = None
+
+
+class ChatInitiateRequest(BaseModel):
+    """Request model for initiating a chat session."""
+    
+    material_id: str = Field(..., description="Course material ID (UUID)")
+    page_number: int = Field(..., description="Current page number (1-indexed)")
+    user_id: str = Field(..., description="User ID (UUID)")
+
+
+class ChatMessageRequest(BaseModel):
+    """Request model for sending a chat message."""
+    
+    material_id: str = Field(..., description="Course material ID (UUID)")
+    message: str = Field(..., description="User message content")
+    user_id: str = Field(..., description="User ID (UUID)")
+
+
+class PageAnalysisQuery(BaseModel):
+    """Query model for retrieving page analysis."""
+    
+    course_material_id: str = Field(..., description="Course material ID (UUID)")
+    page_number: int = Field(..., description="Page number (1-indexed)")
+    user_id: str = Field(..., description="User ID (UUID)")
+
+
+class PageAnalysisDataResponse(BaseModel):
+    """Response model for page analysis data."""
+    
+    summary: str
+    key_terms: list[str]
+    exam_questions: list[str]
+    diagram_description: Optional[str] = None
+    raw_analysis: Optional[dict] = None

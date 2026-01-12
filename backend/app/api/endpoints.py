@@ -5,22 +5,39 @@ FastAPI route handlers for PDF upload and processing.
 """
 
 import io
+import json
 import logging
 import traceback
-from typing import Optional
+from typing import Optional, AsyncGenerator
+from langchain_core.messages import SystemMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path
+from app.agents.tutor import TutorAgent
+from app.services.analyzer import get_gemini_model
+
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body
+from fastapi.responses import StreamingResponse
 from pdf2image import convert_from_bytes
 from PIL import Image
 
-from app.models.schemas import UploadResponse, ErrorResponse, CourseResponse, CourseUpdateRequest
+from app.models.schemas import (
+    UploadResponse,
+    ErrorResponse,
+    CourseResponse,
+    CourseUpdateRequest,
+    PageAnalysisQuery,
+    PageAnalysisDataResponse,
+    ChatInitiateRequest,
+    ChatMessageRequest
+)
 from app.services.pdf_processor import process_pdf_background
 from app.services.storage import (
     upload_pdf_to_storage,
     create_course_material,
     validate_user_exists,
     get_course,
-    get_supabase_client
+    get_supabase_client,
+    get_page_analysis
 )
 
 logger = logging.getLogger(__name__)
@@ -477,4 +494,339 @@ async def update_course_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to update course: {str(e)}"
+        )
+
+
+@router.get("/page-analysis", response_model=PageAnalysisDataResponse, status_code=200)
+async def get_page_analysis_endpoint(
+    course_material_id: str = Query(..., description="Course material ID (UUID)"),
+    page_number: int = Query(..., description="Page number (1-indexed)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> PageAnalysisDataResponse:
+    """
+    Get page analysis data for a specific page.
+    
+    Retrieves structured analysis data (summary, key terms, exam questions, diagram descriptions)
+    from the page_analyses table for the specified course material and page number.
+    
+    Args:
+        course_material_id: Course material ID (UUID)
+        page_number: Page number (1-indexed)
+        user_id: User ID (UUID) - required for authorization
+        
+    Returns:
+        PageAnalysisDataResponse with analysis data
+        
+    Raises:
+        HTTPException: If page analysis not found, access denied, or query fails
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Get page analysis using service function
+        analysis_data = get_page_analysis(
+            course_material_id=course_material_id,
+            page_number=page_number,
+            user_id=user_id
+        )
+        
+        return PageAnalysisDataResponse(**analysis_data)
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching page analysis: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch page analysis: {str(e)}"
+        )
+
+
+# Global checkpointer for agent persistence
+_checkpointer = MemorySaver()
+
+
+async def _stream_agent_response(
+    agent: TutorAgent,
+    message: str,
+    thread_id: str,
+    user_id: str
+) -> AsyncGenerator[str, None]:
+    """
+    Stream agent response as SSE events.
+    
+    Args:
+        agent: TutorAgent instance
+        message: User message
+        thread_id: Thread ID for conversation persistence
+        user_id: User ID
+        
+    Yields:
+        SSE-formatted chunks
+    """
+    try:
+        # Stream agent response
+        async for chunk in agent.graph.astream(
+            {"messages": [HumanMessage(content=message)]},
+            config={"configurable": {"thread_id": thread_id, "user_id": user_id}}
+        ):
+            # Format as SSE
+            chunk_data = {}
+            for node_name, node_data in chunk.items():
+                if "messages" in node_data:
+                    # Convert messages to serializable format
+                    messages = []
+                    for msg in node_data["messages"]:
+                        if hasattr(msg, "content"):
+                            messages.append({
+                                "role": "assistant" if hasattr(msg, "tool_calls") else "assistant",
+                                "content": msg.content
+                            })
+                    chunk_data[node_name] = {"messages": messages}
+            
+            yield f"data: {json.dumps(chunk_data)}\n\n"
+        
+        # Send end marker
+        yield "data: [DONE]\n\n"
+        
+    except Exception as e:
+        logger.error(f"Error streaming agent response: {str(e)}", exc_info=True)
+        error_data = {"error": str(e)}
+        yield f"data: {json.dumps(error_data)}\n\n"
+
+
+@router.post("/chat/initiate")
+async def initiate_chat(
+    request: ChatInitiateRequest = Body(...)
+) -> StreamingResponse:
+    """
+    Initiate a chat session for a study session.
+    
+    When a user navigates to a new page, this endpoint:
+    1. Creates or retrieves the tutor agent
+    2. Injects a system message about the page change
+    3. Retrieves page analysis data
+    4. Streams the agent's greeting and explanation
+    
+    Args:
+        request: ChatInitiateRequest with material_id, page_number, user_id
+        
+    Returns:
+        StreamingResponse with SSE events
+    """
+    try:
+        # Validate user
+        if not validate_user_exists(request.user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Get course material to find course_material_id
+        client = get_supabase_client()
+        material_response = client.table("course_materials").select(
+            "id, course_id"
+        ).eq("id", request.material_id).eq("user_id", request.user_id).single().execute()
+        
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied"
+            )
+        
+        course_material_id = material_response.data["id"]
+        
+        # Get page analysis data for system message
+        try:
+            page_analysis = get_page_analysis(
+                course_material_id=course_material_id,
+                page_number=request.page_number,
+                user_id=request.user_id
+            )
+            summary = page_analysis.get("summary", "No summary available")
+        except ValueError:
+            # Page analysis not found, use default
+            summary = "Content is being analyzed"
+        
+        # Initialize LLM and agent
+        llm = get_gemini_model()
+        agent = TutorAgent(
+            llm=llm,
+            checkpointer=_checkpointer
+        )
+        
+        # Thread ID: material_id for continuous conversation
+        thread_id = request.material_id
+        
+        # Create system message for page change
+        system_message = (
+            f"SYSTEM EVENT: User navigated to Page {request.page_number}. "
+            f"Summary of Page {request.page_number}: {summary}. "
+            f"Please greet the user and explain the content of the slide."
+        )
+        
+        # Create initial message
+        initial_message = f"Please help me understand this slide (Page {request.page_number})."
+        
+        # Stream response
+        async def event_generator() -> AsyncGenerator[str, None]:
+            # First, inject system message and initial message
+            config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+            
+            # Check if thread exists
+            snapshot = agent.graph.get_state(config)
+            is_new_thread = snapshot is None or not snapshot.values or not snapshot.values.get("messages")
+            
+            if is_new_thread:
+                # New thread: add system message and page change message
+                initial_state = {
+                    "messages": [
+                        SystemMessage(content=system_message),
+                        HumanMessage(content=initial_message)
+                    ]
+                }
+            else:
+                # Existing thread: add page change message
+                initial_state = {
+                    "messages": [
+                        SystemMessage(content=system_message),
+                        HumanMessage(content=initial_message)
+                    ]
+                }
+            
+            # Stream agent response
+            async for chunk in agent.graph.astream(initial_state, config):
+                chunk_data = {}
+                for node_name, node_data in chunk.items():
+                    if "messages" in node_data:
+                        messages = []
+                        for msg in node_data["messages"]:
+                            if hasattr(msg, "content"):
+                                role = "assistant"
+                                if isinstance(msg, SystemMessage):
+                                    role = "system"
+                                elif isinstance(msg, HumanMessage):
+                                    role = "user"
+                                
+                                messages.append({
+                                    "role": role,
+                                    "content": msg.content
+                                })
+                        chunk_data[node_name] = {"messages": messages}
+                
+                yield f"data: {json.dumps(chunk_data)}\n\n"
+            
+            yield "data: [DONE]\n\n"
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error initiating chat: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to initiate chat: {str(e)}"
+        )
+
+
+@router.post("/chat/message")
+async def send_chat_message(
+    request: ChatMessageRequest = Body(...)
+) -> StreamingResponse:
+    """
+    Send a message in an existing chat session.
+    
+    Args:
+        request: ChatMessageRequest with material_id, message, user_id
+        
+    Returns:
+        StreamingResponse with SSE events
+    """
+    try:
+        # Validate user
+        if not validate_user_exists(request.user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Initialize LLM and agent
+        llm = get_gemini_model()
+        agent = TutorAgent(
+            llm=llm,
+            checkpointer=_checkpointer
+        )
+        
+        # Thread ID: material_id for continuous conversation
+        thread_id = request.material_id
+        
+        # Stream response
+        async def event_generator() -> AsyncGenerator[str, None]:
+            config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+            
+            # Add user message to existing thread
+            initial_state = {
+                "messages": [HumanMessage(content=request.message)]
+            }
+            
+            # Stream agent response
+            async for chunk in agent.graph.astream(initial_state, config):
+                chunk_data = {}
+                for node_name, node_data in chunk.items():
+                    if "messages" in node_data:
+                        messages = []
+                        for msg in node_data["messages"]:
+                            if hasattr(msg, "content"):
+                                role = "assistant"
+                                if isinstance(msg, SystemMessage):
+                                    role = "system"
+                                elif isinstance(msg, HumanMessage):
+                                    role = "user"
+                                
+                                messages.append({
+                                    "role": role,
+                                    "content": msg.content
+                                })
+                        chunk_data[node_name] = {"messages": messages}
+                
+                yield f"data: {json.dumps(chunk_data)}\n\n"
+            
+            yield "data: [DONE]\n\n"
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending chat message: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send message: {str(e)}"
         )
