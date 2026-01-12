@@ -687,46 +687,65 @@ async def initiate_chat(
             snapshot = agent.graph.get_state(config)
             is_new_thread = snapshot is None or not snapshot.values or not snapshot.values.get("messages")
             
+            # Update state with current page information (according to AGENT_DEVELOPMENT_RULES.md)
+            # The agent should always know which page we are currently viewing
             if is_new_thread:
                 # New thread: add system message and page change message
                 initial_state = {
                     "messages": [
                         SystemMessage(content=system_message),
                         HumanMessage(content=initial_message)
-                    ]
+                    ],
+                    "current_page": request.page_number,
+                    "material_id": request.material_id,
+                    "user_id": request.user_id
                 }
             else:
-                # Existing thread: add page change message
+                # Existing thread: add page change message and update state
                 initial_state = {
                     "messages": [
                         SystemMessage(content=system_message),
                         HumanMessage(content=initial_message)
-                    ]
+                    ],
+                    "current_page": request.page_number,
+                    "material_id": request.material_id,
+                    "user_id": request.user_id
                 }
             
             # Stream agent response
-            async for chunk in agent.graph.astream(initial_state, config):
-                chunk_data = {}
-                for node_name, node_data in chunk.items():
-                    if "messages" in node_data:
-                        messages = []
-                        for msg in node_data["messages"]:
-                            if hasattr(msg, "content"):
-                                role = "assistant"
-                                if isinstance(msg, SystemMessage):
-                                    role = "system"
-                                elif isinstance(msg, HumanMessage):
-                                    role = "user"
-                                
-                                messages.append({
-                                    "role": role,
-                                    "content": msg.content
-                                })
-                        chunk_data[node_name] = {"messages": messages}
+            logger.info(f"Starting agent stream for page {request.page_number}")
+            try:
+                async for chunk in agent.graph.astream(initial_state, config):
+                    chunk_data = {}
+                    for node_name, node_data in chunk.items():
+                        if "messages" in node_data:
+                            messages = []
+                            for msg in node_data["messages"]:
+                                if hasattr(msg, "content"):
+                                    role = "assistant"
+                                    if isinstance(msg, SystemMessage):
+                                        role = "system"
+                                    elif isinstance(msg, HumanMessage):
+                                        role = "user"
+                                    
+                                    messages.append({
+                                        "role": role,
+                                        "content": msg.content
+                                    })
+                            if messages:  # Only add if there are messages
+                                chunk_data[node_name] = {"messages": messages}
+                    
+                    if chunk_data:  # Only yield if there's data
+                        logger.debug(f"Yielding chunk: {chunk_data}")
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
                 
-                yield f"data: {json.dumps(chunk_data)}\n\n"
-            
-            yield "data: [DONE]\n\n"
+                logger.info(f"Agent stream completed for page {request.page_number}")
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                logger.error(f"Error in agent stream: {str(e)}", exc_info=True)
+                error_data = {"error": str(e)}
+                yield f"data: {json.dumps(error_data)}\n\n"
+                yield "data: [DONE]\n\n"
         
         return StreamingResponse(
             event_generator(),
@@ -783,10 +802,26 @@ async def send_chat_message(
         async def event_generator() -> AsyncGenerator[str, None]:
             config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
             
-            # Add user message to existing thread
+            # Get current state to preserve current_page, material_id, user_id
+            snapshot = agent.graph.get_state(config)
+            current_page = None
+            material_id = request.material_id
+            user_id = request.user_id
+            
+            if snapshot and snapshot.values:
+                # Preserve current_page from existing state if available
+                current_page = snapshot.values.get("current_page")
+            
+            # Add user message to existing thread and preserve state
             initial_state = {
-                "messages": [HumanMessage(content=request.message)]
+                "messages": [HumanMessage(content=request.message)],
+                "material_id": material_id,
+                "user_id": user_id
             }
+            
+            # Only add current_page if it exists in previous state
+            if current_page is not None:
+                initial_state["current_page"] = current_page
             
             # Stream agent response
             async for chunk in agent.graph.astream(initial_state, config):
