@@ -2,7 +2,7 @@
 
 import { useState, useRef } from 'react'
 import { Conversation, ConversationContent, ConversationEmptyState } from '@/components/ai/conversation'
-import { Message, MessageContent } from '@/components/ai/message'
+import { Message, MessageContent, MessageResponse } from '@/components/ai/message'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Send, Loader2 } from 'lucide-react'
@@ -48,7 +48,11 @@ export function ChatInterface({
                 from={message.role === 'user' ? 'user' : 'assistant'}
               >
                 <MessageContent>
-                  {message.content}
+                  {message.role === 'assistant' ? (
+                    <MessageResponse>{message.content}</MessageResponse>
+                  ) : (
+                    message.content
+                  )}
                 </MessageContent>
               </Message>
             ))

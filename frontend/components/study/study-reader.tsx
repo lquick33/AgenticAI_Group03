@@ -57,45 +57,92 @@ export function StudyReader({
         streamControllerRef.current = null
       }
 
+      // Clear messages for new page (but keep structure for streaming)
+      setMessages([])
+
       // Initiate chat for new page
       try {
+        console.log('[StudyReader] Initiating chat for page', newPage)
         const streamController = await initiateChat(
         materialId,
         newPage,
         userId,
         (chunk) => {
+          console.log('[StudyReader] Received chunk:', chunk)
           if (chunk.error) {
-            console.error('Chat error:', chunk.error)
+            console.error('[StudyReader] Chat error:', chunk.error)
             setIsLoading(false)
             setIsStreaming(false)
             return
           }
 
+          // Handle different chunk structures: chunk.messages or chunk.agent.messages or chunk[node_name].messages
+          let messages: Array<{ role: string; content: any }> = []
+          
           if (chunk.messages) {
-            chunk.messages.forEach((msg) => {
-              if (msg.role === 'assistant' && msg.content) {
+            // Direct messages array
+            messages = chunk.messages
+          } else {
+            // Look for messages in nested structure (e.g., chunk.agent.messages)
+            for (const key in chunk) {
+              if (chunk[key] && chunk[key].messages && Array.isArray(chunk[key].messages)) {
+                messages = chunk[key].messages
+                break
+              }
+            }
+          }
+
+          if (messages.length > 0) {
+            messages.forEach((msg) => {
+              // Handle content as string or array (LangChain format)
+              let contentText = ''
+              if (typeof msg.content === 'string') {
+                contentText = msg.content
+              } else if (Array.isArray(msg.content)) {
+                // Extract text from array format: [{"type": "text", "text": "..."}]
+                contentText = msg.content
+                  .map((item: any) => {
+                    if (typeof item === 'string') {
+                      return item
+                    } else if (item && typeof item === 'object') {
+                      return item.text || item.content || ''
+                    }
+                    return ''
+                  })
+                  .filter((text: string) => text)
+                  .join('')
+              } else if (msg.content && typeof msg.content === 'object') {
+                // Handle object format
+                contentText = msg.content.text || msg.content.content || JSON.stringify(msg.content)
+              }
+
+              console.log('[StudyReader] Processing message:', msg.role, contentText?.substring(0, 50))
+              if (msg.role === 'assistant' && contentText) {
                 // Update or add assistant message
                 setMessages((prev) => {
-                  const existingIndex = prev.findIndex(
-                    (m) => m.role === 'assistant' && !m.id.startsWith('temp-')
+                  // Find the last assistant message (should be the only one for new page)
+                  const lastAssistantIndex = prev.findLastIndex(
+                    (m) => m.role === 'assistant'
                   )
 
-                  if (existingIndex >= 0) {
+                  if (lastAssistantIndex >= 0) {
                     // Update existing message
                     const updated = [...prev]
-                    updated[existingIndex] = {
-                      ...updated[existingIndex],
-                      content: msg.content,
+                    updated[lastAssistantIndex] = {
+                      ...updated[lastAssistantIndex],
+                      content: contentText,
                     }
+                    console.log('[StudyReader] Updated message at index', lastAssistantIndex)
                     return updated
                   } else {
-                    // Add new message
+                    // Add new message if none exists
+                    console.log('[StudyReader] Adding new assistant message')
                     return [
                       ...prev,
                       {
                         id: generateMessageId(),
                         role: 'assistant',
-                        content: msg.content,
+                        content: contentText,
                         timestamp: new Date().toISOString(),
                       },
                     ]
@@ -106,11 +153,12 @@ export function StudyReader({
           }
         },
         (error) => {
-          console.error('Chat initiation error:', error)
+          console.error('[StudyReader] Chat initiation error:', error)
           setIsLoading(false)
           setIsStreaming(false)
         },
         () => {
+          console.log('[StudyReader] Chat stream completed')
           setIsLoading(false)
           setIsStreaming(false)
           if (streamControllerRef.current) {
@@ -158,9 +206,47 @@ export function StudyReader({
               return
             }
 
+            // Handle different chunk structures: chunk.messages or chunk.agent.messages or chunk[node_name].messages
+            let messages: Array<{ role: string; content: any }> = []
+            
             if (chunk.messages) {
-              chunk.messages.forEach((msg) => {
-                if (msg.role === 'assistant' && msg.content) {
+              // Direct messages array
+              messages = chunk.messages
+            } else {
+              // Look for messages in nested structure (e.g., chunk.agent.messages)
+              for (const key in chunk) {
+                if (chunk[key] && chunk[key].messages && Array.isArray(chunk[key].messages)) {
+                  messages = chunk[key].messages
+                  break
+                }
+              }
+            }
+
+            if (messages.length > 0) {
+              messages.forEach((msg) => {
+                // Handle content as string or array (LangChain format)
+                let contentText = ''
+                if (typeof msg.content === 'string') {
+                  contentText = msg.content
+                } else if (Array.isArray(msg.content)) {
+                  // Extract text from array format: [{"type": "text", "text": "..."}]
+                  contentText = msg.content
+                    .map((item: any) => {
+                      if (typeof item === 'string') {
+                        return item
+                      } else if (item && typeof item === 'object') {
+                        return item.text || item.content || ''
+                      }
+                      return ''
+                    })
+                    .filter((text: string) => text)
+                    .join('')
+                } else if (msg.content && typeof msg.content === 'object') {
+                  // Handle object format
+                  contentText = msg.content.text || msg.content.content || JSON.stringify(msg.content)
+                }
+
+                if (msg.role === 'assistant' && contentText) {
                   // Update or add assistant message
                   setMessages((prev) => {
                     const existingIndex = prev.findIndex(
@@ -172,7 +258,7 @@ export function StudyReader({
                       const updated = [...prev]
                       updated[existingIndex] = {
                         ...updated[existingIndex],
-                        content: msg.content,
+                        content: contentText,
                       }
                       return updated
                     } else {
@@ -182,7 +268,7 @@ export function StudyReader({
                         {
                           id: `temp-${generateMessageId()}`,
                           role: 'assistant',
-                          content: msg.content,
+                          content: contentText,
                           timestamp: new Date().toISOString(),
                         },
                       ]
