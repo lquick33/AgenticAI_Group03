@@ -54,16 +54,6 @@ export function DashboardSidebar({ user, ...props }: DashboardSidebarProps & Rea
       url: "/dashboard/courses",
       icon: BookOpen,
       isActive: pathname?.startsWith("/dashboard/courses"),
-      items: [
-        {
-          title: "Alle Kurse",
-          url: "/dashboard/courses",
-        },
-        {
-          title: "Neuer Kurs",
-          url: "/dashboard/courses/new",
-        },
-      ],
     },
     {
       title: "Quick Chat",
