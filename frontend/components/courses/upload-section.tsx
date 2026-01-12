@@ -3,20 +3,19 @@
 import { useState } from 'react'
 import { Upload, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 
 interface UploadSectionProps {
   courseId: string
+  userId: string
 }
 
-export function UploadSection({ courseId }: UploadSectionProps) {
+export function UploadSection({ courseId, userId }: UploadSectionProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
   const router = useRouter()
-  const supabase = createClient()
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -42,18 +41,10 @@ export function UploadSection({ courseId }: UploadSectionProps) {
     setSuccess(false)
 
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-
-      if (!user) {
-        throw new Error('User not authenticated')
-      }
-
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
       const formData = new FormData()
       formData.append('file', selectedFile)
-      formData.append('user_id', user.id)
+      formData.append('user_id', userId)
       formData.append('course_id', courseId)
 
       const response = await fetch(`${apiUrl}/api/upload`, {

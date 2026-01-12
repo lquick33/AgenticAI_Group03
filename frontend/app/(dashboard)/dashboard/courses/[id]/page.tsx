@@ -147,7 +147,7 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
 
               {/* Upload Section */}
               <div className="px-4 lg:px-6">
-                <UploadSection courseId={id} />
+                <UploadSection courseId={id} userId={user.id} />
               </div>
 
               {/* Materials List */}
