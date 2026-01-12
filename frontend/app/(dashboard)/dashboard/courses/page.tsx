@@ -99,7 +99,7 @@ export default async function CoursesPage() {
               />
               <h1 className="text-base font-medium">Kurse</h1>
             </div>
-            <CreateCourseDialog />
+            <CreateCourseDialog userId={user.id} />
           </div>
         </header>
         <div className="flex flex-1 flex-col">

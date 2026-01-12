@@ -18,7 +18,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { createClient } from '@/lib/supabase/client'
 
 const courseSchema = z.object({
   title: z.string().min(1, 'Titel ist erforderlich'),
@@ -28,12 +27,15 @@ const courseSchema = z.object({
 
 type CourseFormData = z.infer<typeof courseSchema>
 
-export function CreateCourseDialog() {
+interface CreateCourseDialogProps {
+  userId: string
+}
+
+export function CreateCourseDialog({ userId }: CreateCourseDialogProps) {
   const [open, setOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const router = useRouter()
-  const supabase = createClient()
 
   const {
     register,
@@ -49,28 +51,31 @@ export function CreateCourseDialog() {
     setError(null)
 
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      
+      const createResponse = await fetch(
+        `${apiUrl}/api/courses?user_id=${userId}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            title: data.title,
+            description: data.description || null,
+            exam_date: data.exam_date || null,
+          }),
+        }
+      )
 
-      if (!user) {
-        throw new Error('User not authenticated')
+      if (!createResponse.ok) {
+        const errorData = await createResponse.json().catch(() => ({
+          detail: 'Create failed',
+        }))
+        throw new Error(errorData.detail || `Create failed: ${createResponse.statusText}`)
       }
 
-      const { data: course, error: courseError } = await supabase
-        .from('courses')
-        .insert({
-          user_id: user.id,
-          title: data.title,
-          description: data.description || null,
-          exam_date: data.exam_date || null,
-        })
-        .select()
-        .single()
-
-      if (courseError) {
-        throw new Error(`Failed to create course: ${courseError.message}`)
-      }
+      const course = await createResponse.json()
 
       // Reset form and close dialog
       reset()
@@ -94,10 +99,10 @@ export function CreateCourseDialog() {
           Neuer Kurs
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[425px] bg-white text-foreground">
         <DialogHeader>
-          <DialogTitle>Neuen Kurs erstellen</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-foreground">Neuen Kurs erstellen</DialogTitle>
+          <DialogDescription className="text-muted-foreground">
             Erstelle einen neuen Kurs und beginne mit dem Hochladen von Vorlesungsmaterialien.
           </DialogDescription>
         </DialogHeader>

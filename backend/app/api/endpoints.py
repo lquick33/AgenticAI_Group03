@@ -245,6 +245,57 @@ async def upload_pdf(
         )
 
 
+@router.get("/courses", response_model=list[CourseResponse], status_code=200)
+async def list_courses_endpoint(
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> list[CourseResponse]:
+    """
+    List all courses for a user.
+    
+    Args:
+        user_id: User ID (UUID) - required for authorization
+        
+    Returns:
+        List of CourseResponse with all user's courses
+        
+    Raises:
+        HTTPException: If validation fails
+    """
+    # Validate user exists
+    try:
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error validating user: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to validate user: {str(e)}"
+        )
+    
+    # Fetch courses
+    client = get_supabase_client()
+    try:
+        response = client.table("courses").select("*").eq(
+            "user_id", user_id
+        ).order("updated_at", desc=False).execute()
+        
+        if response.data:
+            return [CourseResponse(**course) for course in response.data]
+        else:
+            return []
+    except Exception as e:
+        logger.error(f"Error fetching courses: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch courses: {str(e)}"
+        )
+
+
 @router.get("/courses/{course_id}", response_model=CourseResponse, status_code=200)
 async def get_course_endpoint(
     course_id: str = Path(..., description="Course ID (UUID)"),
@@ -278,6 +329,80 @@ async def get_course_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch course: {str(e)}"
+        )
+
+
+@router.post("/courses", response_model=CourseResponse, status_code=201)
+async def create_course_endpoint(
+    user_id: str = Query(..., description="User ID (UUID)"),
+    course_data: CourseUpdateRequest = ...
+) -> CourseResponse:
+    """
+    Create a new course.
+    
+    Args:
+        user_id: User ID (UUID) - required for authorization
+        course_data: CourseUpdateRequest with course data
+        
+    Returns:
+        CourseResponse with created course data
+        
+    Raises:
+        HTTPException: If validation fails
+    """
+    # Validate user exists
+    try:
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error validating user: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to validate user: {str(e)}"
+        )
+    
+    # Build insert data
+    insert_data = {
+        "user_id": user_id,
+    }
+    if course_data.title:
+        insert_data["title"] = course_data.title
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Title is required"
+        )
+    if course_data.description is not None:
+        insert_data["description"] = course_data.description
+    if course_data.exam_date is not None:
+        insert_data["exam_date"] = course_data.exam_date if course_data.exam_date else None
+    if course_data.color_code is not None:
+        insert_data["color_code"] = course_data.color_code
+    
+    # Create course
+    client = get_supabase_client()
+    try:
+        response = client.table("courses").insert(insert_data).execute()
+        
+        if response.data and len(response.data) > 0:
+            return CourseResponse(**response.data[0])
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create course"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating course: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create course: {str(e)}"
         )
 
 
