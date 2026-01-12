@@ -24,19 +24,29 @@ export interface Course {
   title: string
   description?: string | null
   exam_date?: string | null
+  color_code?: string | null
   created_at: string
   updated_at: string
+}
+
+export interface CourseWithStats extends Course {
+  material_count: number
+  analyzed_pages: number
+  total_pages: number
+  last_updated: string | null
 }
 
 export interface CourseMaterial {
   id: string
   course_id: string
+  user_id: string
   file_name: string
   file_path: string
   file_type: 'pdf' | 'pptx' | 'md' | 'txt'
   page_count: number
-  uploaded_at: string
-  status: 'pending' | 'processing' | 'completed' | 'failed'
+  processing_status: 'uploading' | 'processing' | 'completed' | 'error'
+  error_message?: string | null
+  created_at: string
 }
 
 export interface PageAnalysis {
@@ -57,14 +67,16 @@ export interface PageAnalysis {
 export interface LearningUnit {
   id: string
   course_id: string
-  topic_name: string
-  planned_date: string
-  planned_time: string
-  actual_date?: string | null
-  actual_time?: string | null
+  course_material_id?: string | null
+  user_id: string
+  title: string
+  description?: string | null
+  start_time: string
+  end_time: string
+  duration_minutes?: number
   status: 'planned' | 'completed' | 'skipped' | 'rescheduled'
+  google_calendar_event_id?: string | null
   comprehension_score?: number | null
-  notes?: string | null
   created_at: string
   updated_at: string
 }

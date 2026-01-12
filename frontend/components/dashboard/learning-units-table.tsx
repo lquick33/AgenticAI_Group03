@@ -33,10 +33,11 @@ const dummyLearningUnits: Array<LearningUnit & { course_name: string; progress: 
   {
     id: "1",
     course_id: "course-1",
-    topic_name: "Einführung in Machine Learning",
+    user_id: "user-1",
+    title: "Einführung in Machine Learning",
     course_name: "KI Grundlagen",
-    planned_date: new Date().toISOString(),
-    planned_time: "14:00",
+    start_time: new Date().toISOString(),
+    end_time: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // 2 hours later
     status: "completed",
     comprehension_score: 85,
     progress: 100,
@@ -46,10 +47,11 @@ const dummyLearningUnits: Array<LearningUnit & { course_name: string; progress: 
   {
     id: "2",
     course_id: "course-1",
-    topic_name: "Neuronale Netze und Deep Learning",
+    user_id: "user-1",
+    title: "Neuronale Netze und Deep Learning",
     course_name: "KI Grundlagen",
-    planned_date: new Date(Date.now() + 86400000).toISOString(),
-    planned_time: "10:00",
+    start_time: new Date(Date.now() + 86400000).toISOString(),
+    end_time: new Date(Date.now() + 86400000 + 2 * 60 * 60 * 1000).toISOString(),
     status: "planned",
     comprehension_score: null,
     progress: 45,
@@ -59,10 +61,11 @@ const dummyLearningUnits: Array<LearningUnit & { course_name: string; progress: 
   {
     id: "3",
     course_id: "course-2",
-    topic_name: "Datenstrukturen und Algorithmen",
+    user_id: "user-1",
+    title: "Datenstrukturen und Algorithmen",
     course_name: "Programmierung",
-    planned_date: new Date(Date.now() + 172800000).toISOString(),
-    planned_time: "16:00",
+    start_time: new Date(Date.now() + 172800000).toISOString(),
+    end_time: new Date(Date.now() + 172800000 + 2 * 60 * 60 * 1000).toISOString(),
     status: "planned",
     comprehension_score: null,
     progress: 0,
@@ -72,10 +75,11 @@ const dummyLearningUnits: Array<LearningUnit & { course_name: string; progress: 
   {
     id: "4",
     course_id: "course-2",
-    topic_name: "Objektorientierte Programmierung",
+    user_id: "user-1",
+    title: "Objektorientierte Programmierung",
     course_name: "Programmierung",
-    planned_date: new Date(Date.now() - 86400000).toISOString(),
-    planned_time: "14:00",
+    start_time: new Date(Date.now() - 86400000).toISOString(),
+    end_time: new Date(Date.now() - 86400000 + 2 * 60 * 60 * 1000).toISOString(),
     status: "completed",
     comprehension_score: 92,
     progress: 100,
@@ -85,10 +89,11 @@ const dummyLearningUnits: Array<LearningUnit & { course_name: string; progress: 
   {
     id: "5",
     course_id: "course-3",
-    topic_name: "Datenbankdesign und SQL",
+    user_id: "user-1",
+    title: "Datenbankdesign und SQL",
     course_name: "Datenbanken",
-    planned_date: new Date(Date.now() - 172800000).toISOString(),
-    planned_time: "09:00",
+    start_time: new Date(Date.now() - 172800000).toISOString(),
+    end_time: new Date(Date.now() - 172800000 + 2 * 60 * 60 * 1000).toISOString(),
     status: "skipped",
     comprehension_score: null,
     progress: 30,
@@ -98,10 +103,11 @@ const dummyLearningUnits: Array<LearningUnit & { course_name: string; progress: 
   {
     id: "6",
     course_id: "course-3",
-    topic_name: "NoSQL Datenbanken",
+    user_id: "user-1",
+    title: "NoSQL Datenbanken",
     course_name: "Datenbanken",
-    planned_date: new Date(Date.now() + 259200000).toISOString(),
-    planned_time: "11:00",
+    start_time: new Date(Date.now() + 259200000).toISOString(),
+    end_time: new Date(Date.now() + 259200000 + 2 * 60 * 60 * 1000).toISOString(),
     status: "planned",
     comprehension_score: null,
     progress: 0,
@@ -216,11 +222,11 @@ export function LearningUnitsTable() {
                   <Checkbox
                     checked={selectedRows.has(unit.id)}
                     onCheckedChange={() => toggleRowSelection(unit.id)}
-                    aria-label={`Select ${unit.topic_name}`}
+                    aria-label={`Select ${unit.title}`}
                   />
                 </TableCell>
                 <TableCell className="font-medium">
-                  {unit.topic_name}
+                  {unit.title}
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline" className="px-1.5 text-muted-foreground">
@@ -237,7 +243,7 @@ export function LearningUnitsTable() {
                     : "N/A"}
                 </TableCell>
                 <TableCell>
-                  {format(new Date(unit.planned_date), "dd.MM.yyyy")} {unit.planned_time}
+                  {format(new Date(unit.start_time), "dd.MM.yyyy HH:mm")}
                 </TableCell>
                 <TableCell>
                   <DropdownMenu>
