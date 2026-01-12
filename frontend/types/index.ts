@@ -108,3 +108,17 @@ export interface Flashcard {
   page_number?: number | null
   created_at: string
 }
+
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  timestamp: string
+}
+
+export interface PageAnalysisData {
+  summary: string
+  key_terms: string[]
+  exam_questions: string[]
+  diagram_description?: string
+}

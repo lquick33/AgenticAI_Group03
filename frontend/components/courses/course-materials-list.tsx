@@ -1,6 +1,9 @@
 "use client"
 
+import Link from 'next/link'
+import { BookOpen } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Table,
   TableBody,
@@ -13,9 +16,10 @@ import type { CourseMaterial } from '@/types'
 
 interface CourseMaterialsListProps {
   materials: CourseMaterial[]
+  courseId: string
 }
 
-export function CourseMaterialsList({ materials }: CourseMaterialsListProps) {
+export function CourseMaterialsList({ materials, courseId }: CourseMaterialsListProps) {
   const formatDate = (dateString: string) => {
     const date = new Date(dateString)
     return date.toLocaleDateString('de-DE', {
@@ -61,6 +65,7 @@ export function CourseMaterialsList({ materials }: CourseMaterialsListProps) {
             <TableHead>Seiten</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Hochgeladen am</TableHead>
+            <TableHead className="text-right">Aktionen</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -71,6 +76,21 @@ export function CourseMaterialsList({ materials }: CourseMaterialsListProps) {
               <TableCell>{getStatusBadge(material.processing_status)}</TableCell>
               <TableCell className="text-muted-foreground">
                 {formatDate(material.created_at)}
+              </TableCell>
+              <TableCell className="text-right">
+                {material.processing_status === 'completed' ? (
+                  <Button asChild variant="outline" size="sm">
+                    <Link href={`/dashboard/courses/${courseId}/study/${material.id}`}>
+                      <BookOpen className="mr-2 h-4 w-4" />
+                      Studieren
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button variant="outline" size="sm" disabled>
+                    <BookOpen className="mr-2 h-4 w-4" />
+                    Studieren
+                  </Button>
+                )}
               </TableCell>
             </TableRow>
           ))}

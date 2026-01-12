@@ -158,7 +158,10 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
                     Übersicht aller hochgeladenen Vorlesungsmaterialien
                   </p>
                 </div>
-                <CourseMaterialsList materials={(materials || []) as CourseMaterial[]} />
+                <CourseMaterialsList 
+                  materials={(materials || []) as CourseMaterial[]} 
+                  courseId={id}
+                />
               </div>
             </div>
           </div>

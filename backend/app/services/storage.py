@@ -260,3 +260,55 @@ def save_page_analysis(
     
     except Exception as e:
         raise Exception(f"Failed to save page analysis: {str(e)}")
+
+
+def get_page_analysis(
+    course_material_id: str,
+    page_number: int,
+    user_id: str
+) -> dict:
+    """
+    Get page analysis data from the page_analyses table.
+    
+    Args:
+        course_material_id: Course material ID
+        page_number: Page number (1-indexed)
+        user_id: User ID for authorization (RLS)
+        
+    Returns:
+        Page analysis record as dict with summary, key_terms, exam_questions, diagram_description
+        
+    Raises:
+        ValueError: If page analysis not found or access denied
+        Exception: If database operation fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("page_analyses").select(
+            "id, summary, key_terms, exam_questions, diagram_description, raw_analysis"
+        ).eq(
+            "course_material_id", course_material_id
+        ).eq(
+            "page_number", page_number
+        ).eq(
+            "user_id", user_id
+        ).execute()
+        
+        if response.data and len(response.data) > 0:
+            analysis = response.data[0]
+            return {
+                "summary": analysis.get("summary", ""),
+                "key_terms": analysis.get("key_terms", []),
+                "exam_questions": analysis.get("exam_questions", []),
+                "diagram_description": analysis.get("diagram_description"),
+                "raw_analysis": analysis.get("raw_analysis", {})
+            }
+        else:
+            raise ValueError(
+                f"Page analysis not found for course_material_id={course_material_id}, page_number={page_number}"
+            )
+    except ValueError:
+        raise
+    except Exception as e:
+        raise Exception(f"Failed to get page analysis: {str(e)}")

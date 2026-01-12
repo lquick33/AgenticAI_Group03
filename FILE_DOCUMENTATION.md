@@ -1404,4 +1404,463 @@ import type { Course, CourseMaterial, CourseWithStats } from '@/types'
 - All course management components use these types
 - Database schema in `backend/supabase/migrations/20260110111927_initial_schema.sql`
 
+**`ChatMessage` (New)**:
+- Interface for chat messages in study sessions
+- Fields: `id`, `role` ('user' | 'assistant' | 'system'), `content`, `timestamp`
+
+**`PageAnalysisData` (New)**:
+- Interface for page analysis data retrieved from API
+- Fields: `summary`, `key_terms` (string[]), `exam_questions` (string[]), `diagram_description?` (optional)
+
+---
+
+## Study Session Components
+
+### `backend/app/agents/base.py`
+
+**Purpose**: Base agent class for all LangGraph agents, providing consistent interface and state management.
+
+**Key Components**:
+- `State(MessagesState)`: Base state class extending LangGraph MessagesState
+- `BaseAgent(ABC)`: Abstract base class with:
+  - `_build_graph()`: Abstract method for graph construction
+  - `compile_graph()`: Compiles workflow with checkpointer/store
+  - `run()`, `arun()`, `stream()`: Execution methods with thread persistence
+  - `save_memory()`, `retrieve_memory()`: Long-term memory operations
+  - `get_conversation_history()`: Retrieve conversation history
+  - `add_system_message()`: System message handling
+
+**Key Features**:
+- Thread-based conversation persistence (thread_id)
+- User-based memory storage (user_id)
+- Automatic system message injection for new threads
+- Checkpointer and Store support for state persistence
+- Streaming support for real-time responses
+
+**Dependencies**: 
+- `langgraph` - Graph framework
+- `langchain_core` - LLM integration
+- `langgraph.checkpoint` - State persistence
+- `langgraph.store` - Memory storage
+
+**Usage**: All agents must inherit from `BaseAgent` and implement `_build_graph()`
+
+**Related Files**: 
+- `backend/app/agents/tutor/tutor_agent.py` - Tutor agent implementation
+- `AGENT_DEVELOPMENT_RULES.md` - Development guidelines
+
+---
+
+### `backend/app/agents/tutor/tutor_agent.py`
+
+**Purpose**: LangGraph Tutor Agent for study sessions that helps students understand lecture materials.
+
+**Key Components**:
+- `TutorState(State)`: Extends base State with `current_page`, `material_id`, `user_id`
+- `TutorAgent(BaseAgent)`: Agent implementation with:
+  - `GetPageAnalysisTool` integration
+  - Graph structure: `agent` → `tools` → `agent` (loop until no tool calls)
+  - Conditional routing based on tool calls
+
+**Graph Structure**:
+1. `agent` node: Calls LLM with tools bound
+2. `tools` node: Executes tool calls (GetPageAnalysisTool)
+3. Conditional edge: Routes back to `agent` if tools called, else `END`
+
+**System Prompt**:
+- Default tutor persona: helpful, patient, engaging
+- Instructions to use `get_page_analysis` tool when navigating to new slides
+- Encourages active learning and provides examples
+
+**Key Features**:
+- Tool-based information retrieval (page analysis)
+- Context-aware tutoring based on slide content
+- Continuous conversation across pages (thread_id = material_id)
+- Streaming support for real-time responses
+
+**Dependencies**: 
+- `app.agents.base` - BaseAgent class
+- `app.tools.page_analysis_tool` - GetPageAnalysisTool
+- `langgraph.prebuilt` - ToolNode for tool execution
+- `langgraph.checkpoint.memory` - MemorySaver for persistence
+
+**Usage**: Instantiated in API endpoints with LLM and checkpointer
+
+**Related Files**: 
+- `backend/app/api/endpoints.py` - Chat endpoints that use this agent
+- `backend/app/tools/page_analysis_tool.py` - Tool used by agent
+
+---
+
+### `backend/app/tools/page_analysis_tool.py`
+
+**Purpose**: LangChain tool for retrieving structured page analysis data from the database.
+
+**Key Components**:
+- `GetPageAnalysisInput(BaseModel)`: Pydantic input schema with `course_material_id`, `page_number`, `user_id`
+- `GetPageAnalysisTool`: Tool class with:
+  - `_run()`: Synchronous execution
+  - `_arun()`: Async execution
+  - `to_langchain_tool()`: Converts to LangChain StructuredTool
+
+**Key Features**:
+- **Performance-Optimized**: Directly imports service function (no HTTP request to own backend)
+- Returns JSON string with analysis data: `summary`, `key_terms`, `exam_questions`, `diagram_description`
+- Error handling: Returns error JSON instead of raising exceptions
+- Type-safe with Pydantic input validation
+
+**Tool Description**:
+- Clear description for LLM: "Retrieves structured analysis data for a specific page..."
+- Helps LLM understand when to use this tool
+
+**Dependencies**: 
+- `app.services.storage` - `get_page_analysis()` service function
+- `langchain_core.tools` - StructuredTool
+- `pydantic` - Input validation
+
+**Usage**: Converted to LangChain tool and bound to LLM in TutorAgent
+
+**Related Files**: 
+- `backend/app/services/storage.py` - Service function implementation
+- `backend/app/agents/tutor/tutor_agent.py` - Agent that uses this tool
+
+---
+
+### `backend/app/services/storage.py` (Updated)
+
+**New Function**: `get_page_analysis()`
+
+**Purpose**: Retrieves page analysis data from the `page_analyses` table.
+
+**Function Signature**:
+```python
+def get_page_analysis(
+    course_material_id: str,
+    page_number: int,
+    user_id: str
+) -> dict
+```
+
+**Key Features**:
+- Query Supabase `page_analyses` table with filters
+- Returns structured dict with: `summary`, `key_terms`, `exam_questions`, `diagram_description`, `raw_analysis`
+- User authorization via RLS (Row Level Security)
+- Raises `ValueError` if page analysis not found
+- Used by both Tool and API endpoint
+
+**Dependencies**: 
+- `get_supabase_client()` - Supabase client singleton
+
+**Usage**: 
+```python
+from app.services.storage import get_page_analysis
+
+analysis = get_page_analysis(course_material_id, page_number, user_id)
+```
+
+**Related Files**: 
+- `backend/app/tools/page_analysis_tool.py` - Tool that uses this function
+- `backend/app/api/endpoints.py` - API endpoint that uses this function
+
+---
+
+### `backend/app/api/endpoints.py` (Updated)
+
+**New Endpoints**:
+
+**`GET /api/page-analysis`**:
+- Query params: `course_material_id`, `page_number`, `user_id`
+- Returns: `PageAnalysisDataResponse` with analysis data
+- Validates user exists
+- Uses `get_page_analysis()` service function
+
+**`POST /api/chat/initiate`**:
+- Body: `ChatInitiateRequest` with `material_id`, `page_number`, `user_id`
+- Returns: `StreamingResponse` with SSE events
+- **Key Feature**: Injects system message for page change context
+  - Message: `"SYSTEM EVENT: User navigated to Page {page_number}. Summary: {summary}. Please greet the user and explain the content."`
+- Creates TutorAgent instance
+- Thread ID: `material_id` (continuous conversation)
+- Streams agent response as SSE
+
+**`POST /api/chat/message`**:
+- Body: `ChatMessageRequest` with `material_id`, `message`, `user_id`
+- Returns: `StreamingResponse` with SSE events
+- Continues conversation in existing thread (thread_id = material_id)
+- Streams agent response as SSE
+
+**Streaming Format**:
+- Server-Sent Events (SSE)
+- Chunks: `data: {"node": "agent", "messages": [...]}\n\n`
+- End marker: `data: [DONE]\n\n`
+
+**Dependencies**: 
+- `app.agents.tutor` - TutorAgent
+- `app.services.analyzer` - `get_gemini_model()` for LLM initialization
+- `app.services.storage` - `get_page_analysis()` for page data
+- `langgraph.checkpoint.memory` - MemorySaver for agent persistence
+- `fastapi.responses` - StreamingResponse
+
+**Related Files**: 
+- `backend/app/agents/tutor/tutor_agent.py` - Agent implementation
+- `backend/app/models/schemas.py` - Request/response schemas
+
+---
+
+### `backend/app/models/schemas.py` (Updated)
+
+**New Schemas**:
+
+**`ChatInitiateRequest`**:
+- `material_id: str` - Course material ID
+- `page_number: int` - Current page number (1-indexed)
+- `user_id: str` - User ID
+
+**`ChatMessageRequest`**:
+- `material_id: str` - Course material ID
+- `message: str` - User message content
+- `user_id: str` - User ID
+
+**`PageAnalysisQuery`**:
+- `course_material_id: str` - Course material ID
+- `page_number: int` - Page number (1-indexed)
+- `user_id: str` - User ID
+
+**`PageAnalysisDataResponse`**:
+- `summary: str` - Page summary
+- `key_terms: list[str]` - Key terms array
+- `exam_questions: list[str]` - Exam questions array
+- `diagram_description: Optional[str]` - Diagram description
+- `raw_analysis: Optional[dict]` - Full JSON analysis
+
+**Dependencies**: `pydantic` - BaseModel and Field
+
+**Usage**: Used in API endpoints for request/response validation
+
+---
+
+### `frontend/lib/api/study.ts`
+
+**Purpose**: API client functions for study session chat and page analysis.
+
+**Key Functions**:
+
+**`parseSSEChunk(chunk: string)`**:
+- Parses SSE data chunks to extract message data
+- Handles `[DONE]` marker
+- Returns parsed JSON or null
+
+**`initiateChat(...)`**:
+- Initiates chat session for a study page
+- Uses POST request with fetch and ReadableStream
+- Processes SSE stream and calls `onChunk` callback
+- Returns close function for cleanup
+- Handles errors and completion
+
+**`sendMessage(...)`**:
+- Sends user message in existing chat session
+- Uses POST request with fetch and ReadableStream
+- Processes SSE stream and calls `onChunk` callback
+- Returns Promise that resolves on completion
+
+**`getPageAnalysis(...)`**:
+- Fetches page analysis data from API
+- Returns `PageAnalysisData` object
+- Error handling with user-friendly messages
+
+**Key Features**:
+- SSE streaming support using ReadableStream API
+- Error handling with callbacks
+- Type-safe with TypeScript interfaces
+- Environment variable for API URL
+
+**Dependencies**: 
+- `@/types` - ChatMessage, PageAnalysisData types
+- Environment variable: `NEXT_PUBLIC_API_URL`
+
+**Usage**: Imported in StudyReader component for chat functionality
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Uses these functions
+- `frontend/types/index.ts` - Type definitions
+
+---
+
+### `frontend/components/study/pdf-viewer.tsx`
+
+**Purpose**: Client Component for displaying a single PDF page using react-pdf.
+
+**Key Components**:
+- `react-pdf` `Document` and `Page` components
+- PDF.js worker configuration (CDN)
+- Loading and error states
+- Responsive width calculation
+
+**Key Features**:
+- **SSR Disabled**: Must be dynamically imported with `ssr: false` (Canvas not available on server)
+- Single page display (controlled by `pageNumber` prop)
+- Loading state while PDF loads
+- Error handling with user-friendly messages
+- Responsive width (max 800px or 60% of viewport)
+
+**Props**:
+- `file: string | File` - PDF URL or File object
+- `pageNumber: number` - Page to display (1-indexed)
+- `onLoadError?: (error: Error) => void` - Error callback
+
+**Dependencies**: 
+- `react-pdf` - PDF rendering library
+- PDF.js worker from CDN
+
+**Usage**: Dynamically imported in StudyReader:
+```tsx
+const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default: mod.PdfViewer })), {
+  ssr: false,
+})
+```
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Uses this component
+- `frontend/app/(dashboard)/dashboard/courses/[courseId]/study/[materialId]/page.tsx` - Study page
+
+---
+
+### `frontend/components/study/chat-interface.tsx`
+
+**Purpose**: Client Component for chat interface using shadcn conversation and message components.
+
+**Key Components**:
+- `Conversation`, `ConversationContent` from shadcn
+- `Message`, `MessageContent` from shadcn
+- Input field with send button
+- Loading and streaming indicators
+
+**Key Features**:
+- Message list display with role-based styling
+- Auto-scroll to new messages (via Conversation component)
+- Input field with form submission
+- Loading state during agent response
+- Streaming indicator
+- Empty state when no messages
+
+**Props**:
+- `messages: ChatMessage[]` - Array of chat messages
+- `onSend: (message: string) => void` - Callback for sending messages
+- `isLoading: boolean` - Loading state
+- `isStreaming?: boolean` - Streaming state
+
+**Dependencies**: 
+- `@/components/ai/conversation` - Conversation components
+- `@/components/ai/message` - Message components
+- `@/components/ui/input` - Input field
+- `@/components/ui/button` - Send button
+- `@/types` - ChatMessage type
+
+**Usage**: Used in StudyReader component
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Uses this component
+
+---
+
+### `frontend/components/study/study-reader.tsx`
+
+**Purpose**: Main client component for study session with split-screen layout (PDF left, Chat right).
+
+**Key Components**:
+- `react-resizable-panels` for split-screen layout
+- Dynamically imported `PdfViewer` (SSR disabled)
+- `ChatInterface` for chat functionality
+- Navigation arrows for page navigation
+- Page counter display
+
+**Key Features**:
+- Split-screen layout with resizable panels (50/50 default)
+- Page navigation with previous/next buttons
+- Automatic chat initiation on page change
+- SSE streaming for agent responses
+- Message state management
+- Cleanup on unmount
+
+**State Management**:
+- `currentPage: number` - Current page number (1-indexed)
+- `messages: ChatMessage[]` - Chat message history
+- `isLoading: boolean` - Loading state
+- `isStreaming: boolean` - Streaming state
+
+**Event Handlers**:
+- `handlePageChange(newPage)`: Initiates chat for new page
+- `handleSendMessage(message)`: Sends user message
+- `handlePreviousPage()`, `handleNextPage()`: Page navigation
+
+**useEffect Hooks**:
+- On mount: Initiates chat for page 1
+- On `currentPage` change: Initiates chat for new page
+- On unmount: Cleans up stream connections
+
+**Dependencies**: 
+- `react-resizable-panels` - Split-screen layout
+- `next/dynamic` - Dynamic import for PDF viewer
+- `@/components/study/pdf-viewer` - PDF display
+- `@/components/study/chat-interface` - Chat interface
+- `@/lib/api/study` - API client functions
+- `@/types` - ChatMessage type
+
+**Usage**: Used in study page route
+
+**Related Files**: 
+- `frontend/app/(dashboard)/dashboard/courses/[courseId]/study/[materialId]/page.tsx` - Study page
+
+---
+
+### `frontend/app/(dashboard)/dashboard/courses/[courseId]/study/[materialId]/page.tsx`
+
+**Purpose**: Server Component page for study session with PDF viewer and chat.
+
+**Key Components**:
+- Server-side authentication and authorization
+- Course material data fetching
+- Supabase Storage signed URL generation for PDF
+- StudyReader component integration
+- Sidebar layout consistent with dashboard
+
+**Key Features**:
+- Server Component for secure data fetching
+- Validates course material belongs to user
+- Generates signed URL for PDF (1 hour expiry)
+- 404 handling if material not found
+- Error handling for PDF URL generation
+
+**Route Parameters**:
+- `courseId: string` - Course ID
+- `materialId: string` - Course material ID
+
+**Data Fetching**:
+1. Validates user authentication
+2. Fetches course material from Supabase
+3. Validates material belongs to user and course
+4. Generates signed URL for PDF from Supabase Storage
+5. Passes data to StudyReader component
+
+**Dependencies**: 
+- `@/lib/auth` - Authentication utilities (requireAuth)
+- `@/lib/supabase/server` - Server-side Supabase client
+- `@/components/dashboard/sidebar` - Dashboard sidebar
+- `@/components/study/study-reader` - Study reader component
+- `@/components/ui/sidebar` - SidebarProvider and SidebarInset
+- `next/navigation` - notFound() for 404 handling
+
+**Usage**: Accessible at `/dashboard/courses/[courseId]/study/[materialId]` route
+
+**User Flow**:
+1. User navigates to study page (e.g., from course detail page)
+2. Server validates authentication and material ownership
+3. Generates signed URL for PDF
+4. Renders StudyReader with PDF and chat interface
+5. User can navigate pages and chat with tutor agent
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Main study component
+- `frontend/app/(dashboard)/dashboard/courses/[id]/page.tsx` - Course detail page (navigation source)
+
 ---
