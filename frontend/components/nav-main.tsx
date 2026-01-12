@@ -59,7 +59,7 @@ export function NavMain({
                         {item.icon && <item.icon />}
                         <span>{item.title}</span>
                         <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
-                      </SidebarMenuButton>
+            </SidebarMenuButton>
                     </CollapsibleTrigger>
                     <CollapsibleContent>
                       <SidebarMenuSub>
@@ -74,20 +74,20 @@ export function NavMain({
                         ))}
                       </SidebarMenuSub>
                     </CollapsibleContent>
-                  </SidebarMenuItem>
+          </SidebarMenuItem>
                 </Collapsible>
               )
             }
 
             return (
-              <SidebarMenuItem key={item.title}>
+            <SidebarMenuItem key={item.title}>
                 <SidebarMenuButton tooltip={item.title} asChild isActive={isActive}>
                   <Link href={item.url}>
-                    {item.icon && <item.icon />}
-                    <span>{item.title}</span>
+                {item.icon && <item.icon />}
+                <span>{item.title}</span>
                   </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
             )
           })}
         </SidebarMenu>
