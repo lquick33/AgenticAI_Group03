@@ -1457,34 +1457,70 @@ import type { Course, CourseMaterial, CourseWithStats } from '@/types'
 
 **Key Components**:
 - `TutorState(State)`: Extends base State with `current_page`, `material_id`, `user_id`
+- `StateAwareToolNode(ToolNode)`: Custom ToolNode that automatically injects state values (`material_id` → `course_material_id`, `current_page` → `page_number`, `user_id`) into tool calls to prevent LLM hallucination
 - `TutorAgent(BaseAgent)`: Agent implementation with:
   - `GetPageAnalysisTool` integration
   - Graph structure: `agent` → `tools` → `agent` (loop until no tool calls)
   - Conditional routing based on tool calls
+  - Personalized system prompts with language and personality config
 
 **Graph Structure**:
-1. `agent` node: Calls LLM with tools bound
-2. `tools` node: Executes tool calls (GetPageAnalysisTool)
+1. `agent` node: Calls LLM with tools bound, injects state context into system prompt
+2. `tools` node: Executes tool calls with automatic state injection (StateAwareToolNode)
 3. Conditional edge: Routes back to `agent` if tools called, else `END`
 
-**System Prompt**:
-- Default tutor persona: helpful, patient, engaging
-- Instructions to use `get_page_analysis` tool when navigating to new slides
-- Encourages active learning and provides examples
+**System Prompt** (Personalizable):
+- **Role**: Personal professor for university students, explains at student-friendly level
+- **Teaching Method**: Socratic method - asks questions before explaining, uses analogies, breaks concepts into steps
+- **Language Support**: Configurable language (default: "de" for German, supports "en" for English)
+- **Personality Traits** (configurable via `personality_config`):
+  - `formality`: "formal" | "informal" | "balanced" (default: "balanced")
+  - `humor`: "none" | "light" | "moderate" (default: "light")
+  - `encouragement`: "reserved" | "moderate" | "enthusiastic" (default: "moderate")
+- **Context Awareness**: Automatically receives current page number, material ID, and user ID from state
+- **Tool Instructions**: Clear guidance on using `get_page_analysis` tool with automatic argument injection
 
 **Key Features**:
-- Tool-based information retrieval (page analysis)
-- Context-aware tutoring based on slide content
-- Continuous conversation across pages (thread_id = material_id)
-- Streaming support for real-time responses
+- **State Injection**: State information (`current_page`, `material_id`, `user_id`) automatically injected into LLM context via enhanced system prompt
+- **Automatic Tool Argument Injection**: StateAwareToolNode automatically fills tool arguments from state, preventing LLM from hallucinating IDs
+- **Personalization**: Configurable language and personality traits for personalized tutoring experience
+- **Tool-based information retrieval**: Page analysis via GetPageAnalysisTool
+- **Context-aware tutoring**: Based on slide content and current page
+- **Continuous conversation**: Across pages (thread_id = material_id)
+- **Streaming support**: Real-time responses via SSE
+
+**Initialization Parameters**:
+- `llm`: BaseChatModel (required)
+- `name`: str (default: "TutorAgent")
+- `system_prompt`: Optional[str] (if None, uses `_build_system_prompt()`)
+- `checkpointer`: Optional[MemorySaver] (for conversation persistence)
+- `language`: str (default: "de") - Communication language
+- `personality_config`: Optional[Dict[str, str]] - Personality traits dict
+
+**Methods**:
+- `_build_system_prompt(language, personality_config)`: Builds personalized system prompt based on language and personality config
+- `call_model(state)`: Calls LLM with state context injected into system message
+- `_build_graph()`: Builds LangGraph workflow with StateAwareToolNode
 
 **Dependencies**: 
 - `app.agents.base` - BaseAgent class
 - `app.tools.page_analysis_tool` - GetPageAnalysisTool
-- `langgraph.prebuilt` - ToolNode for tool execution
+- `langgraph.prebuilt` - ToolNode base class
 - `langgraph.checkpoint.memory` - MemorySaver for persistence
 
-**Usage**: Instantiated in API endpoints with LLM and checkpointer
+**Usage**: 
+```python
+agent = TutorAgent(
+    llm=llm,
+    language="de",
+    personality_config={
+        "formality": "balanced",
+        "humor": "light",
+        "encouragement": "moderate"
+    },
+    checkpointer=checkpointer
+)
+```
 
 **Related Files**: 
 - `backend/app/api/endpoints.py` - Chat endpoints that use this agent
