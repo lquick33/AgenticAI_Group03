@@ -312,3 +312,107 @@ def get_page_analysis(
         raise
     except Exception as e:
         raise Exception(f"Failed to get page analysis: {str(e)}")
+
+
+def get_page_analysis_id(
+    course_material_id: str,
+    page_number: int,
+    user_id: str
+) -> Optional[str]:
+    """
+    Get page analysis ID from the page_analyses table.
+    
+    Args:
+        course_material_id: Course material ID
+        page_number: Page number (1-indexed)
+        user_id: User ID for authorization (RLS)
+        
+    Returns:
+        Page analysis ID (UUID) or None if not found
+        
+    Raises:
+        Exception: If database operation fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("page_analyses").select(
+            "id"
+        ).eq(
+            "course_material_id", course_material_id
+        ).eq(
+            "page_number", page_number
+        ).eq(
+            "user_id", user_id
+        ).execute()
+        
+        if response.data and len(response.data) > 0:
+            return response.data[0].get("id")
+        else:
+            return None
+    except Exception as e:
+        raise Exception(f"Failed to get page analysis ID: {str(e)}")
+
+
+def get_all_page_analyses_for_material(
+    course_material_id: str,
+    user_id: str
+) -> list[dict]:
+    """
+    Get all page analyses for a given course material.
+
+    This helper is used to aggregate per-page summaries and key terms in
+    order to generate a global topics summary for the entire lecture.
+
+    Args:
+        course_material_id: Course material ID
+        user_id: User ID for authorization (RLS)
+
+    Returns:
+        A list of dicts with keys: page_number, summary, key_terms,
+        exam_questions (if available)
+
+    Raises:
+        Exception: If database operation fails
+    """
+    client = get_supabase_client()
+
+    try:
+        response = (
+            client.table("page_analyses")
+            .select("page_number, summary, key_terms, exam_questions")
+            .eq("course_material_id", course_material_id)
+            .eq("user_id", user_id)
+            .order("page_number", desc=False)
+            .execute()
+        )
+
+        return response.data or []
+    except Exception as e:
+        raise Exception(f"Failed to get page analyses for material: {str(e)}")
+
+
+def update_course_material_summary(
+    material_id: str,
+    summary: str
+) -> None:
+    """
+    Update the global summary field of a course material.
+
+    The summary is expected to be a JSON-encoded string containing a
+    structured overview of the lecture topics, but is stored as TEXT
+    for maximum flexibility.
+
+    Args:
+        material_id: Course material ID
+        summary: JSON-encoded summary string
+    """
+    client = get_supabase_client()
+
+    try:
+        client.table("course_materials").update(
+            {"summary": summary}
+        ).eq("id", material_id).execute()
+    except Exception as e:
+        raise Exception(f"Failed to update course material summary: {str(e)}")
+

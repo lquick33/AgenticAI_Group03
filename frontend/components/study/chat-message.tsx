@@ -3,6 +3,7 @@
 import { cn } from "@/lib/utils"
 import ReactMarkdown from "react-markdown"
 import { User } from "lucide-react"
+import { Loader } from "@/components/ui/loader"
 import type { ChatMessage as ChatMessageType } from "@/types"
 
 type ChatRole = "user" | "assistant"
@@ -11,10 +12,14 @@ interface ChatMessageProps {
   id: string
   role: ChatRole
   content: string
+  isStreaming?: boolean
 }
 
-export function ChatMessage({ id, role, content }: ChatMessageProps) {
-  if (!content) return null
+export function ChatMessage({ id, role, content, isStreaming = false }: ChatMessageProps) {
+  // Show typing indicator for assistant messages with empty content or streaming state
+  const showTypingIndicator = role === "assistant" && (!content || content.trim() === "" || isStreaming)
+  
+  if (role === "user" && !content) return null
 
   return (
     <div
@@ -33,7 +38,7 @@ export function ChatMessage({ id, role, content }: ChatMessageProps) {
       {/* Message Body */}
       <div
         className={cn(
-          "flex-1 max-w-[80%]",
+          "flex-1",
           role === "user" && "order-first"
         )}
       >
@@ -45,8 +50,19 @@ export function ChatMessage({ id, role, content }: ChatMessageProps) {
               : "bg-gray-100 text-gray-900"
           )}
         >
-          <div className="text-sm leading-relaxed prose prose-sm max-w-none">
-            <ReactMarkdown
+          {showTypingIndicator ? (
+            <div className="flex items-center gap-3">
+              <Loader size={18} className="text-white animate-spin" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Tutor denkt nach...</p>
+                <p className="text-xs text-white/70">
+                  Die Antwort wird vorbereitet.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm leading-relaxed prose prose-sm max-w-none">
+              <ReactMarkdown
               components={{
                 p: ({ children }) => (
                   <p className="mb-2 last:mb-0">{children}</p>
@@ -134,7 +150,8 @@ export function ChatMessage({ id, role, content }: ChatMessageProps) {
             >
               {content}
             </ReactMarkdown>
-          </div>
+            </div>
+          )}
         </div>
       </div>
 

@@ -7,7 +7,8 @@ Extracted and adapted from PoC to work with in-memory image bytes.
 
 import base64
 import io
-from typing import Optional
+import json
+from typing import Optional, Sequence
 
 from PIL import Image
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -161,3 +162,160 @@ schreibe 'Kein Diagramm' für diagram_description."""
         return result
     except Exception as e:
         raise ValueError(f"Failed to analyze slide: {str(e)}")
+
+
+async def generate_material_summary(
+    page_data: Sequence[dict],
+    api_key: Optional[str] = None
+) -> str:
+    """
+    Generate a global topics summary for a lecture from per-page analyses.
+
+    The function expects a list of dicts with the keys:
+    - page_number: int
+    - summary: str
+    - key_terms: list[str]
+    - exam_questions: list[str] (optional)
+
+    It returns a JSON string with the following (informal) schema:
+    {
+      "overall_summary": str,
+      "main_topics": [
+        {
+          "name": str,
+          "description": str,
+          "related_pages": int[],
+          "key_terms": str[]
+        },
+        ...
+      ]
+    }
+
+    The JSON is intentionally stored as TEXT in the database so that
+    downstream agents (Meta-Agent, Tutor-Agent) can parse and extend it
+    flexibly over time.
+    """
+    import asyncio
+
+    if not page_data:
+        # Empty JSON structure as safe fallback
+        empty_summary = {
+            "overall_summary": "",
+            "main_topics": [],
+        }
+        return json.dumps(empty_summary, ensure_ascii=False)
+
+    # Load API key if not provided
+    if api_key is None:
+        api_key = settings.GOOGLE_API_KEY
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY not found in settings")
+
+    llm = get_gemini_model(api_key)
+
+    # We call the base Chat model (no structured_output), but enforce
+    # JSON-only output via the prompt.
+    # To keep token usage in check, we truncate very long summaries.
+    MAX_SUMMARY_CHARS = 400
+    MAX_PAGES_FOR_CONTEXT = 120  # hard cap for very long PDFs
+
+    trimmed_pages = []
+    for entry in list(page_data)[:MAX_PAGES_FOR_CONTEXT]:
+        page_number = entry.get("page_number")
+        summary = entry.get("summary") or ""
+        key_terms = entry.get("key_terms") or []
+        exam_questions = entry.get("exam_questions") or []
+
+        if len(summary) > MAX_SUMMARY_CHARS:
+            summary = summary[:MAX_SUMMARY_CHARS] + " …"
+
+        trimmed_pages.append(
+            {
+                "page_number": page_number,
+                "summary": summary,
+                "key_terms": key_terms,
+                "exam_questions": exam_questions,
+            }
+        )
+
+    pages_json = json.dumps(trimmed_pages, ensure_ascii=False)
+
+    system_instructions = (
+        "Du bist ein Assistent, der aus Vorlesungsfolien eine strukturierte Themenübersicht "
+        "für ein gesamtes Skript/Modul erstellt. "
+        "Du bekommst pro Folie eine kurze Zusammenfassung und Key Terms. "
+    )
+
+    user_prompt = f"""
+Analysiere die folgenden Seiten einer Vorlesung und erstelle eine globale Themenübersicht.
+
+Du bekommst eine JSON-Liste `pages` mit Einträgen:
+- page_number: Seitennummer (int)
+- summary: kurze Zusammenfassung der Seite (string)
+- key_terms: wichtige Begriffe (string[])
+- exam_questions: optionale Prüfungsfragen (string[])
+
+Deine Aufgabe:
+1. Fasse die gesamte Vorlesung in einem prägnanten Überblickstext zusammen.
+2. Identifiziere die wichtigsten Kernthemen/Konzepte (3–15 Stück, je nach Inhalt).
+3. Ordne zu jedem Thema die relevanten Seitennummern und zentralen Fachbegriffe zu.
+
+Gib **ausschließlich** ein gültiges JSON-Objekt mit folgendem Schema zurück:
+{{
+  "overall_summary": string,    // 3–5 Sätze auf Deutsch, Überblick über die Vorlesung
+  "main_topics": [
+    {{
+      "name": string,           // kurzer Themenname, z.B. "Lineare Regression"
+      "description": string,    // 1–3 Sätze, was in diesem Thema behandelt wird
+      "related_pages": number[],// Liste von Seitennummern, auf denen dieses Thema vorkommt
+      "key_terms": string[]     // wichtigste Begriffe zu diesem Thema
+    }}
+  ]
+}}
+
+WICHTIG:
+- Antworte **nur** mit JSON, ohne zusätzlichen Erklärungstext.
+- Falls die Inhalte sehr einseitig sind, kannst du auch weniger Themen wählen.
+
+Hier sind die Seitendaten:
+
+pages = {pages_json}
+"""
+
+    message = HumanMessage(content=[{"type": "text", "text": system_instructions + "\n\n" + user_prompt}])
+
+    try:
+        loop = asyncio.get_event_loop()
+        raw_response = await loop.run_in_executor(None, lambda: llm.invoke([message]))
+
+        text = getattr(raw_response, "content", None)
+        if not isinstance(text, str):
+            # Some LangChain wrappers return a list; fall back sensibly
+            if isinstance(text, list) and text and isinstance(text[0], str):
+                text = text[0]
+            else:
+                # As a last resort, dump the whole object
+                text = str(raw_response)
+
+        # Try to validate JSON; if it fails, wrap it into minimal schema
+        try:
+            parsed = json.loads(text)
+            # Basic sanity check
+            if not isinstance(parsed, dict) or "overall_summary" not in parsed:
+                raise ValueError("JSON schema missing required keys")
+            return json.dumps(parsed, ensure_ascii=False)
+        except Exception:
+            fallback = {
+                "overall_summary": text,
+                "main_topics": [],
+            }
+            return json.dumps(fallback, ensure_ascii=False)
+    except Exception as e:
+        # In case of LLM failure, return empty structure so pipeline can continue
+        empty_summary = {
+            "overall_summary": "",
+            "main_topics": [],
+            "error": f"Failed to generate material summary: {str(e)}",
+        }
+        return json.dumps(empty_summary, ensure_ascii=False)
+

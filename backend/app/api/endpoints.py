@@ -38,6 +38,7 @@ from app.services.storage import (
     get_course,
     get_supabase_client,
     get_page_analysis,
+    get_page_analysis_id,
 )
 from app.services.session_storage import (
     get_or_create_study_conversation,
@@ -893,8 +894,9 @@ async def initiate_chat(
             
             # Prepare buffer for assistant response text for persistence
             assistant_response_chunks: list[str] = []
+            last_sent_content = ""  # Track what we've already sent for incremental updates
             
-            # Stream agent response
+            # Stream agent response with incremental content updates
             logger.info(f"Starting agent stream for page {request.page_number}")
             try:
                 async for chunk in agent.graph.astream(initial_state, config):
@@ -916,9 +918,8 @@ async def initiate_chat(
                                     elif isinstance(msg, AIMessage):
                                         role = "assistant"
 
-                                    # Collect assistant content for persistence
+                                    # Handle assistant messages with incremental streaming
                                     if role == "assistant" and msg.content:
-                                        # msg.content can be str or list; convert to string for storage
                                         content_text = msg.content
                                         if isinstance(msg.content, list):
                                             try:
@@ -928,14 +929,41 @@ async def initiate_chat(
                                                 )
                                             except Exception:
                                                 content_text = str(msg.content)
-                                        assistant_response_chunks.append(str(content_text))
-
-                                    messages.append(
-                                        {
+                                        
+                                        # Send incremental delta if content has grown
+                                        if content_text and content_text != last_sent_content:
+                                            # Calculate and send delta
+                                            if last_sent_content and content_text.startswith(last_sent_content):
+                                                delta = content_text[len(last_sent_content):]
+                                                if delta:
+                                                    # Send delta for ghostwriter effect
+                                                    delta_data = {
+                                                        "type": "delta",
+                                                        "role": "assistant",
+                                                        "delta": delta,
+                                                        "content": content_text
+                                                    }
+                                                    yield f"data: {json.dumps(delta_data)}\n\n"
+                                                    last_sent_content = content_text
+                                            else:
+                                                # Content changed in a way we can't calculate delta
+                                                # Send full message structure for compatibility
+                                                messages.append({
+                                                    "role": role,
+                                                    "content": content_text
+                                                })
+                                                last_sent_content = content_text
+                                        
+                                        # Store for persistence
+                                        if str(content_text) not in assistant_response_chunks:
+                                            assistant_response_chunks.append(str(content_text))
+                                    else:
+                                        # Non-assistant messages: send normally
+                                        messages.append({
                                             "role": role,
                                             "content": msg.content,
-                                        }
-                                    )
+                                        })
+                            
                             if messages:  # Only add if there are messages
                                 chunk_data[node_name] = {"messages": messages}
                     
@@ -950,12 +978,25 @@ async def initiate_chat(
                     full_assistant_response = "".join(assistant_response_chunks).strip()
                     messages_to_store = []
 
+                    # Get page_analysis_id for context_page_id
+                    context_page_id = None
+                    try:
+                        context_page_id = get_page_analysis_id(
+                            course_material_id=course_material_id,
+                            page_number=request.page_number,
+                            user_id=request.user_id
+                        )
+                    except Exception as page_id_error:
+                        logger.warning(
+                            f"Failed to get page_analysis_id for page {request.page_number}: {page_id_error}"
+                        )
+
                     if full_assistant_response:
                         messages_to_store.append(
                             {
                                 "role": "assistant",
                                 "content": full_assistant_response,
-                                "context_page_id": None,
+                                "context_page_id": context_page_id,
                             }
                         )
 
@@ -1080,8 +1121,9 @@ async def send_chat_message(
 
             # Prepare buffer for assistant response text for persistence
             assistant_response_chunks: list[str] = []
+            last_sent_content = ""  # Track what we've already sent for incremental updates
 
-            # Stream agent response
+            # Stream agent response with incremental content updates
             async for chunk in agent.graph.astream(initial_state, config):
                 chunk_data = {}
                 for node_name, node_data in chunk.items():
@@ -1101,7 +1143,7 @@ async def send_chat_message(
                                 elif isinstance(msg, AIMessage):
                                     role = "assistant"
 
-                                # Collect assistant content for persistence
+                                # Handle assistant messages with incremental streaming
                                 if role == "assistant" and msg.content:
                                     content_text = msg.content
                                     if isinstance(msg.content, list):
@@ -1112,12 +1154,40 @@ async def send_chat_message(
                                             )
                                         except Exception:
                                             content_text = str(msg.content)
-                                    assistant_response_chunks.append(str(content_text))
-                                
-                                messages.append({
-                                    "role": role,
-                                    "content": msg.content
-                                })
+                                    
+                                    # Send incremental delta if content has grown
+                                    if content_text and content_text != last_sent_content:
+                                        # Calculate and send delta
+                                        if last_sent_content and content_text.startswith(last_sent_content):
+                                            delta = content_text[len(last_sent_content):]
+                                            if delta:
+                                                # Send delta for ghostwriter effect
+                                                delta_data = {
+                                                    "type": "delta",
+                                                    "role": "assistant",
+                                                    "delta": delta,
+                                                    "content": content_text
+                                                }
+                                                yield f"data: {json.dumps(delta_data)}\n\n"
+                                                last_sent_content = content_text
+                                        else:
+                                            # Content changed in a way we can't calculate delta
+                                            # Send full message structure for compatibility
+                                            messages.append({
+                                                "role": role,
+                                                "content": content_text
+                                            })
+                                            last_sent_content = content_text
+                                    
+                                    # Store for persistence
+                                    if str(content_text) not in assistant_response_chunks:
+                                        assistant_response_chunks.append(str(content_text))
+                                else:
+                                    # Non-assistant messages: send normally
+                                    messages.append({
+                                        "role": role,
+                                        "content": msg.content
+                                    })
                         if messages:
                             chunk_data[node_name] = {"messages": messages}
                 
@@ -1129,12 +1199,26 @@ async def send_chat_message(
                 full_assistant_response = "".join(assistant_response_chunks).strip()
                 messages_to_store = []
 
+                # Get page_analysis_id for context_page_id if current_page is available
+                context_page_id = None
+                if current_page is not None:
+                    try:
+                        context_page_id = get_page_analysis_id(
+                            course_material_id=course_material_id,
+                            page_number=current_page,
+                            user_id=request.user_id
+                        )
+                    except Exception as page_id_error:
+                        logger.warning(
+                            f"Failed to get page_analysis_id for page {current_page}: {page_id_error}"
+                        )
+
                 # Persist only the real user message and the final assistant reply
                 messages_to_store.append(
                     {
                         "role": "user",
                         "content": request.message,
-                        "context_page_id": None,
+                        "context_page_id": context_page_id,
                     }
                 )
                 if full_assistant_response:
@@ -1142,7 +1226,7 @@ async def send_chat_message(
                         {
                             "role": "assistant",
                             "content": full_assistant_response,
-                            "context_page_id": None,
+                            "context_page_id": context_page_id,
                         }
                     )
 

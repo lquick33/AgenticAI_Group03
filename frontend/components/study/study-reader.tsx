@@ -36,12 +36,76 @@ export function StudyReader({
   const streamControllerRef = useRef<{ close: () => void } | null>(null)
   const messageIdCounter = useRef(0)
   const chatPanelRef = useRef<HTMLDivElement | null>(null)
+  
+  // Typewriter animation state
+  const typewriterRef = useRef<{
+    intervalId: NodeJS.Timeout | null
+    fullText: string
+    currentIndex: number
+    messageId: string | null
+  }>({
+    intervalId: null,
+    fullText: '',
+    currentIndex: 0,
+    messageId: null,
+  })
 
   // Generate unique message ID
   const generateMessageId = useCallback(() => {
     messageIdCounter.current += 1
     return `msg-${Date.now()}-${messageIdCounter.current}`
   }, [])
+
+  // Stop any running typewriter animation
+  const stopTypewriter = useCallback(() => {
+    if (typewriterRef.current.intervalId) {
+      clearInterval(typewriterRef.current.intervalId)
+      typewriterRef.current.intervalId = null
+    }
+    typewriterRef.current.fullText = ''
+    typewriterRef.current.currentIndex = 0
+    typewriterRef.current.messageId = null
+  }, [])
+
+  // Start typewriter animation for assistant message
+  const startTypewriter = useCallback((fullText: string, messageId: string, speed: number = 20) => {
+    // Stop any existing typewriter
+    stopTypewriter()
+
+    // Initialize typewriter state
+    typewriterRef.current.fullText = fullText
+    typewriterRef.current.currentIndex = 0
+    typewriterRef.current.messageId = messageId
+
+    // Start animation
+    typewriterRef.current.intervalId = setInterval(() => {
+      const { fullText, currentIndex, messageId: msgId } = typewriterRef.current
+
+      if (currentIndex >= fullText.length) {
+        // Animation complete
+        stopTypewriter()
+        return
+      }
+
+      // Increment index (show 1-3 characters at a time for smoother effect)
+      const charsPerStep = Math.min(2, fullText.length - currentIndex)
+      typewriterRef.current.currentIndex += charsPerStep
+
+      // Update message content
+      setMessages((prev) => {
+        const index = prev.findIndex((m) => m.id === msgId)
+        if (index >= 0) {
+          const updated = [...prev]
+          updated[index] = {
+            ...updated[index],
+            content: fullText.slice(0, typewriterRef.current.currentIndex),
+          }
+          return updated
+        }
+        return prev
+      })
+    }, speed)
+  }, [stopTypewriter])
 
   // Handle page change - initiate chat
   const handlePageChange = useCallback(
@@ -56,11 +120,34 @@ export function StudyReader({
       setIsLoading(true)
       setIsStreaming(true)
 
+      // Stop any running typewriter
+      stopTypewriter()
+
       // Close existing stream
       if (streamControllerRef.current) {
         streamControllerRef.current.close()
         streamControllerRef.current = null
       }
+
+      // Add placeholder assistant message for typing indicator when page changes
+      // Only add if we don't already have a streaming message
+      setMessages((prev) => {
+        const hasStreamingMessage = prev.some(
+          (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+        )
+        if (!hasStreamingMessage) {
+          return [
+            ...prev,
+            {
+              id: `streaming-${generateMessageId()}`,
+              role: 'assistant',
+              content: '',
+              timestamp: new Date().toISOString(),
+            },
+          ]
+        }
+        return prev
+      })
 
       // Keep existing messages - don't clear chat history
       // The backend will maintain conversation continuity through the checkpointer
@@ -78,10 +165,70 @@ export function StudyReader({
             console.error('[StudyReader] Chat error:', chunk.error)
             setIsLoading(false)
             setIsStreaming(false)
+            
+            // Show error message in chat
+            setMessages((prev) => {
+              const lastStreamingIndex = prev.findLastIndex(
+                (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+              )
+              
+              if (lastStreamingIndex >= 0) {
+                // Replace streaming message with error
+                const updated = [...prev]
+                updated[lastStreamingIndex] = {
+                  ...updated[lastStreamingIndex],
+                  id: generateMessageId(), // Finalize ID
+                  content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+                }
+                return updated
+              } else {
+                // Add error message if no streaming message exists
+                return [
+                  ...prev,
+                  {
+                    id: generateMessageId(),
+                    role: 'assistant',
+                    content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+                    timestamp: new Date().toISOString(),
+                  },
+                ]
+              }
+            })
             return
           }
 
-          // Handle different chunk structures: chunk.messages or chunk.agent.messages or chunk[node_name].messages
+          // Handle delta events for ghostwriter effect
+          if (chunk.type === 'delta' && chunk.role === 'assistant' && chunk.delta) {
+            setMessages((prev) => {
+              const lastStreamingIndex = prev.findLastIndex(
+                (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+              )
+
+              if (lastStreamingIndex >= 0) {
+                // Append delta to existing streaming message
+                const updated = [...prev]
+                updated[lastStreamingIndex] = {
+                  ...updated[lastStreamingIndex],
+                  content: (updated[lastStreamingIndex].content || '') + chunk.delta,
+                }
+                return updated
+              } else {
+                // Create new streaming message if none exists
+                return [
+                  ...prev,
+                  {
+                    id: `streaming-${generateMessageId()}`,
+                    role: 'assistant',
+                    content: chunk.delta,
+                    timestamp: new Date().toISOString(),
+                  },
+                ]
+              }
+            })
+            return
+          }
+
+          // Handle regular message chunks (for compatibility and tool responses)
           let messages: Array<{ role: string; content: any }> = []
           
           if (chunk.messages) {
@@ -126,62 +273,49 @@ export function StudyReader({
                 contentText = msg.content.text || msg.content.content || JSON.stringify(msg.content)
               }
 
-              console.log('[StudyReader] Processing message:', msg.role, contentText?.substring(0, 50))
+              console.log('[StudyReader] Processing message:', msg.role, contentText?.substring(0, 50), 'Full length:', contentText?.length)
               if (msg.role === 'assistant' && contentText) {
-                // Update or add assistant message
+                // Find or create streaming message
                 setMessages((prev) => {
-                  // Find the last assistant message that is currently streaming (temporary ID)
-                  // or the last assistant message if we're updating an existing one
                   const lastStreamingIndex = prev.findLastIndex(
                     (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
                   )
 
+                  let streamingMessageId: string
+
                   if (lastStreamingIndex >= 0) {
-                    // Update existing streaming message
-                    const updated = [...prev]
-                    updated[lastStreamingIndex] = {
-                      ...updated[lastStreamingIndex],
-                      content: contentText,
+                    streamingMessageId = prev[lastStreamingIndex].id
+                    const existingMessage = prev[lastStreamingIndex]
+                    
+                    // Always update typewriter with the latest full text
+                    if (typewriterRef.current.messageId === streamingMessageId) {
+                      // Update the full text - typewriter will continue animating
+                      typewriterRef.current.fullText = contentText
+                      console.log('[StudyReader] Updated typewriter fullText, length:', contentText.length)
+                    } else {
+                      // Start typewriter if not running for this message
+                      console.log('[StudyReader] Starting typewriter for existing message, length:', contentText.length)
+                      startTypewriter(contentText, streamingMessageId, 20)
                     }
-                    console.log('[StudyReader] Updated streaming message at index', lastStreamingIndex)
-                    return updated
+                    
+                    return prev
                   } else {
-                    // Check if there's a last assistant message that we should update
-                    const lastAssistantIndex = prev.findLastIndex(
-                      (m) => m.role === 'assistant'
-                    )
-                    
-                    // Only update if the last assistant message is very recent (within last 2 seconds)
-                    // This handles the case where we're continuing a stream
-                    if (lastAssistantIndex >= 0) {
-                      const lastMsg = prev[lastAssistantIndex]
-                      const msgTime = new Date(lastMsg.timestamp).getTime()
-                      const now = Date.now()
-                      const timeDiff = now - msgTime
-                      
-                      // If message is very recent (< 2 seconds), update it (likely continuation)
-                      if (timeDiff < 2000) {
-                        const updated = [...prev]
-                        updated[lastAssistantIndex] = {
-                          ...updated[lastAssistantIndex],
-                          content: contentText,
-                        }
-                        console.log('[StudyReader] Updated recent message at index', lastAssistantIndex)
-                        return updated
-                      }
-                    }
-                    
-                    // Add new message for new page response
-                    console.log('[StudyReader] Adding new assistant message for page', newPage)
-                    return [
+                    // Create new streaming message
+                    console.log('[StudyReader] Adding new assistant message for page', newPage, 'length:', contentText.length)
+                    const newId = `streaming-${generateMessageId()}`
+                    streamingMessageId = newId
+                    const updated = [
                       ...prev,
                       {
-                        id: `streaming-${generateMessageId()}`,
-                        role: 'assistant',
-                        content: contentText,
+                        id: newId,
+                        role: 'assistant' as const,
+                        content: '',
                         timestamp: new Date().toISOString(),
                       },
                     ]
+                    // Start typewriter with the full text
+                    startTypewriter(contentText, newId, 20)
+                    return updated
                   }
                 })
               }
@@ -192,20 +326,75 @@ export function StudyReader({
           console.error('[StudyReader] Chat initiation error:', error)
           setIsLoading(false)
           setIsStreaming(false)
+          
+          // Show error message in chat
+          setMessages((prev) => {
+            const lastStreamingIndex = prev.findLastIndex(
+              (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+            )
+            
+            if (lastStreamingIndex >= 0) {
+              // Replace streaming message with error
+              const updated = [...prev]
+              updated[lastStreamingIndex] = {
+                ...updated[lastStreamingIndex],
+                id: generateMessageId(), // Finalize ID
+                content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+              }
+              return updated
+            } else {
+              // Add error message if no streaming message exists
+              return [
+                ...prev,
+                {
+                  id: generateMessageId(),
+                  role: 'assistant',
+                  content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+                  timestamp: new Date().toISOString(),
+                },
+              ]
+            }
+          })
         },
         () => {
           console.log('[StudyReader] Chat stream completed')
           setIsLoading(false)
           setIsStreaming(false)
           
-          // Replace streaming message ID with final ID
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id.startsWith('streaming-')
-                ? { ...msg, id: generateMessageId() }
-                : msg
-            )
-          )
+          // Ensure typewriter completes and finalize message ID
+          // First, get the last received content from the typewriter ref
+          const lastFullText = typewriterRef.current.fullText
+          
+          setMessages((prev) => {
+            return prev.map((msg) => {
+              if (msg.id.startsWith('streaming-')) {
+                // Stop typewriter and ensure full content is displayed
+                stopTypewriter()
+                
+                // Use fullText from typewriter if available, otherwise use current content
+                // If neither is available, something went wrong - but we should have content
+                const finalContent = lastFullText || typewriterRef.current.fullText || msg.content || ''
+                
+                console.log('[StudyReader] Finalizing message:', {
+                  messageId: msg.id,
+                  typewriterMessageId: typewriterRef.current.messageId,
+                  lastFullTextLength: lastFullText?.length || 0,
+                  currentContentLength: msg.content?.length || 0,
+                  finalContentLength: finalContent.length
+                })
+                
+                return {
+                  ...msg,
+                  id: generateMessageId(),
+                  content: finalContent, // Always use the full text
+                }
+              }
+              return msg
+            })
+          })
+          
+          // Stop any remaining typewriter
+          stopTypewriter()
           
           if (streamControllerRef.current) {
             streamControllerRef.current.close()
@@ -220,9 +409,38 @@ export function StudyReader({
         console.error('Error initiating chat:', error)
         setIsLoading(false)
         setIsStreaming(false)
+        
+        // Show error message in chat
+        setMessages((prev) => {
+          const lastStreamingIndex = prev.findLastIndex(
+            (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+          )
+          
+          if (lastStreamingIndex >= 0) {
+            // Replace streaming message with error
+            const updated = [...prev]
+            updated[lastStreamingIndex] = {
+              ...updated[lastStreamingIndex],
+              id: generateMessageId(), // Finalize ID
+              content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+            }
+            return updated
+          } else {
+            // Add error message if no streaming message exists
+            return [
+              ...prev,
+              {
+                id: generateMessageId(),
+                role: 'assistant',
+                content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+                timestamp: new Date().toISOString(),
+              },
+            ]
+          }
+        })
       }
     },
-    [materialId, userId, pageCount, generateMessageId]
+    [materialId, userId, pageCount, generateMessageId, startTypewriter, stopTypewriter]
   )
 
   // Handle user message
@@ -235,10 +453,22 @@ export function StudyReader({
         content: message,
         timestamp: new Date().toISOString(),
       }
-      setMessages((prev) => [...prev, userMessage])
+      
+      // Add placeholder assistant message for typing indicator
+      const placeholderAssistant: ChatMessage = {
+        id: `streaming-${generateMessageId()}`,
+        role: 'assistant',
+        content: '',
+        timestamp: new Date().toISOString(),
+      }
+      
+      setMessages((prev) => [...prev, userMessage, placeholderAssistant])
 
       setIsLoading(true)
       setIsStreaming(true)
+
+      // Stop any running typewriter
+      stopTypewriter()
 
       try {
         await sendMessage(
@@ -250,10 +480,70 @@ export function StudyReader({
               console.error('Chat error:', chunk.error)
               setIsLoading(false)
               setIsStreaming(false)
+              
+              // Show error message in chat
+              setMessages((prev) => {
+                const lastStreamingIndex = prev.findLastIndex(
+                  (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+                )
+                
+                if (lastStreamingIndex >= 0) {
+                  // Replace streaming message with error
+                  const updated = [...prev]
+                  updated[lastStreamingIndex] = {
+                    ...updated[lastStreamingIndex],
+                    id: generateMessageId(), // Finalize ID
+                    content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut.',
+                  }
+                  return updated
+                } else {
+                  // Add error message if no streaming message exists
+                  return [
+                    ...prev,
+                    {
+                      id: generateMessageId(),
+                      role: 'assistant',
+                      content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut.',
+                      timestamp: new Date().toISOString(),
+                    },
+                  ]
+                }
+              })
               return
             }
 
-            // Handle different chunk structures: chunk.messages or chunk.agent.messages or chunk[node_name].messages
+            // Handle delta events for ghostwriter effect
+            if (chunk.type === 'delta' && chunk.role === 'assistant' && chunk.delta) {
+              setMessages((prev) => {
+                const lastStreamingIndex = prev.findLastIndex(
+                  (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+                )
+
+                if (lastStreamingIndex >= 0) {
+                  // Append delta to existing streaming message
+                  const updated = [...prev]
+                  updated[lastStreamingIndex] = {
+                    ...updated[lastStreamingIndex],
+                    content: (updated[lastStreamingIndex].content || '') + chunk.delta,
+                  }
+                  return updated
+                } else {
+                  // Create new streaming message if none exists
+                  return [
+                    ...prev,
+                    {
+                      id: `streaming-${generateMessageId()}`,
+                      role: 'assistant',
+                      content: chunk.delta,
+                      timestamp: new Date().toISOString(),
+                    },
+                  ]
+                }
+              })
+              return
+            }
+
+            // Handle regular message chunks (for compatibility and tool responses)
             let messages: Array<{ role: string; content: any }> = []
             
             if (chunk.messages) {
@@ -293,32 +583,49 @@ export function StudyReader({
                   contentText = msg.content.text || msg.content.content || JSON.stringify(msg.content)
                 }
 
+                console.log('[StudyReader] Processing message (sendMessage):', msg.role, contentText?.substring(0, 50), 'Full length:', contentText?.length)
                 if (msg.role === 'assistant' && contentText) {
-                  // Update or add assistant message
+                  // Find or create streaming message
                   setMessages((prev) => {
-                    const existingIndex = prev.findIndex(
-                      (m) => m.role === 'assistant' && m.id.startsWith('temp-')
+                    const lastStreamingIndex = prev.findLastIndex(
+                      (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
                     )
 
-                    if (existingIndex >= 0) {
-                      // Update existing streaming message
-                      const updated = [...prev]
-                      updated[existingIndex] = {
-                        ...updated[existingIndex],
-                        content: contentText,
+                    let streamingMessageId: string
+
+                    if (lastStreamingIndex >= 0) {
+                      streamingMessageId = prev[lastStreamingIndex].id
+                      const existingMessage = prev[lastStreamingIndex]
+                      
+                      // Always update typewriter with the latest full text
+                      if (typewriterRef.current.messageId === streamingMessageId) {
+                        // Update the full text - typewriter will continue animating
+                        typewriterRef.current.fullText = contentText
+                        console.log('[StudyReader] Updated typewriter fullText (sendMessage), length:', contentText.length)
+                      } else {
+                        // Start typewriter if not running for this message
+                        console.log('[StudyReader] Starting typewriter for existing message (sendMessage), length:', contentText.length)
+                        startTypewriter(contentText, streamingMessageId, 20)
                       }
-                      return updated
+                      
+                      return prev
                     } else {
-                      // Add new message
-                      return [
+                      // Create new streaming message
+                      console.log('[StudyReader] Adding new assistant message (sendMessage), length:', contentText.length)
+                      const newId = `streaming-${generateMessageId()}`
+                      streamingMessageId = newId
+                      const updated = [
                         ...prev,
                         {
-                          id: `temp-${generateMessageId()}`,
-                          role: 'assistant',
-                          content: contentText,
+                          id: newId,
+                          role: 'assistant' as const,
+                          content: '',
                           timestamp: new Date().toISOString(),
                         },
                       ]
+                      // Start typewriter with the full text
+                      startTypewriter(contentText, newId, 20)
+                      return updated
                     }
                   })
                 }
@@ -329,27 +636,112 @@ export function StudyReader({
             console.error('Send message error:', error)
             setIsLoading(false)
             setIsStreaming(false)
+            
+            // Show error message in chat
+            setMessages((prev) => {
+              const lastStreamingIndex = prev.findLastIndex(
+                (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+              )
+              
+              if (lastStreamingIndex >= 0) {
+                // Replace streaming message with error
+                const updated = [...prev]
+                updated[lastStreamingIndex] = {
+                  ...updated[lastStreamingIndex],
+                  id: generateMessageId(), // Finalize ID
+                  content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut.',
+                }
+                return updated
+              } else {
+                // Add error message if no streaming message exists
+                return [
+                  ...prev,
+                  {
+                    id: generateMessageId(),
+                    role: 'assistant',
+                    content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut.',
+                    timestamp: new Date().toISOString(),
+                  },
+                ]
+              }
+            })
           },
           () => {
+            console.log('[StudyReader] Send message stream completed')
             setIsLoading(false)
             setIsStreaming(false)
-            // Replace temp message with final message
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id.startsWith('temp-')
-                  ? { ...msg, id: generateMessageId() }
-                  : msg
-              )
-            )
+            
+            // Ensure typewriter completes and finalize message ID
+            // First, get the last received content from the typewriter ref
+            const lastFullText = typewriterRef.current.fullText
+            
+            setMessages((prev) => {
+              return prev.map((msg) => {
+                if (msg.id.startsWith('streaming-')) {
+                  // Stop typewriter and ensure full content is displayed
+                  stopTypewriter()
+                  
+                  // Use fullText from typewriter if available, otherwise use current content
+                  const finalContent = lastFullText || typewriterRef.current.fullText || msg.content || ''
+                  
+                  console.log('[StudyReader] Finalizing message (sendMessage):', {
+                    messageId: msg.id,
+                    typewriterMessageId: typewriterRef.current.messageId,
+                    lastFullTextLength: lastFullText?.length || 0,
+                    currentContentLength: msg.content?.length || 0,
+                    finalContentLength: finalContent.length
+                  })
+                  
+                  return {
+                    ...msg,
+                    id: generateMessageId(),
+                    content: finalContent, // Always use the full text
+                  }
+                }
+                return msg
+              })
+            })
+            
+            // Stop any remaining typewriter
+            stopTypewriter()
           }
         )
       } catch (error) {
         console.error('Error sending message:', error)
         setIsLoading(false)
         setIsStreaming(false)
+        
+        // Show error message in chat
+        setMessages((prev) => {
+          const lastStreamingIndex = prev.findLastIndex(
+            (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+          )
+          
+          if (lastStreamingIndex >= 0) {
+            // Replace streaming message with error
+            const updated = [...prev]
+            updated[lastStreamingIndex] = {
+              ...updated[lastStreamingIndex],
+              id: generateMessageId(), // Finalize ID
+              content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut.',
+            }
+            return updated
+          } else {
+            // Add error message if no streaming message exists
+            return [
+              ...prev,
+              {
+                id: generateMessageId(),
+                role: 'assistant',
+                content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut.',
+                timestamp: new Date().toISOString(),
+              },
+            ]
+          }
+        })
       }
     },
-    [materialId, userId, generateMessageId]
+    [materialId, userId, generateMessageId, startTypewriter, stopTypewriter]
   )
 
   // Track if we're initializing to prevent double calls
@@ -397,9 +789,17 @@ export function StudyReader({
 
     return () => {
       isMounted = false
+      stopTypewriter()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only run on mount
+
+  // Cleanup typewriter on unmount
+  useEffect(() => {
+    return () => {
+      stopTypewriter()
+    }
+  }, [stopTypewriter])
 
   // Handle page change (but not during initial session load)
   useEffect(() => {
@@ -422,6 +822,33 @@ export function StudyReader({
     }
   }, [])
 
+  // Log message count and chat width whenever messages change
+  useEffect(() => {
+    const chatWidth =
+      typeof window !== 'undefined' && chatPanelRef.current
+        ? chatPanelRef.current.getBoundingClientRect().width
+        : null
+
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: 'debug-session',
+        runId: 'pre-fix',
+        hypothesisId: 'H2',
+        location: 'study-reader.tsx:useEffect(messages)',
+        message: 'Messages changed, logging count and chat width',
+        data: {
+          messageCount: messages.length,
+          chatWidth,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {})
+    // #endregion agent log
+  }, [messages.length])
+
   const handlePreviousPage = () => {
     if (currentPage > 1) {
       setCurrentPage(currentPage - 1)
@@ -436,10 +863,30 @@ export function StudyReader({
 
   return (
     <div className="flex flex-col h-full max-h-full min-h-0 overflow-hidden">
-      <Group direction="horizontal" className="flex-1 min-h-0 max-h-full overflow-hidden">
+      <Group
+        direction="horizontal"
+        className="flex-1 min-h-0 max-h-full overflow-hidden"
+        onLayout={(sizes) => {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sessionId: 'debug-session',
+              runId: 'pre-fix',
+              hypothesisId: 'H1',
+              location: 'study-reader.tsx:Group/onLayout',
+              message: 'Panel layout sizes updated',
+              data: { sizes },
+              timestamp: Date.now(),
+            }),
+          }).catch(() => {})
+          // #endregion agent log
+        }}
+      >
         {/* Left Panel: PDF Viewer */}
-        <Panel defaultSize={50} minSize={30}>
-          <div className="flex flex-col h-full bg-background">
+        <Panel defaultSize="50" minSize={30}>
+          <div className="flex flex-col h-full min-w-0 bg-background">
             <div className="flex items-center justify-between p-4 border-b">
               <div className="flex items-center gap-2">
                 <Button
@@ -472,8 +919,11 @@ export function StudyReader({
         <PanelResizeHandle className="w-2 bg-border hover:bg-border/80 transition-colors" />
 
         {/* Right Panel: Chat Interface */}
-        <Panel defaultSize={50} minSize={30}>
-          <div ref={chatPanelRef} className="flex h-full min-h-0 overflow-hidden">
+        <Panel defaultSize="50" minSize={30}>
+          <div
+            ref={chatPanelRef}
+            className="flex h-full w-full min-h-0 min-w-0 overflow-hidden"
+          >
             <ChatInterface
               messages={messages}
               onSend={handleSendMessage}
