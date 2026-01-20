@@ -3,6 +3,8 @@
 import { useRef } from 'react'
 import { ConversationEmptyState } from '@/components/ai/conversation'
 import { Loader } from '@/components/ui/loader'
+import { Switch } from '@/components/ui/switch'
+import { Label } from '@/components/ui/label'
 import { ChatMessage } from './chat-message'
 import { TutorPromptInput } from './tutor-prompt-input'
 import type { ChatMessage as ChatMessageType } from '@/types'
@@ -13,6 +15,8 @@ interface ChatInterfaceProps {
   isLoading: boolean
   isStreaming?: boolean
   contextInfo?: string
+  showTools?: boolean
+  onToggleTools?: (enabled: boolean) => void
 }
 
 export function ChatInterface({
@@ -21,6 +25,8 @@ export function ChatInterface({
   isLoading,
   isStreaming = false,
   contextInfo,
+  showTools = false,
+  onToggleTools,
 }: ChatInterfaceProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
@@ -28,6 +34,20 @@ export function ChatInterface({
 
   return (
     <div className="flex flex-col h-full w-full min-h-0 bg-[#f6f4f1]">
+      {/* Tool Toggle Switch - Dezente Position oben rechts */}
+      {onToggleTools && (
+        <div className="flex items-center justify-end gap-2 px-4 pt-3 pb-2 flex-shrink-0">
+          <Label htmlFor="show-tools" className="text-xs text-muted-foreground cursor-pointer">
+            Tools anzeigen
+          </Label>
+          <Switch
+            id="show-tools"
+            checked={showTools}
+            onCheckedChange={onToggleTools}
+          />
+        </div>
+      )}
+
       {/* Optional Context Banner */}
       {contextInfo && (
         <div className="bg-blue-50 border-b border-blue-200 p-4 flex-shrink-0">
@@ -84,6 +104,8 @@ export function ChatInterface({
                     role={message.role}
                     content={message.content}
                     isStreaming={isStreamingMessage}
+                    toolCalls={message.toolCalls}
+                    showTools={showTools}
                   />
                 </div>
               )

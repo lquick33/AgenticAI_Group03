@@ -7,7 +7,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ChatInterface } from './chat-interface'
 import { initiateChat, sendMessage, getStudySession } from '@/lib/api/study'
-import type { ChatMessage } from '@/types'
+import type { ChatMessage, ToolCall } from '@/types'
 
 // Dynamically import PDF Viewer with SSR disabled
 const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default: mod.PdfViewer })), {
@@ -33,6 +33,14 @@ export function StudyReader({
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
+  const [showTools, setShowTools] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('study-reader-show-tools')
+      return saved === 'true'
+    }
+    return false
+  })
+  const [toolCallsByMessage, setToolCallsByMessage] = useState<Map<string, ToolCall[]>>(new Map())
   const streamControllerRef = useRef<{ close: () => void } | null>(null)
   const messageIdCounter = useRef(0)
   const chatPanelRef = useRef<HTMLDivElement | null>(null)
@@ -206,6 +214,36 @@ export function StudyReader({
                   },
                 ]
               }
+            })
+            return
+          }
+
+          // Handle tool call events
+          if (chunk.type === 'tool_call' && chunk.tool_calls) {
+            setMessages((prev) => {
+              const lastStreamingIndex = prev.findLastIndex(
+                (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+              )
+              
+              if (lastStreamingIndex >= 0) {
+                const messageId = prev[lastStreamingIndex].id
+                setToolCallsByMessage((prevMap) => {
+                  const newMap = new Map(prevMap)
+                  const existing = newMap.get(messageId) || []
+                  newMap.set(messageId, [...existing, ...chunk.tool_calls])
+                  return newMap
+                })
+                
+                // Also update the message with tool calls
+                const updated = [...prev]
+                const currentToolCalls = toolCallsByMessage.get(messageId) || []
+                updated[lastStreamingIndex] = {
+                  ...updated[lastStreamingIndex],
+                  toolCalls: [...currentToolCalls, ...chunk.tool_calls],
+                }
+                return updated
+              }
+              return prev
             })
             return
           }
@@ -511,6 +549,66 @@ export function StudyReader({
                       id: generateMessageId(),
                       role: 'assistant',
                       content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut.',
+                      timestamp: new Date().toISOString(),
+                    },
+                  ]
+                }
+              })
+              return
+            }
+
+            // Handle tool call events
+            if (chunk.type === 'tool_call' && chunk.tool_calls) {
+              setMessages((prev) => {
+                const lastStreamingIndex = prev.findLastIndex(
+                  (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+                )
+                
+                if (lastStreamingIndex >= 0) {
+                  const messageId = prev[lastStreamingIndex].id
+                  setToolCallsByMessage((prevMap) => {
+                    const newMap = new Map(prevMap)
+                    const existing = newMap.get(messageId) || []
+                    newMap.set(messageId, [...existing, ...chunk.tool_calls])
+                    return newMap
+                  })
+                  
+                  const updated = [...prev]
+                  const currentToolCalls = toolCallsByMessage.get(messageId) || []
+                  updated[lastStreamingIndex] = {
+                    ...updated[lastStreamingIndex],
+                    toolCalls: [...currentToolCalls, ...chunk.tool_calls],
+                  }
+                  return updated
+                }
+                return prev
+              })
+              return
+            }
+
+            // Handle delta events for ghostwriter effect
+            if (chunk.type === 'delta' && chunk.role === 'assistant' && chunk.delta) {
+              setMessages((prev) => {
+                const lastStreamingIndex = prev.findLastIndex(
+                  (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+                )
+
+                if (lastStreamingIndex >= 0) {
+                  // Append delta to existing streaming message
+                  const updated = [...prev]
+                  updated[lastStreamingIndex] = {
+                    ...updated[lastStreamingIndex],
+                    content: (updated[lastStreamingIndex].content || '') + chunk.delta,
+                  }
+                  return updated
+                } else {
+                  // Create new streaming message if none exists
+                  return [
+                    ...prev,
+                    {
+                      id: `streaming-${generateMessageId()}`,
+                      role: 'assistant',
+                      content: chunk.delta,
                       timestamp: new Date().toISOString(),
                     },
                   ]
@@ -931,6 +1029,11 @@ export function StudyReader({
               onSend={handleSendMessage}
               isLoading={isLoading}
               isStreaming={isStreaming}
+              showTools={showTools}
+              onToggleTools={(enabled) => {
+                setShowTools(enabled)
+                localStorage.setItem('study-reader-show-tools', String(enabled))
+              }}
             />
           </div>
         </Panel>
