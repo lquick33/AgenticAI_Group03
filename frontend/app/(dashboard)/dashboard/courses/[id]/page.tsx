@@ -161,6 +161,7 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
                 <CourseMaterialsList 
                   materials={(materials || []) as CourseMaterial[]} 
                   courseId={id}
+                  userId={user.id}
                 />
               </div>
             </div>

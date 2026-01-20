@@ -149,7 +149,7 @@ async def analyze_pdf_page(
     
     # Initialize LLM with structured output
     llm = get_gemini_model(api_key)
-    structured_llm = llm.with_structured_output(SlideAnalysis).with_config({"run_name": "page_analysis"})
+    structured_llm = llm.with_structured_output(SlideAnalysis).with_config({"run_name": "pdf-llm-page-analysis"})
     
     # Create prompt for analysis
     analysis_prompt = """Analysiere diese Vorlesungsfolie gründlich und extrahiere strukturierte Informationen.
@@ -251,7 +251,7 @@ async def generate_material_summary(
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not found in settings")
 
-    llm = get_gemini_model(api_key)
+    llm = get_gemini_model(api_key).with_config({"run_name": "pdf-llm-material-summary"})
 
     # We call the base Chat model (no structured_output), but enforce
     # JSON-only output via the prompt.

@@ -625,3 +625,60 @@ def save_flashcards(
     except Exception as e:
         raise Exception(f"Failed to save flashcards: {str(e)}")
 
+
+def get_flashcards_for_material(
+    course_material_id: str,
+    user_id: str
+) -> List[dict]:
+    """
+    Get all flashcards for a course material.
+    
+    Retrieves flashcards by finding all page analyses for the material
+    and then fetching flashcards linked to those page analyses.
+    
+    Args:
+        course_material_id: Course material ID (UUID)
+        user_id: User ID (UUID) for authorization
+        
+    Returns:
+        List of flashcard dicts with keys:
+            - id: Flashcard ID
+            - front: Front side text
+            - back: Back side text
+            - source_page_analysis_id: Page analysis ID
+            - created_at: Creation timestamp
+            - course_id: Course ID
+            - user_id: User ID
+            
+    Raises:
+        Exception: If database operation fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        # First, get all page analysis IDs for this material
+        page_analyses = get_all_page_analyses_for_material(course_material_id, user_id)
+        
+        if not page_analyses:
+            return []
+        
+        page_analysis_ids = [pa.get("id") for pa in page_analyses if pa.get("id")]
+        
+        if not page_analysis_ids:
+            return []
+        
+        # Get all flashcards linked to these page analyses
+        response = (
+            client.table("flashcards")
+            .select("id, front, back, source_page_analysis_id, created_at, course_id, user_id")
+            .eq("user_id", user_id)
+            .in_("source_page_analysis_id", page_analysis_ids)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        
+        return response.data if response.data else []
+        
+    except Exception as e:
+        raise Exception(f"Failed to get flashcards for material: {str(e)}")
+

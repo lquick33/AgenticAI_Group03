@@ -42,6 +42,7 @@ from app.services.storage import (
     get_supabase_client,
     get_page_analysis,
     get_page_analysis_id,
+    get_flashcards_for_material,
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_csv
@@ -132,9 +133,9 @@ async def upload_pdf(
                     "user_id": user_id,
                     "course_id": course_id
                 }
-                logger.info(f"🟡 Langfuse: Starting trace 'pdf-upload' with input: {trace_input}")
+                logger.info(f"🟡 Langfuse: Starting trace 'pdf-api-upload' with input: {trace_input}")
                 trace_ctx = langfuse.start_as_current_observation(
-                    name="pdf-upload",
+                    name="pdf-api-upload",
                     input=trace_input,
                     metadata={
                         "user_id": user_id,
@@ -142,7 +143,7 @@ async def upload_pdf(
                         "endpoint": "/upload"
                     }
                 )
-                logger.info("🟢 Langfuse: Trace 'pdf-upload' started successfully")
+                logger.info("🟢 Langfuse: Trace 'pdf-api-upload' started successfully")
         except Exception as e:
             logger.warning(f"🔴 Langfuse: Failed to start trace: {e}")
     
@@ -302,7 +303,7 @@ async def upload_pdf(
                         "page_count": page_count
                     }
                 )
-                logger.info("🟢 Langfuse: Trace 'pdf-upload' updated with success")
+                logger.info("🟢 Langfuse: Trace 'pdf-api-upload' updated with success")
             except Exception as e:
                 logger.warning(f"🔴 Langfuse: Failed to update trace: {e}")
         
@@ -320,7 +321,7 @@ async def upload_pdf(
         if trace_ctx:
             try:
                 trace_ctx.__exit__(None, None, None)
-                logger.info("🟢 Langfuse: Trace 'pdf-upload' closed - data sent to Langfuse")
+                logger.info("🟢 Langfuse: Trace 'pdf-api-upload' closed - data sent to Langfuse")
             except Exception as e:
                 logger.warning(f"🔴 Langfuse: Error closing trace: {e}")
         
@@ -349,7 +350,7 @@ async def upload_pdf(
                     output={"error": str(e)},
                     level="ERROR"
                 )
-                logger.warning("🔴 Langfuse: Trace 'pdf-upload' marked as ERROR")
+                logger.warning("🔴 Langfuse: Trace 'pdf-api-upload' marked as ERROR")
             except Exception as trace_error:
                 logger.warning(f"🔴 Langfuse: Error updating trace: {trace_error}")
         
@@ -1889,9 +1890,9 @@ async def generate_flashcards(
                     "course_material_id": course_material_id,
                     "user_id": user_id
                 }
-                logger.info(f"🟡 Langfuse: Starting trace 'flashcard-generation' with input: {trace_input}")
+                logger.info(f"🟡 Langfuse: Starting trace 'flashcard-api-request' with input: {trace_input}")
                 trace_ctx = langfuse.start_as_current_observation(
-                    name="flashcard-generation",
+                    name="flashcard-api-request",
                     input=trace_input,
                     metadata={
                         "user_id": user_id,
@@ -1899,7 +1900,7 @@ async def generate_flashcards(
                         "endpoint": "/flashcards/generate"
                     }
                 )
-                logger.info("🟢 Langfuse: Trace 'flashcard-generation' started successfully")
+                logger.info("🟢 Langfuse: Trace 'flashcard-api-request' started successfully")
         except Exception as e:
             logger.warning(f"🔴 Langfuse: Failed to start trace: {e}")
     
@@ -1956,7 +1957,7 @@ async def generate_flashcards(
                         "course_id": course_id
                     }
                 )
-                logger.info("🟢 Langfuse: Trace 'flashcard-generation' updated with success")
+                logger.info("🟢 Langfuse: Trace 'flashcard-api-request' updated with success")
             except Exception as e:
                 logger.warning(f"🔴 Langfuse: Failed to update trace: {e}")
         
@@ -1970,7 +1971,7 @@ async def generate_flashcards(
         if trace_ctx:
             try:
                 trace_ctx.__exit__(None, None, None)
-                logger.info("🟢 Langfuse: Trace 'flashcard-generation' closed - data sent to Langfuse")
+                logger.info("🟢 Langfuse: Trace 'flashcard-api-request' closed - data sent to Langfuse")
             except Exception as e:
                 logger.warning(f"🔴 Langfuse: Error closing trace: {e}")
         
@@ -1997,7 +1998,7 @@ async def generate_flashcards(
                     output={"error": str(e)},
                     level="ERROR"
                 )
-                logger.warning("🔴 Langfuse: Trace 'flashcard-generation' marked as ERROR")
+                logger.warning("🔴 Langfuse: Trace 'flashcard-api-request' marked as ERROR")
             except Exception as trace_error:
                 logger.warning(f"🔴 Langfuse: Error updating trace: {trace_error}")
         
@@ -2207,4 +2208,192 @@ async def cancel_flashcard_task(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to cancel task: {str(e)}",
+        )
+
+
+@router.get("/flashcards/{course_material_id}", status_code=200)
+async def get_flashcards(
+    course_material_id: str = Path(..., description="Course material ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> dict:
+    """
+    Get all flashcards for a course material from Supabase.
+    
+    This endpoint retrieves flashcards that were previously generated
+    and saved to the database, allowing users to access their flashcards
+    at any time without needing the original task.
+    
+    Args:
+        course_material_id: Course material ID (UUID)
+        user_id: User ID (UUID) for authorization
+        
+    Returns:
+        Dict with flashcards list:
+        {
+            "flashcards": [
+                {
+                    "id": "...",
+                    "front": "...",
+                    "back": "...",
+                    "source_page_analysis_id": "...",
+                    "created_at": "...",
+                    "course_id": "...",
+                    "user_id": "..."
+                },
+                ...
+            ]
+        }
+        
+    Raises:
+        HTTPException: If validation fails or flashcards cannot be retrieved
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first.",
+            )
+        
+        # Validate that course material belongs to user
+        client = get_supabase_client()
+        material_response = (
+            client.table("course_materials")
+            .select("id, user_id")
+            .eq("id", course_material_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+        
+        # Get flashcards from database
+        flashcards = get_flashcards_for_material(course_material_id, user_id)
+        
+        return {
+            "flashcards": flashcards,
+            "count": len(flashcards)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting flashcards: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get flashcards: {str(e)}",
+        )
+
+
+@router.get("/flashcards/{course_material_id}/download")
+async def download_flashcards_from_db(
+    course_material_id: str = Path(..., description="Course material ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> StreamingResponse:
+    """
+    Download flashcards for a course material as CSV from Supabase.
+    
+    This endpoint loads flashcards directly from the database and generates
+    a CSV file on-the-fly. This allows users to download flashcards at any time
+    without needing the original task.
+    
+    Args:
+        course_material_id: Course material ID (UUID)
+        user_id: User ID (UUID) for authorization
+        
+    Returns:
+        StreamingResponse with CSV file
+        
+    Raises:
+        HTTPException: If flashcards not found, access denied, or download fails
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first.",
+            )
+        
+        # Validate that course material belongs to user and get filename
+        client = get_supabase_client()
+        material_response = (
+            client.table("course_materials")
+            .select("id, user_id, file_name, course_id")
+            .eq("id", course_material_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+        
+        material = material_response.data
+        course_id = material.get("course_id")
+        
+        # Get course title for filename
+        course_response = (
+            client.table("courses")
+            .select("title")
+            .eq("id", course_id)
+            .single()
+            .execute()
+        )
+        
+        course_title = course_response.data.get("title", "course") if course_response.data else "course"
+        file_name = material.get("file_name", "material")
+        
+        # Get flashcards from database
+        flashcards = get_flashcards_for_material(course_material_id, user_id)
+        
+        if not flashcards:
+            raise HTTPException(
+                status_code=404,
+                detail="No flashcards found for this material. Please generate flashcards first.",
+            )
+        
+        # Convert to format expected by build_anki_csv
+        cards_for_csv = []
+        for card in flashcards:
+            cards_for_csv.append({
+                "front": card.get("front", ""),
+                "back": card.get("back", ""),
+                "tags": []  # Tags are not stored separately in DB, but that's okay
+            })
+        
+        # Build CSV
+        csv_bytes = build_anki_csv(cards_for_csv)
+        
+        # Generate filename
+        import re
+        safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
+        safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
+        filename = f"flashcards_{safe_course_title}_{safe_file_name}.csv"
+        
+        # Return CSV file
+        return StreamingResponse(
+            io.BytesIO(csv_bytes),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Type": "text/csv; charset=utf-8"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading flashcards from database: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to download flashcards: {str(e)}",
         )
