@@ -45,6 +45,11 @@ export function StudyReader({
   const messageIdCounter = useRef(0)
   const chatPanelRef = useRef<HTMLDivElement | null>(null)
   
+  // Debouncing and request tracking for page changes
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const currentRequestIdRef = useRef<string | null>(null)
+  const pageChangeHistoryRef = useRef<Array<{ page: number; timestamp: number }>>([])
+  
   // Typewriter animation state
   const typewriterRef = useRef<{
     intervalId: NodeJS.Timeout | null
@@ -128,19 +133,9 @@ export function StudyReader({
     }, speed)
   }, [stopTypewriter])
 
-  // Handle page change - initiate chat
-  const handlePageChange = useCallback(
-    async (newPage: number, skipStateUpdate: boolean = false, isInitialOpen: boolean = false) => {
-      if (newPage < 1 || newPage > pageCount) return
-
-      // Only update state if not explicitly skipped (to prevent double triggers during init)
-      // React will optimize if the value hasn't actually changed
-      if (!skipStateUpdate) {
-        setCurrentPage(newPage)
-      }
-      setIsLoading(true)
-      setIsStreaming(true)
-
+  // Internal function to initiate chat with request ID tracking
+  const initiateChatForPage = useCallback(
+    async (page: number, requestId: string, isInitialOpen: boolean = false) => {
       // Stop any running typewriter
       stopTypewriter()
 
@@ -170,18 +165,24 @@ export function StudyReader({
         return prev
       })
 
-      // Keep existing messages - don't clear chat history
-      // The backend will maintain conversation continuity through the checkpointer
+      setIsLoading(true)
+      setIsStreaming(true)
 
-      // Initiate chat for new page
       try {
-        console.log('[StudyReader] Initiating chat for page', newPage, 'isInitialOpen:', isInitialOpen)
+        console.log('[StudyReader] Initiating chat for page', page, 'requestId:', requestId, 'isInitialOpen:', isInitialOpen)
         const streamController = await initiateChat(
         materialId,
-        newPage,
+        page,
         userId,
         (chunk) => {
-          console.log('[StudyReader] Received chunk:', chunk)
+          // Check if this chunk belongs to the current request
+          // If requestId doesn't match, ignore this chunk (it's from an outdated request)
+          if (currentRequestIdRef.current !== requestId) {
+            console.log('[StudyReader] Ignoring chunk from outdated request:', requestId, 'current:', currentRequestIdRef.current)
+            return
+          }
+
+          console.log('[StudyReader] Received chunk for request:', requestId, chunk)
           if (chunk.error) {
             console.error('[StudyReader] Chat error:', chunk.error)
             setIsLoading(false)
@@ -376,7 +377,7 @@ export function StudyReader({
                     return prev
                   } else {
                     // Create new streaming message
-                    console.log('[StudyReader] Adding new assistant message for page', newPage, 'length:', contentText.length)
+                    console.log('[StudyReader] Adding new assistant message for page', page, 'length:', contentText.length)
                     const newId = `streaming-${generateMessageId()}`
                     streamingMessageId = newId
                     const updated = [
@@ -398,6 +399,12 @@ export function StudyReader({
           }
         },
         (error) => {
+          // Only handle error if this is still the current request
+          if (currentRequestIdRef.current !== requestId) {
+            console.log('[StudyReader] Ignoring error from outdated request:', requestId)
+            return
+          }
+          
           console.error('[StudyReader] Chat initiation error:', error)
           setIsLoading(false)
           setIsStreaming(false)
@@ -432,7 +439,13 @@ export function StudyReader({
           })
         },
         () => {
-          console.log('[StudyReader] Chat stream completed')
+          // Only handle completion if this is still the current request
+          if (currentRequestIdRef.current !== requestId) {
+            console.log('[StudyReader] Ignoring completion from outdated request:', requestId)
+            return
+          }
+          
+          console.log('[StudyReader] Chat stream completed for request:', requestId)
           setIsLoading(false)
           setIsStreaming(false)
           
@@ -481,6 +494,12 @@ export function StudyReader({
 
         streamControllerRef.current = streamController
       } catch (error) {
+        // Only handle error if this is still the current request
+        if (currentRequestIdRef.current !== requestId) {
+          console.log('[StudyReader] Ignoring error from outdated request:', requestId)
+          return
+        }
+        
         console.error('Error initiating chat:', error)
         setIsLoading(false)
         setIsStreaming(false)
@@ -515,7 +534,69 @@ export function StudyReader({
         })
       }
     },
-    [materialId, userId, pageCount, generateMessageId, startTypewriter, stopTypewriter]
+    [materialId, userId, generateMessageId, startTypewriter, stopTypewriter]
+  )
+
+  // Handle page change with debouncing and fast scrolling detection
+  const handlePageChange = useCallback(
+    async (newPage: number, skipStateUpdate: boolean = false, isInitialOpen: boolean = false) => {
+      if (newPage < 1 || newPage > pageCount) return
+
+      // Only update state if not explicitly skipped (to prevent double triggers during init)
+      if (!skipStateUpdate) {
+        setCurrentPage(newPage)
+      }
+
+      // Track page change history for fast scrolling detection
+      const now = Date.now()
+      pageChangeHistoryRef.current.push({ page: newPage, timestamp: now })
+      
+      // Keep only last 5 page changes (within last 2 seconds)
+      pageChangeHistoryRef.current = pageChangeHistoryRef.current
+        .filter((entry) => now - entry.timestamp < 2000)
+        .slice(-5)
+
+      // Check if user is scrolling fast (more than 3 pages in 1 second)
+      const recentChanges = pageChangeHistoryRef.current.filter(
+        (entry) => now - entry.timestamp < 1000
+      )
+      const isFastScrolling = recentChanges.length > 3
+
+      if (isFastScrolling && !isInitialOpen) {
+        console.log('[StudyReader] Fast scrolling detected, skipping chat initiation for page', newPage)
+        // Just update the page, don't initiate chat
+        // Remove any existing streaming messages
+        setMessages((prev) => {
+          return prev.filter((msg) => !msg.id.startsWith('streaming-'))
+        })
+        setIsLoading(false)
+        setIsStreaming(false)
+        return
+      }
+
+      // Clear existing debounce timer
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current)
+        debounceTimerRef.current = null
+      }
+
+      // Generate new request ID
+      const requestId = `req-${Date.now()}-${newPage}-${Math.random().toString(36).substr(2, 9)}`
+      currentRequestIdRef.current = requestId
+
+      // Set up debounced chat initiation
+      debounceTimerRef.current = setTimeout(async () => {
+        // Check if this is still the latest request
+        if (currentRequestIdRef.current !== requestId) {
+          console.log('[StudyReader] Request outdated, skipping:', requestId)
+          return
+        }
+
+        console.log('[StudyReader] Debounce completed, initiating chat for page', newPage, 'requestId:', requestId)
+        await initiateChatForPage(newPage, requestId, isInitialOpen)
+      }, 500) // 500ms debounce delay
+    },
+    [pageCount, initiateChatForPage]
   )
 
   // Handle user message
@@ -977,6 +1058,9 @@ export function StudyReader({
     return () => {
       if (streamControllerRef.current) {
         streamControllerRef.current.close()
+      }
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current)
       }
     }
   }, [])

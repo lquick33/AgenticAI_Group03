@@ -2072,7 +2072,10 @@ const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default:
 **Key Features**:
 - Split-screen layout with resizable panels (50/50 default)
 - Page navigation with previous/next buttons
-- Automatic chat initiation on page change
+- Automatic chat initiation on page change with debouncing
+- **Debouncing**: Waits 500ms after last page change before initiating chat
+- **Request-ID-Tracking**: Only processes chunks from the latest request to prevent race conditions
+- **Fast Scrolling Detection**: Skips chat initiation when user scrolls through more than 3 pages in 1 second
 - SSE streaming for agent responses
 - Message state management
 - Cleanup on unmount
@@ -2082,16 +2085,37 @@ const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default:
 - `messages: ChatMessage[]` - Chat message history
 - `isLoading: boolean` - Loading state
 - `isStreaming: boolean` - Streaming state
+- `showTools: boolean` - Tool visibility toggle (persisted in localStorage)
+- `toolCallsByMessage: Map<string, ToolCall[]>` - Tool calls per message
+
+**Refs for Debouncing and Request Tracking**:
+- `debounceTimerRef`: Timer for debouncing page changes
+- `currentRequestIdRef`: Current request ID to filter outdated chunks
+- `pageChangeHistoryRef`: History of recent page changes for fast scrolling detection
 
 **Event Handlers**:
-- `handlePageChange(newPage)`: Initiates chat for new page
+- `handlePageChange(newPage, skipStateUpdate?, isInitialOpen?)`: 
+  - Debounced page change handler (500ms delay)
+  - Detects fast scrolling (>3 pages in 1 second) and skips chat initiation
+  - Generates unique request ID for each chat initiation
+  - Only initiates chat if user stops scrolling
+- `initiateChatForPage(page, requestId, isInitialOpen?)`: 
+  - Internal function that actually starts the chat
+  - Filters chunks by request ID to ignore outdated responses
+  - Handles all chunk types (errors, tool calls, tool responses, deltas, messages)
 - `handleSendMessage(message)`: Sends user message
 - `handlePreviousPage()`, `handleNextPage()`: Page navigation
 
+**Race Condition Prevention**:
+- **Debouncing**: Prevents multiple simultaneous requests when user scrolls quickly
+- **Request-ID-Tracking**: Each chat request gets a unique ID; only chunks matching the current request ID are processed
+- **Fast Scrolling Detection**: When user scrolls through >3 pages in 1 second, chat initiation is skipped entirely
+- All chunk handlers check `currentRequestIdRef.current === requestId` before processing
+
 **useEffect Hooks**:
-- On mount: Initiates chat for page 1
-- On `currentPage` change: Initiates chat for new page
-- On unmount: Cleans up stream connections
+- On mount: Loads study session and initiates chat for saved/last page
+- On `currentPage` change: Debounced chat initiation for new page
+- On unmount: Cleans up stream connections and debounce timers
 
 **Dependencies**: 
 - `react-resizable-panels` - Split-screen layout
