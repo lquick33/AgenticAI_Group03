@@ -1787,15 +1787,173 @@ const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default:
 
 **Dependencies**: 
 - `@/components/ai/conversation` - Conversation components
-- `@/components/ai/message` - Message components
-- `@/components/ui/input` - Input field
-- `@/components/ui/button` - Send button
+- `@/components/study/chat-message` - Individual message component
+- `@/components/study/tutor-prompt-input` - Input component
 - `@/types` - ChatMessage type
 
 **Usage**: Used in StudyReader component
 
 **Related Files**: 
 - `frontend/components/study/study-reader.tsx` - Uses this component
+- `frontend/components/study/chat-message.tsx` - Message rendering
+- `frontend/components/study/tutor-prompt-input.tsx` - Input component
+
+---
+
+### `frontend/components/study/chat-message.tsx`
+
+**Purpose**: Individual chat message component with modern bubble design and Markdown support.
+
+**Key Features**:
+- Avatar display (black circle with "H" for assistant, gray with user icon for user)
+- Message bubbles with different styles for user (black) and assistant (gray)
+- Full Markdown rendering with custom styling
+- Responsive layout with proper spacing
+
+**Props**:
+- `id: string` - Message ID
+- `role: "user" | "assistant"` - Message role
+- `content: string` - Message content (Markdown supported)
+
+**Design**:
+- User messages: Black background (`bg-black text-white`), right-aligned
+- Assistant messages: Gray background (`bg-gray-100 text-gray-900`), left-aligned
+- Avatars: 8x8 rounded circles
+- Message bubbles: `rounded-2xl px-4 py-3`
+
+**Dependencies**: 
+- `react-markdown` - Markdown rendering
+- `lucide-react` - Icons (User icon)
+- `@/lib/utils` - Utility functions (cn)
+
+**Usage**: Used in ChatInterface component
+
+**Related Files**: 
+- `frontend/components/study/chat-interface.tsx` - Parent component
+
+---
+
+### `frontend/components/study/prompt-input.tsx`
+
+**Purpose**: Reusable prompt input components for chat interfaces.
+
+**Key Components**:
+- `PromptInput` - Main form wrapper with rounded border
+- `PromptInputTextarea` - Textarea with Enter key handling
+- `PromptInputToolbar` - Toolbar container
+- `PromptInputTools` - Left side tools container
+- `PromptInputButton` - Toolbar button component
+- `PromptInputSubmit` - Submit button with status icons
+
+**Features**:
+- Enter key submits (Shift+Enter for newline)
+- Auto-resizing textarea
+- Status-based icon display (ready/submitted/streaming/error)
+- Tool buttons (Paperclip, Mic, etc.)
+
+**Dependencies**: 
+- `@/components/ui/button` - Button component
+- `@/components/ui/textarea` - Textarea component
+- `@/components/ui/loader` - Loader component
+- `lucide-react` - Icons
+
+**Usage**: Used in TutorPromptInput component
+
+**Related Files**: 
+- `frontend/components/study/tutor-prompt-input.tsx` - Concrete implementation
+
+---
+
+### `frontend/components/study/tutor-prompt-input.tsx`
+
+**Purpose**: Concrete prompt input component for tutor chat with status indicators.
+
+**Key Features**:
+- Status bar showing agent status (green dots)
+- PromptInput with textarea and toolbar
+- Tool buttons (Paperclip, Mic/Voice)
+- Submit button with status-based icons
+- Optional context information display
+- German placeholder text
+
+**Props**:
+- `onSubmit: (message: string) => void` - Submit handler
+- `isLoading?: boolean` - Loading state
+- `isStreaming?: boolean` - Streaming state
+- `placeholder?: string` - Textarea placeholder
+- `contextInfo?: string` - Context information to display
+
+**Design**:
+- Status indicators with green dots
+- German text: "🧠 Tutor-Agent aktiv", "Lerntutor bereit"
+- Placeholder: "Stellen Sie Fragen zu den Folien oder zum Lernstoff..."
+
+**Dependencies**: 
+- `@/components/study/prompt-input` - Base components
+- `lucide-react` - Icons
+
+**Usage**: Used in ChatInterface component
+
+**Related Files**: 
+- `frontend/components/study/chat-interface.tsx` - Parent component
+- `frontend/components/study/prompt-input.tsx` - Base components
+
+---
+
+### `frontend/components/ui/loader.tsx`
+
+**Purpose**: Reusable loading spinner component.
+
+**Key Features**:
+- Configurable size
+- Smooth spinning animation
+- SVG-based circular spinner
+
+**Props**:
+- `size?: number` - Size of the loader (default: 16)
+- Standard HTML div props
+
+**Usage**: Used in various components for loading states
+
+**Related Files**: 
+- `frontend/components/study/prompt-input.tsx` - Uses for submit button
+- `frontend/components/study/task-list.tsx` - Uses for running tasks
+
+---
+
+### `frontend/components/study/task-list.tsx`
+
+**Purpose**: Task list components for displaying step-by-step task progress.
+
+**Key Components**:
+- `Task` - Individual task item with status
+- `TaskList` - Container for multiple tasks
+
+**Task Status Types**:
+- `pending` - Gray border/background
+- `running` - Blue border/background with spinner
+- `completed` - Green border/background with checkmark
+- `error` - Red border/background with X icon
+
+**Props**:
+- `status: TaskStatus` - Task status
+- `title: string` - Task title
+- `description?: string` - Optional description
+- `children?: React.ReactNode` - Optional additional content
+
+**Design**:
+- Status-based color coding
+- Icons for each status (spinner, checkmark, X, empty circle)
+- "läuft..." label for running tasks
+
+**Dependencies**: 
+- `@/components/ui/loader` - Loader component
+- `lucide-react` - Icons (Check, X)
+
+**Usage**: Optional component for displaying agent task progress
+
+**Related Files**: 
+- `frontend/components/ui/loader.tsx` - Uses loader for running state
 
 ---
 
