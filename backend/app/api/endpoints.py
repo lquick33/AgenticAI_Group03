@@ -954,8 +954,20 @@ async def initiate_chat(
                         if "messages" in node_data:
                             messages = []
                             for msg in node_data["messages"]:
-                                # Skip tool messages entirely for UI and persistence
+                                # Extract tool responses (ToolMessage contains tool results)
                                 if isinstance(msg, ToolMessage):
+                                    tool_call_id = getattr(msg, "tool_call_id", None) or getattr(msg, "name", None) or ""
+                                    tool_content = getattr(msg, "content", "")
+                                    
+                                    if tool_call_id and tool_content:
+                                        # Send tool response event
+                                        tool_response_event = {
+                                            "type": "tool_response",
+                                            "tool_call_id": tool_call_id,
+                                            "result": tool_content,
+                                            "message_id": f"msg-{len(assistant_response_chunks)}"
+                                        }
+                                        yield f"data: {json.dumps(tool_response_event)}\n\n"
                                     continue
 
                                 if hasattr(msg, "content"):
@@ -1204,8 +1216,20 @@ async def send_chat_message(
                     if "messages" in node_data:
                         messages = []
                         for msg in node_data["messages"]:
-                            # Skip tool messages entirely for UI and persistence
+                            # Extract tool responses (ToolMessage contains tool results)
                             if isinstance(msg, ToolMessage):
+                                tool_call_id = getattr(msg, "tool_call_id", None) or getattr(msg, "name", None) or ""
+                                tool_content = getattr(msg, "content", "")
+                                
+                                if tool_call_id and tool_content:
+                                    # Send tool response event
+                                    tool_response_event = {
+                                        "type": "tool_response",
+                                        "tool_call_id": tool_call_id,
+                                        "result": tool_content,
+                                        "message_id": f"msg-{len(assistant_response_chunks)}"
+                                    }
+                                    yield f"data: {json.dumps(tool_response_event)}\n\n"
                                 continue
 
                             if hasattr(msg, "content"):

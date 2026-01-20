@@ -17,6 +17,7 @@ export interface ToolCall {
   id: string
   name: string
   args: Record<string, any>
+  result?: string
   state?: "pending" | "running" | "completed" | "error"
 }
 
@@ -71,15 +72,45 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
         />
       </CollapsibleTrigger>
       <CollapsibleContent className="data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:animate-in data-[state=open]:slide-in-from-top-2">
-        <div className="space-y-2 overflow-hidden p-4 pt-0">
-          <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-            Parameters
-          </h4>
-          <div className="rounded-md bg-muted/50 p-3">
-            <pre className="text-xs overflow-x-auto">
-              <code>{JSON.stringify(toolCall.args, null, 2)}</code>
-            </pre>
+        <div className="space-y-4 overflow-hidden p-4 pt-0">
+          {/* Parameters Section */}
+          <div className="space-y-2">
+            <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+              Parameters
+            </h4>
+            <div className="rounded-md bg-muted/50 p-3">
+              <pre className="text-xs overflow-x-auto">
+                <code>{JSON.stringify(toolCall.args, null, 2)}</code>
+              </pre>
+            </div>
           </div>
+          
+          {/* Result Section */}
+          {toolCall.result && (
+            <div className="space-y-2">
+              <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                Result
+              </h4>
+              <div className="rounded-md bg-green-50 dark:bg-green-950/20 p-3 border border-green-200 dark:border-green-900">
+                <pre className="text-xs overflow-x-auto">
+                  <code>
+                    {typeof toolCall.result === 'string' 
+                      ? (() => {
+                          try {
+                            // Try to parse as JSON for pretty formatting
+                            const parsed = JSON.parse(toolCall.result)
+                            return JSON.stringify(parsed, null, 2)
+                          } catch {
+                            // If not JSON, display as-is
+                            return toolCall.result
+                          }
+                        })()
+                      : JSON.stringify(toolCall.result, null, 2)}
+                  </code>
+                </pre>
+              </div>
+            </div>
+          )}
         </div>
       </CollapsibleContent>
     </Collapsible>
