@@ -785,6 +785,182 @@ async def initiate_chat(
                     # Check if at least 2 of the key phrases are present
                     matches = sum(1 for phrase in welcome_phrases if phrase in content_lower)
                     return matches >= 2
+                
+                # Helper function to fix incomplete tool call pairs and validate message ordering
+                def fix_incomplete_tool_calls(messages: list) -> list:
+                    """
+                    Validate and fix message ordering to comply with Gemini API requirements.
+                    Gemini API requires strict ordering:
+                    - User message (HumanMessage)
+                    - Assistant with tool_calls (AIMessage with tool_calls)
+                    - Tool responses (ToolMessage) - MUST come immediately after AIMessage with tool_calls
+                    - (Optional) Assistant final response (AIMessage without tool_calls)
+                    - User message (HumanMessage)
+                    
+                    This function:
+                    1. Removes any AIMessage with tool_calls that doesn't have corresponding ToolMessages
+                    2. Ensures ToolMessages come immediately after their AIMessage
+                    3. Removes orphaned ToolMessages (without preceding AIMessage)
+                    
+                    Args:
+                        messages: List of messages to check
+                        
+                    Returns:
+                        Fixed list of messages that comply with Gemini API requirements
+                    """
+                    if not messages:
+                        return messages
+                    
+                    # #region agent log
+                    import json
+                    log_path = r"c:\App\AAI\AgenticAI_Group03\.cursor\debug.log"
+                    try:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "pre-fix",
+                                "hypothesisId": "H1",
+                                "location": "endpoints.py:fix_incomplete_tool_calls(entry)",
+                                "message": "Starting message validation",
+                                "data": {
+                                    "messageCount": len(messages),
+                                    "messageTypes": [type(msg).__name__ for msg in messages]
+                                },
+                                "timestamp": int(__import__("time").time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion agent log
+                    
+                    fixed_messages = []
+                    i = 0
+                    
+                    while i < len(messages):
+                        msg = messages[i]
+                        
+                        # Check if this is an AIMessage with tool_calls
+                        if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+                            # Collect all tool call IDs from this AIMessage
+                            tool_call_ids = set()
+                            for tool_call in msg.tool_calls:
+                                tool_call_id = tool_call.get("id") if isinstance(tool_call, dict) else getattr(tool_call, "id", None)
+                                if tool_call_id:
+                                    tool_call_ids.add(tool_call_id)
+                            
+                            # Look ahead to find corresponding ToolMessages
+                            # They should come immediately after the AIMessage
+                            found_tool_messages = []
+                            j = i + 1
+                            while j < len(messages) and isinstance(messages[j], ToolMessage):
+                                tool_msg = messages[j]
+                                tool_call_id = getattr(tool_msg, "tool_call_id", None)
+                                if tool_call_id in tool_call_ids:
+                                    found_tool_messages.append(tool_msg)
+                                j += 1
+                            
+                            # Check if all tool calls have corresponding ToolMessages
+                            found_tool_call_ids = {getattr(tm, "tool_call_id", None) for tm in found_tool_messages}
+                            
+                            if found_tool_call_ids == tool_call_ids and len(found_tool_messages) == len(tool_call_ids):
+                                # All tool calls have responses - keep the AIMessage and ToolMessages
+                                fixed_messages.append(msg)
+                                fixed_messages.extend(found_tool_messages)
+                                i = j  # Skip past the ToolMessages
+                                
+                                # #region agent log
+                                try:
+                                    with open(log_path, "a", encoding="utf-8") as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "pre-fix",
+                                            "hypothesisId": "H1",
+                                            "location": "endpoints.py:fix_incomplete_tool_calls(complete_pair)",
+                                            "message": "Found complete tool call pair",
+                                            "data": {
+                                                "toolCallCount": len(tool_call_ids),
+                                                "toolMessageCount": len(found_tool_messages)
+                                            },
+                                            "timestamp": int(__import__("time").time() * 1000)
+                                        }) + "\n")
+                                except Exception:
+                                    pass
+                                # #endregion agent log
+                            else:
+                                # Incomplete tool call pair - remove the AIMessage
+                                # #region agent log
+                                try:
+                                    with open(log_path, "a", encoding="utf-8") as f:
+                                        f.write(json.dumps({
+                                            "sessionId": "debug-session",
+                                            "runId": "pre-fix",
+                                            "hypothesisId": "H1",
+                                            "location": "endpoints.py:fix_incomplete_tool_calls(incomplete_pair)",
+                                            "message": "Removing incomplete tool call pair",
+                                            "data": {
+                                                "expectedToolCalls": len(tool_call_ids),
+                                                "foundToolMessages": len(found_tool_messages),
+                                                "missingToolCallIds": list(tool_call_ids - found_tool_call_ids)
+                                            },
+                                            "timestamp": int(__import__("time").time() * 1000)
+                                        }) + "\n")
+                                except Exception:
+                                    pass
+                                # #endregion agent log
+                                
+                                logger.warning(
+                                    f"Incomplete tool call pair detected at index {i}: AIMessage has {len(tool_call_ids)} tool_calls, "
+                                    f"but only {len(found_tool_messages)} ToolMessages found. Removing incomplete AIMessage to prevent API error."
+                                )
+                                i += 1  # Skip the incomplete AIMessage
+                        elif isinstance(msg, ToolMessage):
+                            # Orphaned ToolMessage (no preceding AIMessage with tool_calls)
+                            # Remove it to prevent API errors
+                            # #region agent log
+                            try:
+                                with open(log_path, "a", encoding="utf-8") as f:
+                                    f.write(json.dumps({
+                                        "sessionId": "debug-session",
+                                        "runId": "pre-fix",
+                                        "hypothesisId": "H1",
+                                        "location": "endpoints.py:fix_incomplete_tool_calls(orphaned_tool)",
+                                        "message": "Removing orphaned ToolMessage",
+                                        "data": {
+                                            "toolCallId": getattr(msg, "tool_call_id", None)
+                                        },
+                                        "timestamp": int(__import__("time").time() * 1000)
+                                    }) + "\n")
+                            except Exception:
+                                pass
+                            # #endregion agent log
+                            
+                            logger.warning(f"Orphaned ToolMessage detected at index {i}, removing to prevent API error.")
+                            i += 1
+                        else:
+                            # Regular message (HumanMessage, AIMessage without tool_calls, SystemMessage)
+                            fixed_messages.append(msg)
+                            i += 1
+                    
+                    # #region agent log
+                    try:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "pre-fix",
+                                "hypothesisId": "H1",
+                                "location": "endpoints.py:fix_incomplete_tool_calls(exit)",
+                                "message": "Message validation complete",
+                                "data": {
+                                    "originalCount": len(messages),
+                                    "fixedCount": len(fixed_messages),
+                                    "removedCount": len(messages) - len(fixed_messages)
+                                },
+                                "timestamp": int(__import__("time").time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion agent log
+                    
+                    return fixed_messages
 
                 # Always check Supabase for conversation history when is_initial_open is true
                 # This allows us to detect returning users even if LangGraph state exists
@@ -943,6 +1119,29 @@ async def initiate_chat(
                         "um eine informierte Begrüßung zu geben."
                     )
 
+                    # Fix incomplete tool call pairs in base_messages before adding new messages
+                    # This ensures message ordering is valid before adding new HumanMessage
+                    base_messages = fix_incomplete_tool_calls(base_messages)
+                    
+                    # #region agent log
+                    try:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(json.dumps({
+                                "sessionId": "debug-session",
+                                "runId": "pre-fix",
+                                "hypothesisId": "H5",
+                                "location": "endpoints.py:initiate_chat(is_initial_open_validation)",
+                                "message": "Validating base_messages before adding new HumanMessage",
+                                "data": {
+                                    "baseMessageCount": len(base_messages),
+                                    "lastMessageType": type(base_messages[-1]).__name__ if base_messages else None
+                                },
+                                "timestamp": int(__import__("time").time() * 1000)
+                            }) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion agent log
+                    
                     # Use bootstrapped messages if available, otherwise start fresh
                     initial_state = {
                     "messages": base_messages
@@ -959,6 +1158,28 @@ async def initiate_chat(
                     # Use existing LangGraph state if available, otherwise bootstrap
                     if is_new_thread:
                         # LangGraph state is empty, but we might have bootstrapped messages
+                        # Fix incomplete tool call pairs in base_messages before adding new messages
+                        base_messages = fix_incomplete_tool_calls(base_messages)
+                        
+                        # #region agent log
+                        try:
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "pre-fix",
+                                    "hypothesisId": "H5",
+                                    "location": "endpoints.py:initiate_chat(is_new_thread_validation)",
+                                    "message": "Validating base_messages for new thread before adding new HumanMessage",
+                                    "data": {
+                                        "baseMessageCount": len(base_messages),
+                                        "lastMessageType": type(base_messages[-1]).__name__ if base_messages else None
+                                    },
+                                    "timestamp": int(__import__("time").time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion agent log
+                        
                         initial_state = {
                             "messages": base_messages
                             + [
@@ -980,6 +1201,10 @@ async def initiate_chat(
                     else:
                         # Existing thread in this backend process: load existing messages from snapshot
                         existing_messages = snapshot.values.get("messages", [])
+                        
+                        # Fix incomplete tool call pairs to prevent Gemini API errors
+                        # Gemini requires: AIMessage with tool_calls -> ToolMessages -> (optional) AIMessage -> HumanMessage
+                        existing_messages = fix_incomplete_tool_calls(existing_messages)
 
                         # For simple page changes within an ongoing conversation, we use a lighter hint
                         page_change_human = HumanMessage(
@@ -992,8 +1217,34 @@ async def initiate_chat(
                             )
                         )
 
+                        # Validate that adding HumanMessage won't break message ordering
+                        # If last message is AIMessage with tool_calls, we need ToolMessages first
+                        validated_messages = fix_incomplete_tool_calls(existing_messages)
+                        
+                        # #region agent log
+                        import json
+                        log_path = r"c:\App\AAI\AgenticAI_Group03\.cursor\debug.log"
+                        try:
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write(json.dumps({
+                                    "sessionId": "debug-session",
+                                    "runId": "pre-fix",
+                                    "hypothesisId": "H4",
+                                    "location": "endpoints.py:initiate_chat(existing_thread_validation)",
+                                    "message": "Validating existing messages before adding new HumanMessage",
+                                    "data": {
+                                        "originalCount": len(existing_messages),
+                                        "validatedCount": len(validated_messages),
+                                        "lastMessageType": type(validated_messages[-1]).__name__ if validated_messages else None
+                                    },
+                                    "timestamp": int(__import__("time").time() * 1000)
+                                }) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion agent log
+                        
                         initial_state = {
-                            "messages": existing_messages
+                            "messages": validated_messages
                             + [
                                 SystemMessage(content=system_message),
                                 page_change_human,

@@ -227,6 +227,10 @@ class TutorAgent(BaseAgent):
     - Personality: Character traits (formality, humor, encouragement)
     """
     
+    # Maximum number of messages to keep in history for LLM calls (sliding window)
+    # This prevents token explosion while maintaining conversation context
+    MAX_HISTORY_MESSAGES = 10  # SystemMessage + letzte 9 Messages
+    
     def __init__(
         self,
         llm: BaseChatModel,
@@ -467,6 +471,56 @@ class TutorAgent(BaseAgent):
         """
         messages = state["messages"]
         
+        # Message History Truncation: Nur die letzten N Messages behalten
+        # WICHTIG: Nur für LLM-Call filtern, State bleibt unverändert
+        # WICHTIG: Alte SystemMessages verwerfen - add_system_message() setzt den aktuellen System-Prompt
+        # Dies verhindert doppelte System-Prompts
+        non_system_messages = [msg for msg in messages if not isinstance(msg, SystemMessage)]
+        
+        if len(non_system_messages) > self.MAX_HISTORY_MESSAGES:
+            # Tool-Call-Paare sicher behandeln: AIMessage mit tool_calls + zugehörige ToolMessages
+            # müssen zusammen bleiben, sonst gibt es Fehler beim LLM-Call
+            
+            # Einfache Strategie: Nehmen wir die letzten N Messages
+            # Wenn das erste Message ein AIMessage mit tool_calls ist, prüfen wir ob es vollständig ist
+            trimmed_messages = non_system_messages[-self.MAX_HISTORY_MESSAGES:]
+            
+            # Prüfe ob das erste Message ein AIMessage mit tool_calls ist
+            if trimmed_messages and hasattr(trimmed_messages[0], "tool_calls") and trimmed_messages[0].tool_calls:
+                # Sammle alle Tool-Call-IDs aus diesem AIMessage
+                first_msg = trimmed_messages[0]
+                tool_call_ids = set()
+                for tc in first_msg.tool_calls:
+                    tool_call_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    if tool_call_id:
+                        tool_call_ids.add(tool_call_id)
+                
+                # Prüfe ob alle zugehörigen ToolMessages in trimmed_messages vorhanden sind
+                # ToolMessages kommen normalerweise direkt nach dem AIMessage
+                found_tool_messages = set()
+                for msg in trimmed_messages[1:]:
+                    if isinstance(msg, ToolMessage):
+                        tool_call_id = getattr(msg, "tool_call_id", None)
+                        if tool_call_id in tool_call_ids:
+                            found_tool_messages.add(tool_call_id)
+                
+                # Wenn nicht alle ToolMessages vorhanden sind, entferne das AIMessage
+                # (besser ein Message weniger als ein Fehler)
+                if found_tool_messages != tool_call_ids:
+                    trimmed_messages = trimmed_messages[1:]
+                    # Optional: Versuche noch ein Message mehr zu nehmen, wenn möglich
+                    if len(non_system_messages) > len(trimmed_messages):
+                        # Hole ein Message mehr von hinten
+                        additional_msg = non_system_messages[-(self.MAX_HISTORY_MESSAGES + 1)]
+                        if not (hasattr(additional_msg, "tool_calls") and additional_msg.tool_calls):
+                            # Nur hinzufügen wenn es kein AIMessage mit tool_calls ist
+                            trimmed_messages.insert(0, additional_msg)
+            
+            messages_for_truncation = trimmed_messages
+        else:
+            # Keine Truncation nötig, aber SystemMessages trotzdem entfernen
+            messages_for_truncation = non_system_messages
+        
         # Build dynamic context from state
         context_parts = []
         if state.get("current_page"):
@@ -484,7 +538,49 @@ class TutorAgent(BaseAgent):
         context_str = "\n".join(context_parts) if context_parts else ""
         
         # Ensure system message is present
-        messages_for_llm = self.add_system_message(messages)
+        # add_system_message() fügt den aktuellen System-Prompt hinzu (keine alten SystemMessages)
+        messages_for_llm = self.add_system_message(messages_for_truncation)
+        
+        # #region agent log
+        import json
+        log_path = r"c:\App\AAI\AgenticAI_Group03\.cursor\debug.log"
+        try:
+            message_structure = []
+            for idx, msg in enumerate(messages_for_llm):
+                msg_type = type(msg).__name__
+                has_tool_calls = hasattr(msg, "tool_calls") and bool(msg.tool_calls)
+                tool_call_count = len(msg.tool_calls) if has_tool_calls else 0
+                if isinstance(msg, ToolMessage):
+                    tool_call_id = getattr(msg, "tool_call_id", None)
+                    message_structure.append({
+                        "index": idx,
+                        "type": msg_type,
+                        "tool_call_id": tool_call_id
+                    })
+                else:
+                    message_structure.append({
+                        "index": idx,
+                        "type": msg_type,
+                        "has_tool_calls": has_tool_calls,
+                        "tool_call_count": tool_call_count
+                    })
+            
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "sessionId": "debug-session",
+                    "runId": "pre-fix",
+                    "hypothesisId": "H2",
+                    "location": "tutor_agent.py:call_model(before_llm_call)",
+                    "message": "Messages prepared for LLM call",
+                    "data": {
+                        "messageCount": len(messages_for_llm),
+                        "messageStructure": message_structure
+                    },
+                    "timestamp": int(__import__("time").time() * 1000)
+                }) + "\n")
+        except Exception:
+            pass
+        # #endregion agent log
         
         # Enhance system message with context if available
         if context_str and messages_for_llm:
@@ -559,6 +655,38 @@ class TutorAgent(BaseAgent):
             config["callbacks"] = [callback_handler]
             config["metadata"] = metadata
             logger.info(f"🟡 Langfuse: Sending LLM call with metadata: user_id={metadata.get('langfuse_user_id')}, session_id={metadata.get('langfuse_session_id')}, material_id={metadata.get('material_id')}, page={metadata.get('current_page')}")
+        
+        # Validate message ordering before LLM call to prevent Gemini API errors
+        # Gemini requires: User -> Assistant (with tool_calls) -> ToolMessages -> (optional) Assistant -> User
+        # Check if last message before LLM call is valid
+        if messages_for_llm:
+            last_msg = messages_for_llm[-1]
+            # If last message is an AIMessage with tool_calls, it's invalid - should have ToolMessages after
+            if isinstance(last_msg, AIMessage) and hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
+                # #region agent log
+                try:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps({
+                            "sessionId": "debug-session",
+                            "runId": "pre-fix",
+                            "hypothesisId": "H3",
+                            "location": "tutor_agent.py:call_model(invalid_last_message)",
+                            "message": "Last message is AIMessage with tool_calls - this will cause API error",
+                            "data": {
+                                "toolCallCount": len(last_msg.tool_calls)
+                            },
+                            "timestamp": int(__import__("time").time() * 1000)
+                        }) + "\n")
+                except Exception:
+                    pass
+                # #endregion agent log
+                
+                logger.error(
+                    "Invalid message sequence: Last message is AIMessage with tool_calls. "
+                    "This will cause Gemini API error. Removing incomplete tool call."
+                )
+                # Remove the last message (incomplete AIMessage with tool_calls)
+                messages_for_llm = messages_for_llm[:-1]
         
         # Call LLM with callbacks
         # Der CallbackHandler trackt automatisch Token-Usage, Model Parameters, etc.

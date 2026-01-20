@@ -1161,10 +1161,10 @@ export function StudyReader({
                   Seite {currentPage} von {pageCount}
                 </span>
                 <Button
-                  variant="outline"
+                  variant={currentPage === pageCount ? "default" : "outline"}
                   size="icon"
                   onClick={handleNextPage}
-                  disabled={currentPage >= pageCount}
+                  disabled={currentPage > pageCount}
                 >
                   <ChevronRight className="h-4 w-4" />
                 </Button>
