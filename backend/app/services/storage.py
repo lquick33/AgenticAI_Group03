@@ -6,7 +6,7 @@ for course materials and page analyses.
 """
 
 import json
-from typing import Optional
+from typing import Optional, List
 
 from supabase import create_client, Client
 
@@ -406,8 +406,8 @@ def get_all_page_analyses_for_material(
         user_id: User ID for authorization (RLS)
 
     Returns:
-        A list of dicts with keys: page_number, summary, key_terms,
-        exam_questions (if available)
+        A list of dicts with keys: id, page_number, summary, key_terms,
+        exam_questions, diagram_description (if available)
 
     Raises:
         Exception: If database operation fails
@@ -417,7 +417,7 @@ def get_all_page_analyses_for_material(
     try:
         response = (
             client.table("page_analyses")
-            .select("page_number, summary, key_terms, exam_questions")
+            .select("id, page_number, summary, key_terms, exam_questions, diagram_description")
             .eq("course_material_id", course_material_id)
             .eq("user_id", user_id)
             .order("page_number", desc=False)
@@ -503,4 +503,125 @@ def get_course_material_summary(
             return None
     except Exception as e:
         raise Exception(f"Failed to get course material summary: {str(e)}")
+
+
+def get_messages_for_page(
+    page_analysis_id: str,
+    user_id: str
+) -> List[dict]:
+    """
+    Get all messages associated with a specific page analysis.
+    
+    Messages are filtered by context_page_id and validated to ensure
+    they belong to a conversation owned by the user.
+    
+    Args:
+        page_analysis_id: Page analysis ID (UUID)
+        user_id: User ID for authorization (RLS)
+        
+    Returns:
+        List of message dicts with keys: id, role, content, created_at, context_page_id
+        Ordered chronologically (oldest first)
+        
+    Raises:
+        Exception: If database operation fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        # Query messages with context_page_id and join with conversations to validate user_id
+        # We need to ensure the messages belong to a conversation owned by the user
+        response = (
+            client.table("messages")
+            .select("id, role, content, created_at, context_page_id, conversation_id")
+            .eq("context_page_id", page_analysis_id)
+            .execute()
+        )
+        
+        if not response.data:
+            return []
+        
+        # Filter messages to only include those from conversations owned by the user
+        # We need to check each message's conversation
+        conversation_ids = list(set(msg.get("conversation_id") for msg in response.data if msg.get("conversation_id")))
+        
+        if not conversation_ids:
+            return []
+        
+        # Get conversations to validate ownership
+        conv_response = (
+            client.table("conversations")
+            .select("id")
+            .in_("id", conversation_ids)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        
+        valid_conversation_ids = {conv["id"] for conv in (conv_response.data or [])}
+        
+        # Filter messages to only those from valid conversations
+        filtered_messages = [
+            msg for msg in response.data
+            if msg.get("conversation_id") in valid_conversation_ids
+        ]
+        
+        # Sort by created_at (oldest first)
+        filtered_messages.sort(key=lambda x: x.get("created_at", ""))
+        
+        return filtered_messages
+    except Exception as e:
+        raise Exception(f"Failed to get messages for page: {str(e)}")
+
+
+def save_flashcards(
+    flashcards: List[dict],
+    user_id: str,
+    course_id: str
+) -> None:
+    """
+    Save flashcards to the database.
+    
+    Args:
+        flashcards: List of flashcard dicts with keys:
+            - front: Front side text
+            - back: Back side text
+            - tags: List of tags (will be joined with spaces)
+            - source_page_analysis_id: Optional page analysis ID
+        user_id: User ID (UUID)
+        course_id: Course ID (UUID)
+        
+    Raises:
+        Exception: If database operation fails
+    """
+    if not flashcards:
+        return
+    
+    client = get_supabase_client()
+    
+    try:
+        records = []
+        for card in flashcards:
+            # Convert tags list to space-separated string if needed
+            tags = card.get("tags", [])
+            if isinstance(tags, list):
+                tags_str = " ".join(str(tag) for tag in tags)
+            else:
+                tags_str = str(tags) if tags else ""
+            
+            record = {
+                "course_id": course_id,
+                "user_id": user_id,
+                "front": card.get("front", ""),
+                "back": card.get("back", ""),
+            }
+            
+            if card.get("source_page_analysis_id"):
+                record["source_page_analysis_id"] = card["source_page_analysis_id"]
+            
+            records.append(record)
+        
+        # Batch insert
+        client.table("flashcards").insert(records).execute()
+    except Exception as e:
+        raise Exception(f"Failed to save flashcards: {str(e)}")
 

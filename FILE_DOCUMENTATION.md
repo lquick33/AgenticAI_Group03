@@ -2559,3 +2559,276 @@ from app.services.session_storage import (
 - `backend/app/api/endpoints.py` - Sends tool call events
 
 ---
+
+## Flashcard Generation System
+
+### `backend/app/agents/flashcards/flashcard_agent.py`
+
+**Purpose**: Agent for generating Anki-compatible flashcards from lecture materials and conversation history.
+
+**Key Components**:
+- **FlashcardGeneratorAgent Class**: 
+  - Processes page analyses and conversation messages to create educational flashcards
+  - Uses LLM with structured output (Pydantic models) for page filtering and card generation
+  - Skips intro/title/table of contents pages automatically
+  - Generates 1-4 cards per page based on content complexity and conversation issues
+- **Methods**:
+  - `_should_skip_page()`: Determines if a page should be skipped using LLM decision
+  - `_generate_cards_for_page()`: Generates flashcards for a single page with conversation context
+  - `generate_flashcards()`: Main entry point that processes all pages and returns card list
+- **LLM Integration**: Uses Gemini model with structured output for consistent JSON responses
+- **Conversation Context**: Analyzes user questions and assistant responses to identify understanding problems
+
+**Dependencies**: 
+- `app.models.schemas` - PageSkipDecision, FlashcardGenerationResult, Flashcard models
+- `app.services.storage` - get_all_page_analyses_for_material, get_messages_for_page
+- `app.services.analyzer` - get_gemini_model
+
+**Usage**: 
+```python
+from app.agents.flashcards import FlashcardGeneratorAgent
+
+agent = FlashcardGeneratorAgent()
+cards = agent.generate_flashcards(
+    course_material_id="...",
+    user_id="...",
+    course_id="...",
+    save_to_db=False
+)
+```
+
+**Related Files**: 
+- `backend/app/services/flashcard_service.py` - CSV export functionality
+- `backend/app/api/endpoints.py` - Flashcard export endpoint
+- `frontend/components/study/congratulations-screen.tsx` - UI for flashcard download
+
+---
+
+### `backend/app/services/flashcard_service.py`
+
+**Purpose**: Service functions for flashcard operations, including CSV export for Anki import.
+
+**Key Components**:
+- **build_anki_csv()**: 
+  - Converts flashcard list to Anki-compatible CSV format
+  - Format: 3 columns (front, back, tags)
+  - Tags are space-separated strings
+  - UTF-8 encoding with BOM for Excel compatibility
+  - Proper CSV escaping for special characters and newlines
+
+**Dependencies**: 
+- Python `csv` and `io` modules
+
+**Usage**: 
+```python
+from app.services.flashcard_service import build_anki_csv
+
+csv_bytes = build_anki_csv(cards)
+# Returns bytes ready for HTTP response
+```
+
+**Related Files**: 
+- `backend/app/agents/flashcards/flashcard_agent.py` - Generates cards
+- `backend/app/api/endpoints.py` - Uses this for CSV export
+
+---
+
+### `backend/app/services/storage.py` (Flashcard Functions)
+
+**Purpose**: Extended with functions for flashcard generation support.
+
+**New Functions**:
+- **get_messages_for_page()**: 
+  - Retrieves all messages associated with a specific page analysis
+  - Filters by `context_page_id` and validates user ownership via conversations
+  - Returns messages ordered chronologically (oldest first)
+- **save_flashcards()**: 
+  - Batch inserts flashcards into the `flashcards` table
+  - Links cards to source page analyses via `source_page_analysis_id`
+  - Handles tag conversion (list to space-separated string)
+
+**Updated Functions**:
+- **get_all_page_analyses_for_material()**: 
+  - Now returns `id` field in addition to page_number, summary, key_terms, etc.
+  - Required for linking messages to pages via `context_page_id`
+
+**Dependencies**: 
+- Supabase client (via `get_supabase_client()`)
+
+**Usage**: 
+```python
+from app.services.storage import get_messages_for_page, save_flashcards
+
+messages = get_messages_for_page(page_analysis_id, user_id)
+save_flashcards(cards, user_id, course_id)
+```
+
+**Related Files**: 
+- `backend/app/agents/flashcards/flashcard_agent.py` - Uses these functions
+- `backend/supabase/migrations/20260110111927_initial_schema.sql` - Database schema
+
+---
+
+### `backend/app/api/endpoints.py` (Flashcard Export Endpoint)
+
+**Purpose**: Extended with flashcard export endpoint.
+
+**New Endpoint**:
+- **GET `/api/flashcards/export`**:
+  - Query parameters: `course_material_id`, `user_id`
+  - Validates user and material ownership
+  - Generates flashcards using FlashcardGeneratorAgent
+  - Returns CSV file as StreamingResponse
+  - Filename format: `flashcards_{course_title}_{material_name}.csv`
+
+**Key Features**:
+- User authentication and authorization
+- Error handling for missing materials or generation failures
+- Proper CSV content type and download headers
+- Filename sanitization for filesystem compatibility
+
+**Dependencies**: 
+- `app.agents.flashcards` - FlashcardGeneratorAgent
+- `app.services.flashcard_service` - build_anki_csv
+- `app.services.storage` - Validation functions
+
+**Usage**: 
+```
+GET /api/flashcards/export?course_material_id=...&user_id=...
+```
+
+**Related Files**: 
+- `frontend/lib/api/study.ts` - API client function
+- `frontend/components/study/congratulations-screen.tsx` - UI component
+
+---
+
+### `backend/app/models/schemas.py` (Flashcard Models)
+
+**Purpose**: Extended with Pydantic models for flashcard generation.
+
+**New Models**:
+- **PageSkipDecision**: 
+  - `skip: bool` - Whether to skip the page
+  - `reason: str` - Brief reason for decision
+  - Used for LLM structured output in page filtering
+- **Flashcard**: 
+  - `front: str` - Front side of card
+  - `back: str` - Back side of card
+  - `tags: list[str]` - Categorization tags
+- **FlashcardGenerationResult**: 
+  - `cards: list[Flashcard]` - List of generated cards
+  - Used for LLM structured output in card generation
+
+**Dependencies**: 
+- `pydantic` - BaseModel, Field
+
+**Usage**: 
+```python
+from app.models.schemas import PageSkipDecision, FlashcardGenerationResult
+
+# Used with LLM structured output
+llm.with_structured_output(PageSkipDecision)
+llm.with_structured_output(FlashcardGenerationResult)
+```
+
+**Related Files**: 
+- `backend/app/agents/flashcards/flashcard_agent.py` - Uses these models
+
+---
+
+### `frontend/components/study/congratulations-screen.tsx`
+
+**Purpose**: Modal component shown after completing a lecture, offering flashcard download.
+
+**Key Components**:
+- **CongratulationsScreen Component**:
+  - Displays success message and celebration UI
+  - Provides "Flashcards runterladen" button
+  - Handles CSV download with loading states
+  - Shows success/error feedback via toast notifications
+- **State Management**:
+  - `isDownloading`: Loading state during generation
+  - `downloadSuccess`: Success state after download
+- **Download Flow**:
+  - Calls `exportFlashcards()` API function
+  - Creates blob download with proper filename
+  - Handles errors gracefully with user feedback
+
+**Dependencies**: 
+- `@/lib/api/study` - exportFlashcards function
+- `sonner` - Toast notifications
+- `@/components/ui/card` - Card UI components
+- `lucide-react` - Icons
+
+**Usage**: 
+```tsx
+<CongratulationsScreen
+  materialId={materialId}
+  courseId={courseId}
+  userId={userId}
+  onClose={() => setShowCongratulations(false)}
+/>
+```
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Integrates this component
+- `frontend/lib/api/study.ts` - Provides exportFlashcards function
+
+---
+
+### `frontend/lib/api/study.ts` (Flashcard Export Function)
+
+**Purpose**: Extended with flashcard export API client function.
+
+**New Function**:
+- **exportFlashcards()**: 
+  - Calls `/api/flashcards/export` endpoint
+  - Returns Promise<Blob> for CSV file
+  - Handles errors and HTTP status codes
+
+**Dependencies**: 
+- Fetch API
+- Environment variable: `NEXT_PUBLIC_API_URL`
+
+**Usage**: 
+```typescript
+import { exportFlashcards } from '@/lib/api/study'
+
+const blob = await exportFlashcards(materialId, userId)
+// Create download link from blob
+```
+
+**Related Files**: 
+- `frontend/components/study/congratulations-screen.tsx` - Uses this function
+- `backend/app/api/endpoints.py` - Provides the endpoint
+
+---
+
+### `frontend/components/study/study-reader.tsx` (Congratulations Integration)
+
+**Purpose**: Extended with congratulations screen integration.
+
+**Key Changes**:
+- **New State**: `showCongratulations: boolean` - Controls visibility of congratulations screen
+- **handleNextPage()**: 
+  - Shows congratulations screen when user clicks "Next" on last page
+  - Triggers when `currentPage === pageCount`
+- **Rendering**: 
+  - Conditionally renders `CongratulationsScreen` component
+  - Overlay modal style with backdrop blur
+
+**Features**:
+- Automatic trigger when reaching last page
+- Can be closed to return to lecture
+- Integrated seamlessly with existing page navigation
+
+**Dependencies**: 
+- `@/components/study/congratulations-screen` - CongratulationsScreen component
+
+**Usage**: User navigates through lecture, reaches last page, clicks "Next", sees congratulations screen with flashcard download option.
+
+**Related Files**: 
+- `frontend/components/study/congratulations-screen.tsx` - The modal component
+
+---

@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef } from 'react'
+import { useRef, useEffect } from 'react'
 import { ConversationEmptyState } from '@/components/ai/conversation'
 import { Loader } from '@/components/ui/loader'
 import { Switch } from '@/components/ui/switch'
@@ -29,8 +29,85 @@ export function ChatInterface({
   onToggleTools,
 }: ChatInterfaceProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const isUserScrollingRef = useRef(false)
+  const lastScrollTopRef = useRef(0)
 
   const isInitiallyLoading = messages.length === 0 && (isLoading || isStreaming)
+
+  // Autoscroll to bottom when messages change or during streaming
+  useEffect(() => {
+    if (!scrollRef.current) return
+
+    const scrollToBottom = () => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTo({
+          top: scrollRef.current.scrollHeight,
+          behavior: 'auto', // Wichtig: 'auto' für instant scroll während Streaming
+        })
+      }
+    }
+
+    // Immer scrollen, wenn sich die Nachrichtenstruktur ändert (z.B. neue Nachricht startet)
+    scrollToBottom()
+
+    // Während des Streamings: Kontinuierliches Scrollen mit requestAnimationFrame
+    if (isStreaming) {
+      let animationFrameId: number | null = null
+
+      const scrollLoop = () => {
+        if (!scrollRef.current) return
+
+        // Prüfe, ob der User manuell hochgescrollt hat
+        const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
+        const isNearBottom = scrollHeight - scrollTop - clientHeight < 100 // 100px Threshold
+
+        // Wenn User nahe am Bottom ist, scrollen wir weiter
+        if (isNearBottom) {
+          isUserScrollingRef.current = false
+          scrollToBottom()
+        }
+
+        animationFrameId = requestAnimationFrame(scrollLoop)
+      }
+
+      animationFrameId = requestAnimationFrame(scrollLoop)
+
+      return () => {
+        if (animationFrameId !== null) {
+          cancelAnimationFrame(animationFrameId)
+        }
+      }
+    }
+  }, [messages, isStreaming])
+
+  // Track user's manual scrolling
+  useEffect(() => {
+    const scrollElement = scrollRef.current
+    if (!scrollElement) return
+
+    const handleScroll = () => {
+      if (!scrollElement) return
+
+      const { scrollTop, scrollHeight, clientHeight } = scrollElement
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100
+
+      // Wenn User manuell hochscrollt (nicht nahe am Bottom)
+      if (!isNearBottom) {
+        isUserScrollingRef.current = true
+      } else {
+        // User ist wieder am Bottom, Auto-Scroll kann wieder aktiv werden
+        isUserScrollingRef.current = false
+      }
+
+      lastScrollTopRef.current = scrollTop
+    }
+
+    scrollElement.addEventListener('scroll', handleScroll, { passive: true })
+
+    return () => {
+      scrollElement.removeEventListener('scroll', handleScroll)
+    }
+  }, [])
 
   return (
     <div className="flex flex-col h-full w-full min-h-0 bg-[#f6f4f1]">

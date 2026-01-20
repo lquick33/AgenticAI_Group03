@@ -40,6 +40,8 @@ from app.services.storage import (
     get_page_analysis,
     get_page_analysis_id,
 )
+from app.agents.flashcards import FlashcardGeneratorAgent
+from app.services.flashcard_service import build_anki_csv
 from app.services.session_storage import (
     get_or_create_study_conversation,
     update_conversation_progress,
@@ -1464,4 +1466,132 @@ async def get_study_session(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to load study session: {str(e)}",
+        )
+
+
+@router.get("/flashcards/export")
+async def export_flashcards(
+    course_material_id: str = Query(..., description="Course material ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> StreamingResponse:
+    """
+    Export flashcards for a course material as Anki-compatible CSV.
+    
+    This endpoint:
+    1. Validates user exists
+    2. Validates course material belongs to user
+    3. Generates flashcards using FlashcardGeneratorAgent
+    4. Returns CSV file for download
+    
+    Args:
+        course_material_id: Course material ID (UUID)
+        user_id: User ID (UUID)
+        
+    Returns:
+        StreamingResponse with CSV file
+        
+    Raises:
+        HTTPException: If validation fails or generation fails
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first.",
+            )
+        
+        client = get_supabase_client()
+        
+        # Get course material and validate ownership
+        material_response = (
+            client.table("course_materials")
+            .select("id, course_id, file_name, user_id")
+            .eq("id", course_material_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+        
+        material = material_response.data
+        course_id = material["course_id"]
+        file_name = material.get("file_name", "material")
+        
+        # Get course for filename
+        course_response = (
+            client.table("courses")
+            .select("title")
+            .eq("id", course_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        
+        course_title = "course"
+        if course_response.data:
+            course_title = course_response.data.get("title", "course")
+        
+        # Sanitize filename (remove invalid characters)
+        import re
+        safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
+        safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
+        
+        # Generate flashcards
+        try:
+            agent = FlashcardGeneratorAgent()
+            cards = agent.generate_flashcards(
+                course_material_id=course_material_id,
+                user_id=user_id,
+                course_id=course_id,
+                save_to_db=False  # Don't save to DB, just export
+            )
+        except Exception as e:
+            logger.error(f"Error generating flashcards: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate flashcards: {str(e)}",
+            )
+        
+        if not cards:
+            raise HTTPException(
+                status_code=404,
+                detail="No flashcards could be generated. Make sure the material has been processed and contains relevant content.",
+            )
+        
+        # Build CSV
+        try:
+            csv_bytes = build_anki_csv(cards)
+        except Exception as e:
+            logger.error(f"Error building CSV: {str(e)}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to build CSV file: {str(e)}",
+            )
+        
+        # Create filename
+        filename = f"flashcards_{safe_course_title}_{safe_file_name}.csv"
+        
+        # Return as streaming response
+        return StreamingResponse(
+            io.BytesIO(csv_bytes),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Type": "text/csv; charset=utf-8"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting flashcards: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to export flashcards: {str(e)}",
         )
