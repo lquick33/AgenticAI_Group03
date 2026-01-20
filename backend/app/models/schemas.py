@@ -94,6 +94,10 @@ class ChatInitiateRequest(BaseModel):
     material_id: str = Field(..., description="Course material ID (UUID)")
     page_number: int = Field(..., description="Current page number (1-indexed)")
     user_id: str = Field(..., description="User ID (UUID)")
+    is_initial_open: bool = Field(
+        default=False,
+        description="Whether this is the initial opening of the study reader (true) or just a page change (false)"
+    )
 
 
 class ChatMessageRequest(BaseModel):

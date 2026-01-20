@@ -45,7 +45,7 @@ export function StudyReader({
 
   // Handle page change - initiate chat
   const handlePageChange = useCallback(
-    async (newPage: number, skipStateUpdate: boolean = false) => {
+    async (newPage: number, skipStateUpdate: boolean = false, isInitialOpen: boolean = false) => {
       if (newPage < 1 || newPage > pageCount) return
 
       // Only update state if not explicitly skipped (to prevent double triggers during init)
@@ -67,7 +67,7 @@ export function StudyReader({
 
       // Initiate chat for new page
       try {
-        console.log('[StudyReader] Initiating chat for page', newPage)
+        console.log('[StudyReader] Initiating chat for page', newPage, 'isInitialOpen:', isInitialOpen)
         const streamController = await initiateChat(
         materialId,
         newPage,
@@ -211,7 +211,8 @@ export function StudyReader({
             streamControllerRef.current.close()
             streamControllerRef.current = null
           }
-        }
+        },
+        isInitialOpen
       )
 
         streamControllerRef.current = streamController
@@ -377,16 +378,17 @@ export function StudyReader({
         // This prevents the effect from triggering when handlePageChange calls setCurrentPage
         isInitializing.current = false
         
-        // Directly call handlePageChange for initial page with skipStateUpdate=true
+        // Directly call handlePageChange for initial page with skipStateUpdate=true and isInitialOpen=true
         // This prevents handlePageChange from calling setCurrentPage again (which would trigger the effect)
-        await handlePageChange(initialPage, true)
+        // and signals to the backend that this is an initial opening (not just a page change)
+        await handlePageChange(initialPage, true, true)
       } catch (error) {
         console.error('[StudyReader] Failed to load study session, falling back to page 1:', error)
         if (!isMounted) return
         
         setCurrentPage(1)
         isInitializing.current = false
-        await handlePageChange(1, true)
+        await handlePageChange(1, true, true)
       }
     }
 

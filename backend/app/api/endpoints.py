@@ -641,7 +641,7 @@ async def initiate_chat(
         # Get course material to find course_material_id and course_id
         client = get_supabase_client()
         material_response = client.table("course_materials").select(
-            "id, course_id"
+            "id, course_id, page_count"
         ).eq("id", request.material_id).eq("user_id", request.user_id).single().execute()
         
         if not material_response.data:
@@ -651,6 +651,7 @@ async def initiate_chat(
             )
         course_material_id = material_response.data["id"]
         course_id = material_response.data.get("course_id")
+        total_pages = material_response.data.get("page_count")
         
         # Get page analysis data for system message
         try:
@@ -680,19 +681,13 @@ async def initiate_chat(
         # Thread ID: conversation_id for continuous conversation
         thread_id = str(conversation_id)
         
-        # Create system message for page change
-        # This message is added to the conversation context but not shown to the user
-        # It helps the agent understand that the user has navigated to a new page
+        # Base system message about the current page
+        # This is added to the conversation context but not shown directly to the user
         system_message = (
-            f"The user has navigated to Page {request.page_number}. "
+            f"The student is currently on Page {request.page_number}. "
             f"Summary of Page {request.page_number}: {summary}. "
-            f"Continue the conversation naturally and help them understand this slide. "
-            f"Reference previous conversation if relevant, but focus on the current page content."
+            f"Help them understand this slide in a clear and student-friendly way."
         )
-        
-        # Create a subtle message that triggers the agent to respond about the new page
-        # This feels like a natural continuation rather than starting a new conversation
-        initial_message = f"Let's continue with page {request.page_number}."
         
         # Stream response
         async def event_generator() -> AsyncGenerator[str, None]:
@@ -706,15 +701,48 @@ async def initiate_chat(
             # Base messages for the LLM call
             base_messages = []
 
-            # Optional bootstrap: if LangGraph has no messages but Supabase has history,
-            # reconstruct recent messages into the graph state so the agent has context
-            if is_new_thread:
+            stored_messages = []
+            conversation_has_history = False
+
+            # Always check Supabase for conversation history when is_initial_open is true
+            # This allows us to detect returning users even if LangGraph state exists
+            if request.is_initial_open:
                 try:
                     _, stored_messages = load_conversation_with_messages(
                         user_id=request.user_id,
                         course_material_id=course_material_id,
                         limit=20,
                     )
+                    conversation_has_history = len(stored_messages) > 0
+
+                    # Bootstrap messages into LangGraph state if needed
+                    if is_new_thread:
+                        for stored in stored_messages:
+                            role = stored.get("role")
+                            content = stored.get("content", "")
+                            if not content:
+                                continue
+                            if role == "user":
+                                base_messages.append(HumanMessage(content=content))
+                            elif role == "assistant":
+                                base_messages.append(AIMessage(content=content))
+                            elif role == "system":
+                                base_messages.append(SystemMessage(content=content))
+                except Exception as bootstrap_error:
+                    logger.error(
+                        f"Failed to load conversation history from Supabase: {bootstrap_error}",
+                        exc_info=True,
+                    )
+            elif is_new_thread:
+                # Only bootstrap if not initial open but LangGraph state is empty
+                try:
+                    _, stored_messages = load_conversation_with_messages(
+                        user_id=request.user_id,
+                        course_material_id=course_material_id,
+                        limit=20,
+                    )
+                    conversation_has_history = len(stored_messages) > 0
+
                     for stored in stored_messages:
                         role = stored.get("role")
                         content = stored.get("content", "")
@@ -734,35 +762,134 @@ async def initiate_chat(
 
             # Update state with current page information (according to AGENT_DEVELOPMENT_RULES.md)
             # The agent should always know which page we are currently viewing
-            if is_new_thread:
-                # New thread: include any bootstrapped messages, then add system and page change message
+            
+            # Determine greeting type based on is_initial_open flag and conversation history
+            if request.is_initial_open:
+                # This is an initial opening of the study reader (first load or reopening)
+                last_page_number = None
+                metadata = conversation.get("metadata") or {}
+                if isinstance(metadata, dict):
+                    last_page_number = metadata.get("last_page_number")
+
+                if conversation_has_history:
+                    # Returning to an existing study session
+                    completed_pages = last_page_number or request.page_number
+                    total_pages_safe = total_pages or "unbekannt"
+
+                    # IMPORTANT:
+                    # For the list of \"already covered\" topics we now rely ONLY on the actual
+                    # chat history, not on syllabus/overview summaries from the slides.
+                    # This prevents the model from listing future topics that were only
+                    # announced on an agenda slide but not yet discussed in the conversation.
+                    topics_instructions = (
+                        "\n\nANALYSE DER BISHERIGEN THEMEN (nur Chat-Verlauf, keine Agenda-Folien!):\n"
+                        "- Analysiere ausschließlich den obigen Chat-Verlauf, um herauszufinden,\n"
+                        "  welche Themen ihr bereits inhaltlich BESPROCHEN habt.\n"
+                        "- Themen, die nur als zukünftige Inhalte auf einer Übersichts-/Agenda-Folie\n"
+                        "  erwähnt wurden (z.B. Rechengesetze, Binomische Formeln, Logarithmusgesetze),\n"
+                        "  dürfen NICHT in der Liste auftauchen, solange sie im Chat noch nicht erklärt\n"
+                        "  oder diskutiert wurden.\n"
+                        "- Fasse verwandte Punkte sinnvoll zusammen und formuliere eine kurze,\n"
+                        "  natürlich klingende Liste von 2–5 Hauptthemen, die bisher wirklich\n"
+                        "  behandelt wurden (z.B. \"Einführung in die Vorlesung\", \"Zahlenbereiche\",\n"
+                        "  \"imaginäre und komplexe Zahlen\").\n"
+                    )
+
+                    initial_human_content = (
+                        "The student is returning to this study session after closing and reopening the study reader.\n\n"
+                        f"- They have already worked through approximately {completed_pages} "
+                        f"of {total_pages_safe} pages in this material.\n"
+                        "- You have access to the previous chat history in the messages above.\n"
+                        f"{topics_instructions}\n\n"
+                        "GREETING INSTRUCTIONS (German):\n"
+                        "Begrüße den Studenten freundlich als Rückkehrer mit einer persönlichen Nachricht.\n"
+                        "Formuliere etwa so (sinngemäß, nicht wortwörtlich, aber sehr ähnlich):\n"
+                        f"\"Hi! Schön, dass du wieder da bist. Wir haben jetzt {completed_pages} von {total_pages_safe} "
+                        "Seiten abgearbeitet und dabei folgende Themen behandelt: [NENNE HIER DIE 2–5 WICHTIGSTEN THEMEN "
+                        "AUS DEM CHAT-VERLAUF, DIE WIRKLICH BEREITS BESPROCHEN WURDEN]. "
+                        "Kannst du dich an alles erinnern oder soll ich dir nochmal eine kurze Zusammenfassung geben?\"\n"
+                        "WICHTIG: Nutze wirklich nur den Chat-Verlauf als Grundlage für die Themenliste –\n"
+                        "Themen, die lediglich als zukünftige Inhalte angekündigt wurden, sollen NICHT erwähnt werden.\n"
+                        "Halte die Nachricht persönlich, freundlich und kurz (2-3 Sätze)."
+                    )
+                else:
+                    # First visit for this material (no previous chat history)
+                    total_pages_safe = total_pages or "unbekannt"
+                    initial_human_content = (
+                        "This is the student's first visit to this study session for this lecture material.\n\n"
+                        "Use the following information:\n"
+                        f"- Current page: {request.page_number}\n"
+                        f"- Total pages (if known): {total_pages_safe}\n"
+                        f"- Page summary: {summary}\n\n"
+                        "GREETING INSTRUCTIONS (German):\n"
+                        "Begrüße den Studenten mit einer freundlichen, motivierenden ersten Nachricht.\n"
+                        "Formuliere etwa so (sinngemäß, nicht wortwörtlich):\n"
+                        "\"Hallo! Heute schauen wir uns diese Vorlesung bzw. diesen Foliensatz an. "
+                        "Die Kernthemen sind grob: nutze die obige Zusammenfassung, um die wichtigsten Punkte "
+                        "in 1–2 Sätzen zu benennen. Wenn du bereit bist zu starten, blättere gerne eine Seite weiter "
+                        "oder stell mir direkt eine Frage zu dieser Einführungsfolie.\"\n"
+                        "Halte die Antwort kurz, freundlich und einladend."
+                    )
+
+                # Use bootstrapped messages if available, otherwise start fresh
                 initial_state = {
                     "messages": base_messages
                     + [
                         SystemMessage(content=system_message),
-                        HumanMessage(content=initial_message),
+                        HumanMessage(content=initial_human_content),
                     ],
                     "current_page": request.page_number,
                     "material_id": request.material_id,
                     "user_id": request.user_id,
                 }
             else:
-                # Existing thread: load existing messages from snapshot and add page change notification
-                existing_messages = snapshot.values.get("messages", [])
+                # This is just a page change within an ongoing session
+                # Use existing LangGraph state if available, otherwise bootstrap
+                if is_new_thread:
+                    # LangGraph state is empty, but we might have bootstrapped messages
+                    initial_state = {
+                        "messages": base_messages
+                        + [
+                            SystemMessage(content=system_message),
+                            HumanMessage(
+                                content=(
+                                    "The student has navigated to a new slide.\n"
+                                    f"- Current page: {request.page_number}\n"
+                                    f"- Page summary: {summary}\n\n"
+                                    "Continue the conversation naturally auf Deutsch, knüpfe locker an das "
+                                    "bisher Gesagte an und erkläre die neue Folie im Kontext der bisherigen Themen."
+                                )
+                            ),
+                        ],
+                        "current_page": request.page_number,
+                        "material_id": request.material_id,
+                        "user_id": request.user_id,
+                    }
+                else:
+                    # Existing thread in this backend process: load existing messages from snapshot
+                    existing_messages = snapshot.values.get("messages", [])
 
-                # Add system message about page change (as a subtle notification)
-                # and a human message to trigger agent response
-                # This feels like a natural continuation of the conversation
-                initial_state = {
-                    "messages": existing_messages
-                    + [
-                        SystemMessage(content=system_message),
-                        HumanMessage(content=initial_message),
-                    ],
-                    "current_page": request.page_number,
-                    "material_id": request.material_id,
-                    "user_id": request.user_id,
-                }
+                    # For simple page changes within an ongoing conversation, we use a lighter hint
+                    page_change_human = HumanMessage(
+                        content=(
+                            "The student has navigated to a new slide.\n"
+                            f"- Current page: {request.page_number}\n"
+                            f"- Page summary: {summary}\n\n"
+                            "Continue the ongoing conversation natürlich auf Deutsch, knüpfe locker an das "
+                            "bisher Gesagte an und erkläre die neue Folie im Kontext der bisherigen Themen."
+                        )
+                    )
+
+                    initial_state = {
+                        "messages": existing_messages
+                        + [
+                            SystemMessage(content=system_message),
+                            page_change_human,
+                        ],
+                        "current_page": request.page_number,
+                        "material_id": request.material_id,
+                        "user_id": request.user_id,
+                    }
             
             # Prepare buffer for assistant response text for persistence
             assistant_response_chunks: list[str] = []
