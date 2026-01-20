@@ -35,6 +35,7 @@ export function StudyReader({
   const [isStreaming, setIsStreaming] = useState(false)
   const streamControllerRef = useRef<{ close: () => void } | null>(null)
   const messageIdCounter = useRef(0)
+  const chatPanelRef = useRef<HTMLDivElement | null>(null)
 
   // Generate unique message ID
   const generateMessageId = useCallback(() => {
@@ -386,8 +387,8 @@ export function StudyReader({
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <Group direction="horizontal" className="flex-1">
+    <div className="flex flex-col h-full max-h-full min-h-0 overflow-hidden">
+      <Group direction="horizontal" className="flex-1 min-h-0 max-h-full overflow-hidden">
         {/* Left Panel: PDF Viewer */}
         <Panel defaultSize={50} minSize={30}>
           <div className="flex flex-col h-full bg-background">
@@ -424,12 +425,14 @@ export function StudyReader({
 
         {/* Right Panel: Chat Interface */}
         <Panel defaultSize={50} minSize={30}>
-          <ChatInterface
-            messages={messages}
-            onSend={handleSendMessage}
-            isLoading={isLoading}
-            isStreaming={isStreaming}
-          />
+          <div ref={chatPanelRef} className="flex h-full min-h-0 overflow-hidden">
+            <ChatInterface
+              messages={messages}
+              onSend={handleSendMessage}
+              isLoading={isLoading}
+              isStreaming={isStreaming}
+            />
+          </div>
         </Panel>
       </Group>
     </div>
