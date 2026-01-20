@@ -54,24 +54,22 @@ export function ChatInterface({
           className="h-full overflow-y-auto px-4 py-4 space-y-6"
         >
           {isInitiallyLoading ? (
-            <div className="flex h-full items-center">
-              <div className="flex items-start space-x-3 justify-start">
-                {/* Avatar wie beim Tutor */}
-                <div className="w-8 h-8 bg-black rounded-full flex items-center justify-center flex-shrink-0">
-                  <span className="text-white text-sm font-medium">H</span>
-                </div>
+            <div className="flex items-start space-x-3 justify-start animate-in fade-in duration-300 slide-in-from-bottom-2">
+              {/* Avatar (identisch zum Tutor) */}
+              <div className="w-8 h-8 bg-black rounded-full flex items-center justify-center flex-shrink-0">
+                <span className="text-white text-sm font-medium">H</span>
+              </div>
 
-                {/* „Nachrichten“-Bubble im gleichen Layout wie ChatMessage */}
-                <div className="flex-1 max-w-[80%]">
-                  <div className="rounded-2xl px-4 py-3 bg-black text-white">
-                    <div className="flex items-center gap-3">
-                      <Loader size={18} className="text-white" />
-                      <div className="space-y-1">
-                        <p className="text-sm font-medium">Tutor lädt …</p>
-                        <p className="text-xs text-white/70">
-                          Die erste Nachricht wird vorbereitet.
-                        </p>
-                      </div>
+              {/* Nachrichten-Bubble */}
+              <div className="max-w-[80%]">
+                <div className="rounded-2xl px-4 py-3 bg-black text-white">
+                  <div className="flex items-center gap-3">
+                    <Loader size={18} className="text-white animate-spin" />
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">Tutor lädt …</p>
+                      <p className="text-xs text-white/70">
+                        Die erste Nachricht wird vorbereitet.
+                      </p>
                     </div>
                   </div>
                 </div>
