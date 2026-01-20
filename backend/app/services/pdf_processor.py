@@ -11,10 +11,12 @@ from typing import List
 from pdf2image import convert_from_bytes
 from PIL import Image
 
-from app.services.analyzer import analyze_pdf_page
+from app.services.analyzer import analyze_pdf_page, generate_material_summary
 from app.services.storage import (
     update_processing_status,
-    save_page_analysis
+    save_page_analysis,
+    get_all_page_analyses_for_material,
+    update_course_material_summary,
 )
 
 logger = logging.getLogger(__name__)
@@ -181,7 +183,35 @@ async def process_pdf_background(
             status = "error"
             error_message = f"All pages failed: {', '.join(errors[:5])}"  # Limit error message length
             logger.error(f"All pages failed for material {material_id}")
-        
+
+        # Try to generate a global material summary if at least one page succeeded.
+        # This is best-effort only: failures here must not overwrite the main status.
+        if pages_analyzed > 0:
+            try:
+                logger.info(
+                    f"Generating global material summary for material {material_id} "
+                    f"based on {pages_analyzed} analyzed pages"
+                )
+                page_data = get_all_page_analyses_for_material(
+                    course_material_id=material_id,
+                    user_id=user_id,
+                )
+                if page_data:
+                    summary_json = await generate_material_summary(page_data)
+                    update_course_material_summary(material_id, summary_json)
+                    logger.info(f"Successfully stored global summary for material {material_id}")
+                else:
+                    logger.warning(
+                        f"No page_analyses found for material {material_id} when generating global summary"
+                    )
+            except Exception as summary_error:
+                logger.error(
+                    f"Failed to generate or store global material summary for {material_id}: "
+                    f"{summary_error}",
+                    exc_info=True,
+                )
+
+        # Update final status in course_materials
         update_processing_status(material_id, status, error_message)
         logger.info(f"Background processing completed for material {material_id}: {status}")
         

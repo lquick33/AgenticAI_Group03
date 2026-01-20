@@ -141,7 +141,7 @@ export function PromptInputSubmit({
       case "submitted":
         return <Loader size={16} />
       case "streaming":
-        return <Square className="size-4" />
+        return <Loader size={16} />
       case "error":
         return <X className="size-4" />
       case "ready":

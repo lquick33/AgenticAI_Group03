@@ -31,6 +31,26 @@ This file documents the purpose and key components of files added to the Lernkom
 
 ---
 
+### `supabase/migrations/20260113000000_add_summary_to_course_materials.sql`
+
+**Purpose**: Migration file that extends the `course_materials` table with a `summary` column used to store a global, LLM-generated topics overview for each uploaded lecture.
+
+**Key Components**:
+- **New Column**: Adds `summary TEXT` to `course_materials`
+- **Intended Use**:
+  - Stores a JSON-encoded summary object with overall lecture summary and main topics
+  - Populated asynchronously by the PDF processing pipeline after all pages have been analyzed
+  - Serves as a central entry point for:
+    - Course/topic tracking across materials
+    - Future Meta Agent planning (Themenplanung, Wissensstände)
+    - Initial overview for the Tutor Agent in the Study Reader
+
+**Dependencies**: Builds on the initial schema migration (`20260110111927_initial_schema.sql`) and expects the `course_materials` table to exist.
+
+**Usage**: Apply via Supabase SQL editor or CLI as part of the normal migration flow (`supabase db push`).
+
+---
+
 ### `supabase/migrations/README.md`
 
 **Purpose**: Documentation file explaining the migration structure, execution methods, and schema overview.
@@ -1564,7 +1584,9 @@ agent = TutorAgent(
 
 ### `backend/app/services/storage.py` (Updated)
 
-**New Function**: `get_page_analysis()`
+**New Functions**: `get_page_analysis()` and `get_page_analysis_id()`
+
+**`get_page_analysis()`**:
 
 **Purpose**: Retrieves page analysis data from the `page_analyses` table.
 
@@ -1584,19 +1606,40 @@ def get_page_analysis(
 - Raises `ValueError` if page analysis not found
 - Used by both Tool and API endpoint
 
+**`get_page_analysis_id()`**:
+
+**Purpose**: Retrieves only the page analysis ID (UUID) from the `page_analyses` table. Used to link chat messages to specific pages via `context_page_id`.
+
+**Function Signature**:
+```python
+def get_page_analysis_id(
+    course_material_id: str,
+    page_number: int,
+    user_id: str
+) -> Optional[str]
+```
+
+**Key Features**:
+- Query Supabase `page_analyses` table with filters
+- Returns the `id` (UUID) of the page analysis record, or `None` if not found
+- User authorization via RLS (Row Level Security)
+- Used by chat endpoints to set `context_page_id` when persisting messages
+- Returns `None` gracefully if page analysis doesn't exist yet (e.g., still processing)
+
 **Dependencies**: 
 - `get_supabase_client()` - Supabase client singleton
 
 **Usage**: 
 ```python
-from app.services.storage import get_page_analysis
+from app.services.storage import get_page_analysis, get_page_analysis_id
 
 analysis = get_page_analysis(course_material_id, page_number, user_id)
+page_analysis_id = get_page_analysis_id(course_material_id, page_number, user_id)
 ```
 
 **Related Files**: 
-- `backend/app/tools/page_analysis_tool.py` - Tool that uses this function
-- `backend/app/api/endpoints.py` - API endpoint that uses this function
+- `backend/app/tools/page_analysis_tool.py` - Tool that uses `get_page_analysis()`
+- `backend/app/api/endpoints.py` - API endpoints that use both functions for message persistence
 
 ---
 
@@ -2159,17 +2202,18 @@ from app.services.session_storage import (
   - Uses `conversation.id` as `thread_id` for LangGraph `MemorySaver`.
   - Streams the tutor greeting for the current page and buffers assistant chunks.
   - After streaming, persists:
-    - a synthetic `user` message (`"Let's continue with page X."`),
-    - a combined `assistant` response,
+    - a combined `assistant` response with `context_page_id` set to the `page_analyses.id` for the current page,
     - and updates `last_page_number` in `conversations.metadata`.
+  - The `context_page_id` links each message to the specific page analysis, allowing later queries to filter messages by page.
   - Optionally bootstraps LangGraph state from recent Supabase messages if the in-memory graph has no history (e.g., after backend restart).
 - `/api/chat/message`:
   - Resolves the same study `conversation` for `(user_id, material_id)` and uses its `id` as `thread_id`.
   - Reads `current_page` from LangGraph state, falling back to `conversations.metadata.last_page_number` when necessary.
   - Streams the tutor reply, buffers assistant chunks, and persists:
-    - the `user` message,
-    - the combined `assistant` response,
+    - the `user` message with `context_page_id` set to the `page_analyses.id` for the current page,
+    - the combined `assistant` response with the same `context_page_id`,
     - and updated `last_page_number` if known.
+  - Both user and assistant messages are linked to the page via `context_page_id` for proper context tracking.
 - `/api/study/session` (new):
   - Query params: `material_id`, `user_id`, optional `limit`.
   - Validates user and ownership of `course_materials` record.

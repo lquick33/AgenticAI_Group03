@@ -27,7 +27,7 @@ export function ChatInterface({
   const isInitiallyLoading = messages.length === 0 && (isLoading || isStreaming)
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-[#f6f4f1]">
+    <div className="flex flex-col h-full w-full min-h-0 bg-[#f6f4f1]">
       {/* Optional Context Banner */}
       {contextInfo && (
         <div className="bg-blue-50 border-b border-blue-200 p-4 flex-shrink-0">
@@ -54,25 +54,16 @@ export function ChatInterface({
           className="h-full overflow-y-auto px-4 py-4 space-y-6"
         >
           {isInitiallyLoading ? (
-            <div className="flex items-start space-x-3 justify-start animate-in fade-in duration-300 slide-in-from-bottom-2">
-              {/* Avatar (identisch zum Tutor) */}
-              <div className="w-8 h-8 bg-black rounded-full flex items-center justify-center flex-shrink-0">
-                <span className="text-white text-sm font-medium">H</span>
-              </div>
-
-              {/* Nachrichten-Bubble */}
-              <div className="max-w-[80%]">
-                <div className="rounded-2xl px-4 py-3 bg-black text-white">
-                  <div className="flex items-center gap-3">
-                    <Loader size={18} className="text-white animate-spin" />
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">Tutor lädt …</p>
-                      <p className="text-xs text-white/70">
-                        Die erste Nachricht wird vorbereitet.
-                      </p>
-                    </div>
-                  </div>
+            // Vollflächiger Ladezustand beim Initialisieren der Sitzung
+            <div className="flex h-full items-center justify-center">
+              <div className="flex flex-col items-center gap-3 rounded-2xl bg-black text-white px-6 py-4 max-w-md w-full">
+                <div className="flex items-center gap-3">
+                  <Loader size={20} className="animate-spin" />
+                  <p className="text-sm font-medium">Tutor denkt nach...</p>
                 </div>
+                <p className="text-xs text-white/70 text-center">
+                  Die Antwort zu deinen aktuellen Folien wird vorbereitet.
+                </p>
               </div>
             </div>
           ) : messages.length === 0 ? (
@@ -81,15 +72,22 @@ export function ChatInterface({
               description="Beginne eine Unterhaltung mit dem Tutor"
             />
           ) : (
-            messages.map((message, index) => (
-              <div key={message.id} className={index > 0 ? "mt-6" : ""}>
-                <ChatMessage
-                  id={message.id}
-                  role={message.role}
-                  content={message.content}
-                />
-              </div>
-            ))
+            messages.map((message, index) => {
+              // Check if this is the last message and it's streaming
+              const isLastMessage = index === messages.length - 1
+              const isStreamingMessage = isLastMessage && isStreaming && message.role === "assistant" && (!message.content || message.content.trim() === "")
+              
+              return (
+                <div key={message.id} className={index > 0 ? "mt-6" : ""}>
+                  <ChatMessage
+                    id={message.id}
+                    role={message.role}
+                    content={message.content}
+                    isStreaming={isStreamingMessage}
+                  />
+                </div>
+              )
+            })
           )}
         </div>
       </div>

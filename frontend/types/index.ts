@@ -47,6 +47,7 @@ export interface CourseMaterial {
   processing_status: 'uploading' | 'processing' | 'completed' | 'error'
   error_message?: string | null
   created_at: string
+  summary?: string | null
 }
 
 export interface PageAnalysis {

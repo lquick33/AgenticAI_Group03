@@ -409,7 +409,9 @@ class TutorAgent(BaseAgent):
                     )
                 messages_for_llm.insert(0, SystemMessage(content=enhanced_content))
         
-        # Call LLM
+        # Call LLM with streaming support
+        # Note: For token-level streaming, we'll use astream_events in the endpoint
+        # For now, we keep invoke for compatibility, but the endpoint will handle streaming
         response = self.llm.invoke(messages_for_llm)
         
         # Return updated state (MessagesState will automatically add the message)
