@@ -5,6 +5,7 @@ Handles file uploads to Supabase Storage and database operations
 for course materials and page analyses.
 """
 
+import json
 from typing import Optional
 
 from supabase import create_client, Client
@@ -415,4 +416,55 @@ def update_course_material_summary(
         ).eq("id", material_id).execute()
     except Exception as e:
         raise Exception(f"Failed to update course material summary: {str(e)}")
+
+
+def get_course_material_summary(
+    course_material_id: str,
+    user_id: str
+) -> Optional[dict]:
+    """
+    Get the summary field from a course_material record.
+    
+    The summary is stored as a TEXT field containing JSON-encoded data
+    with an overview of the lecture topics and concepts.
+    
+    Args:
+        course_material_id: Course material ID
+        user_id: User ID for authorization (RLS)
+        
+    Returns:
+        Parsed summary as dict, or None if not found or empty
+        
+    Raises:
+        Exception: If database operation fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("course_materials").select(
+            "summary"
+        ).eq(
+            "id", course_material_id
+        ).eq(
+            "user_id", user_id
+        ).execute()
+        
+        if response.data and len(response.data) > 0:
+            summary_text = response.data[0].get("summary")
+            if not summary_text:
+                return None
+            
+            # Try to parse as JSON
+            try:
+                return json.loads(summary_text)
+            except json.JSONDecodeError:
+                # If not valid JSON, return as plain text in a structured format
+                return {
+                    "summary_text": summary_text,
+                    "format": "plain_text"
+                }
+        else:
+            return None
+    except Exception as e:
+        raise Exception(f"Failed to get course material summary: {str(e)}")
 

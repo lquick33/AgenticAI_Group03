@@ -818,18 +818,23 @@ async def initiate_chat(
                     total_pages_safe = total_pages or "unbekannt"
                     initial_human_content = (
                         "This is the student's first visit to this study session for this lecture material.\n\n"
+                        "IMPORTANT: Before greeting the student, use the get_course_material_summary tool to retrieve "
+                        "the overall summary of this lecture material. This will give you context about the main topics "
+                        "and concepts covered in this lecture.\n\n"
                         "Use the following information:\n"
                         f"- Current page: {request.page_number}\n"
                         f"- Total pages (if known): {total_pages_safe}\n"
                         f"- Page summary: {summary}\n\n"
                         "GREETING INSTRUCTIONS (German):\n"
-                        "Begrüße den Studenten mit einer freundlichen, motivierenden ersten Nachricht.\n"
-                        "Formuliere etwa so (sinngemäß, nicht wortwörtlich):\n"
+                        "1. First, call the get_course_material_summary tool to get the overall lecture summary.\n"
+                        "2. Then, begrüße den Studenten mit einer freundlichen, motivierenden ersten Nachricht.\n"
+                        "3. Formuliere etwa so (sinngemäß, nicht wortwörtlich):\n"
                         "\"Hallo! Heute schauen wir uns diese Vorlesung bzw. diesen Foliensatz an. "
-                        "Die Kernthemen sind grob: nutze die obige Zusammenfassung, um die wichtigsten Punkte "
-                        "in 1–2 Sätzen zu benennen. Wenn du bereit bist zu starten, blättere gerne eine Seite weiter "
+                        "Die Kernthemen sind: [NUTZE DIE ZUSAMMENFASSUNG AUS DEM TOOL, um die wichtigsten Themen "
+                        "in 1–2 Sätzen zu benennen]. Wenn du bereit bist zu starten, blättere gerne eine Seite weiter "
                         "oder stell mir direkt eine Frage zu dieser Einführungsfolie.\"\n"
-                        "Halte die Antwort kurz, freundlich und einladend."
+                        "Halte die Antwort kurz, freundlich und einladend. Nutze die Informationen aus dem Tool, "
+                        "um eine informierte Begrüßung zu geben."
                     )
 
                 # Use bootstrapped messages if available, otherwise start fresh
