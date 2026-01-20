@@ -966,6 +966,31 @@ async def initiate_chat(
                                         role = "user"
                                     elif isinstance(msg, AIMessage):
                                         role = "assistant"
+                                        
+                                        # Extract tool calls if present
+                                        if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                            tool_calls_data = []
+                                            for tool_call in msg.tool_calls:
+                                                # Extract tool call information
+                                                tool_id = getattr(tool_call, "id", None) or tool_call.get("id", "") if isinstance(tool_call, dict) else ""
+                                                tool_name = getattr(tool_call, "name", None) or tool_call.get("name", "") if isinstance(tool_call, dict) else ""
+                                                tool_args = getattr(tool_call, "args", None) or tool_call.get("args", {}) if isinstance(tool_call, dict) else {}
+                                                
+                                                if tool_id and tool_name:
+                                                    tool_calls_data.append({
+                                                        "id": tool_id,
+                                                        "name": tool_name,
+                                                        "args": tool_args if isinstance(tool_args, dict) else {}
+                                                    })
+                                            
+                                            if tool_calls_data:
+                                                # Send tool call event
+                                                tool_event = {
+                                                    "type": "tool_call",
+                                                    "tool_calls": tool_calls_data,
+                                                    "message_id": f"msg-{len(assistant_response_chunks)}"
+                                                }
+                                                yield f"data: {json.dumps(tool_event)}\n\n"
 
                                     # Handle assistant messages with incremental streaming
                                     if role == "assistant" and msg.content:
@@ -1191,6 +1216,31 @@ async def send_chat_message(
                                     role = "user"
                                 elif isinstance(msg, AIMessage):
                                     role = "assistant"
+                                    
+                                    # Extract tool calls if present
+                                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                        tool_calls_data = []
+                                        for tool_call in msg.tool_calls:
+                                            # Extract tool call information
+                                            tool_id = getattr(tool_call, "id", None) or tool_call.get("id", "") if isinstance(tool_call, dict) else ""
+                                            tool_name = getattr(tool_call, "name", None) or tool_call.get("name", "") if isinstance(tool_call, dict) else ""
+                                            tool_args = getattr(tool_call, "args", None) or tool_call.get("args", {}) if isinstance(tool_call, dict) else {}
+                                            
+                                            if tool_id and tool_name:
+                                                tool_calls_data.append({
+                                                    "id": tool_id,
+                                                    "name": tool_name,
+                                                    "args": tool_args if isinstance(tool_args, dict) else {}
+                                                })
+                                        
+                                        if tool_calls_data:
+                                            # Send tool call event
+                                            tool_event = {
+                                                "type": "tool_call",
+                                                "tool_calls": tool_calls_data,
+                                                "message_id": f"msg-{len(assistant_response_chunks)}"
+                                            }
+                                            yield f"data: {json.dumps(tool_event)}\n\n"
 
                                 # Handle assistant messages with incremental streaming
                                 if role == "assistant" and msg.content:

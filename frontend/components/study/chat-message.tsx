@@ -4,7 +4,8 @@ import { cn } from "@/lib/utils"
 import ReactMarkdown from "react-markdown"
 import { User } from "lucide-react"
 import { Loader } from "@/components/ui/loader"
-import type { ChatMessage as ChatMessageType } from "@/types"
+import { Tool } from "@/components/ui/tool"
+import type { ChatMessage as ChatMessageType, ToolCall } from "@/types"
 
 type ChatRole = "user" | "assistant"
 
@@ -13,13 +14,17 @@ interface ChatMessageProps {
   role: ChatRole
   content: string
   isStreaming?: boolean
+  toolCalls?: ToolCall[]
+  showTools?: boolean
 }
 
-export function ChatMessage({ id, role, content, isStreaming = false }: ChatMessageProps) {
+export function ChatMessage({ id, role, content, isStreaming = false, toolCalls, showTools = false }: ChatMessageProps) {
   // Show typing indicator for assistant messages with empty content or streaming state
   const showTypingIndicator = role === "assistant" && (!content || content.trim() === "" || isStreaming)
   
   if (role === "user" && !content) return null
+
+  const hasTools = showTools && toolCalls && toolCalls.length > 0
 
   return (
     <div
@@ -42,6 +47,14 @@ export function ChatMessage({ id, role, content, isStreaming = false }: ChatMess
           role === "user" && "order-first"
         )}
       >
+        {/* Tool Calls - Dezente Anzeige vor der Message */}
+        {hasTools && (
+          <div className="mb-2 space-y-1">
+            {toolCalls.map((toolCall) => (
+              <Tool key={toolCall.id} toolCall={toolCall} />
+            ))}
+          </div>
+        )}
         <div
           className={cn(
             "rounded-2xl px-4 py-3",

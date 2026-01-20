@@ -110,11 +110,19 @@ export interface Flashcard {
   created_at: string
 }
 
+export interface ToolCall {
+  id: string
+  name: string
+  args: Record<string, any>
+  state?: 'pending' | 'running' | 'completed' | 'error'
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: string
+  toolCalls?: ToolCall[]
 }
 
 export interface PageAnalysisData {

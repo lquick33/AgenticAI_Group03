@@ -2287,3 +2287,251 @@ from app.services.session_storage import (
 - `frontend/components/study/study-reader.tsx` - Uses session data to restore state on mount.
 
 ---
+
+### `frontend/components/ui/switch.tsx`
+
+**Purpose**: Radix UI Switch component for toggling binary settings in the UI.
+
+**Key Components**:
+- `Switch`: Main switch component built on `@radix-ui/react-switch`
+- Styled with Tailwind CSS for consistent design
+- Supports keyboard interaction and accessibility
+
+**Key Features**:
+- Binary toggle state (checked/unchecked)
+- Accessible with keyboard support
+- Customizable styling via className prop
+- Smooth transitions
+
+**Dependencies**: 
+- `@radix-ui/react-switch` - Radix UI primitive
+- `@/lib/utils` - `cn` utility for className merging
+
+**Usage**: Used in ChatInterface for toggling tool visibility
+
+**Related Files**: 
+- `frontend/components/study/chat-interface.tsx` - Uses Switch for tool visibility toggle
+
+---
+
+### `frontend/components/ui/tool.tsx`
+
+**Purpose**: Tool display component for showing AI agent tool calls in the chat interface. Based on shadcn Tool component, adapted for our ToolCall data structure.
+
+**Key Components**:
+- `Tool`: Main collapsible component for displaying tool information
+- `ToolCall` interface: Defines tool call structure (id, name, args, state)
+- Status badges: Visual indicators for tool state (pending, running, completed, error)
+- Collapsible sections: Expandable details for tool parameters
+
+**Key Features**:
+- Collapsible display with tool name and status
+- JSON parameter display with syntax highlighting
+- Status badges with icons (pending, running, completed, error)
+- Dezente Integration in chat messages
+
+**State Management**:
+- `isOpen`: Controls collapsible state
+- Tool state: `pending` | `running` | `completed` | `error`
+
+**Dependencies**: 
+- `lucide-react` - Icons (WrenchIcon, CheckCircleIcon, etc.)
+- `@/components/ui/badge` - Status badges
+- `@/components/ui/collapsible` - Collapsible container
+- `@/lib/utils` - Utility functions
+
+**Usage**: Displayed in ChatMessage component when `showTools` is enabled and `toolCalls` are present
+
+**Related Files**: 
+- `frontend/components/study/chat-message.tsx` - Uses Tool component to display tool calls
+- `frontend/types/index.ts` - Defines ToolCall interface
+
+---
+
+### `frontend/types/index.ts` (ToolCall Extension)
+
+**Purpose**: TypeScript type definitions extended with ToolCall interface and ChatMessage.toolCalls field.
+
+**New Types**:
+- `ToolCall`: Interface for tool call information
+  - `id: string` - Unique tool call identifier
+  - `name: string` - Tool name (e.g., "get_page_analysis")
+  - `args: Record<string, any>` - Tool arguments/parameters
+  - `state?: 'pending' | 'running' | 'completed' | 'error'` - Optional tool execution state
+
+**Extended Types**:
+- `ChatMessage.toolCalls?: ToolCall[]` - Optional array of tool calls associated with a message
+
+**Usage**: Used throughout the frontend to type tool call data from backend SSE streams
+
+**Related Files**: 
+- `frontend/components/ui/tool.tsx` - Uses ToolCall interface
+- `frontend/components/study/study-reader.tsx` - Manages tool calls in state
+- `frontend/lib/api/study.ts` - Parses tool calls from SSE stream
+
+---
+
+### `backend/app/api/endpoints.py` (Tool Extraction)
+
+**Purpose**: Backend API endpoints extended to extract and stream tool call information from LangGraph agent responses.
+
+**Key Changes**:
+- **Tool Extraction**: In both `initiate_chat` and `send_chat_message` functions:
+  - Detects `AIMessage.tool_calls` attribute
+  - Extracts tool call information (id, name, args)
+  - Serializes tool calls to JSON
+  - Sends tool call events via SSE stream before assistant message
+
+**Tool Event Format**:
+```python
+{
+  "type": "tool_call",
+  "tool_calls": [
+    {
+      "id": "...",
+      "name": "get_page_analysis",
+      "args": {...}
+    }
+  ],
+  "message_id": "..."
+}
+```
+
+**Streaming**:
+- Tool events sent as separate SSE events
+- Tool events precede the final assistant message
+- Tool information extracted from LangChain `AIMessage.tool_calls`
+
+**Dependencies**: 
+- `langchain_core.messages.AIMessage` - Message type with tool_calls attribute
+- JSON serialization for tool call data
+
+**Usage**: Frontend receives tool call events via SSE and displays them in chat interface
+
+**Related Files**: 
+- `frontend/lib/api/study.ts` - Parses tool call events
+- `frontend/components/study/study-reader.tsx` - Handles tool call events
+
+---
+
+### `frontend/components/study/chat-interface.tsx` (Switch Integration)
+
+**Purpose**: Chat interface component extended with tool visibility toggle switch.
+
+**Key Changes**:
+- **New Props**:
+  - `showTools?: boolean` - Controls tool visibility
+  - `onToggleTools?: (enabled: boolean) => void` - Callback for toggle changes
+- **Switch Component**: 
+  - Positioned dezent oben rechts im Chat-Header
+  - Label: "Tools anzeigen"
+  - Persists state via localStorage (handled in parent)
+
+**Features**:
+- Dezente Switch-Position (oben rechts)
+- Label für bessere UX
+- State wird an ChatMessage weitergegeben
+
+**Dependencies**: 
+- `@/components/ui/switch` - Switch component
+- `@/components/ui/label` - Label component
+
+**Usage**: User can toggle tool visibility for development/debugging purposes
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Manages showTools state and localStorage
+- `frontend/components/study/chat-message.tsx` - Receives showTools prop
+
+---
+
+### `frontend/components/study/chat-message.tsx` (Tool Display)
+
+**Purpose**: Chat message component extended to display tool calls when enabled.
+
+**Key Changes**:
+- **New Props**:
+  - `toolCalls?: ToolCall[]` - Array of tool calls to display
+  - `showTools?: boolean` - Controls whether tools are displayed
+- **Tool Display**:
+  - Tools shown above message content (dezent)
+  - Only displayed for assistant messages
+  - Only shown when `showTools === true` and `toolCalls` exist
+  - Each tool displayed using `Tool` component
+
+**Features**:
+- Dezente Position (zwischen Avatar und Message-Content)
+- Conditional rendering based on showTools flag
+- Multiple tools displayed in sequence
+
+**Dependencies**: 
+- `@/components/ui/tool` - Tool display component
+- `@/types` - ToolCall type
+
+**Usage**: Shows which tools the agent used when generating a response
+
+**Related Files**: 
+- `frontend/components/ui/tool.tsx` - Tool display component
+- `frontend/components/study/chat-interface.tsx` - Passes showTools prop
+
+---
+
+### `frontend/components/study/study-reader.tsx` (Tool State Management)
+
+**Purpose**: Study reader component extended with tool call state management and localStorage persistence.
+
+**Key Changes**:
+- **New State**:
+  - `showTools: boolean` - Loaded from localStorage on mount
+  - `toolCallsByMessage: Map<string, ToolCall[]>` - Maps message IDs to tool calls
+- **Tool Event Handling**:
+  - Handles `tool_call` events from SSE stream
+  - Associates tool calls with streaming messages
+  - Updates messages with tool call information
+- **localStorage Persistence**:
+  - Key: `study-reader-show-tools`
+  - Persists switch state across page reloads
+  - Loads on component mount
+
+**Features**:
+- Tool calls tracked per message
+- State persists across reloads
+- Tool events handled in both `handlePageChange` and `handleSendMessage`
+
+**Dependencies**: 
+- `@/types` - ToolCall type
+- `localStorage` - Browser storage API
+
+**Usage**: Manages tool call state and provides toggle functionality to ChatInterface
+
+**Related Files**: 
+- `frontend/components/study/chat-interface.tsx` - Receives showTools state
+- `frontend/lib/api/study.ts` - Provides tool call events
+
+---
+
+### `frontend/lib/api/study.ts` (Tool Event Parsing)
+
+**Purpose**: API client functions extended to parse and handle tool call events from SSE stream.
+
+**Key Changes**:
+- **parseSSEChunk**: Extended return type to include tool call fields
+  - `tool_calls?: ToolCall[]`
+  - `message_id?: string`
+- **Callback Signatures**: Updated `initiateChat` and `sendMessage` callbacks to accept tool call events
+- **Event Handling**: Tool call events passed through to component handlers
+
+**Features**:
+- Tool events parsed from SSE stream
+- Type-safe tool call data
+- Backward compatible with existing message events
+
+**Dependencies**: 
+- `@/types` - ToolCall type
+
+**Usage**: Parses tool call events from backend SSE stream and forwards to component handlers
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Handles parsed tool events
+- `backend/app/api/endpoints.py` - Sends tool call events
+
+---
