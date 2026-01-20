@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_csv
+from app.services.storage import save_flashcards
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,14 @@ class FlashcardTaskService:
                 return
             
             task.cards_generated = len(cards)
+            
+            # Save flashcards to Supabase
+            try:
+                save_flashcards(cards, task.user_id, task.course_id)
+                logger.info(f"Saved {len(cards)} flashcards to database for task {task.task_id}")
+            except Exception as e:
+                logger.warning(f"Failed to save flashcards to database: {str(e)}")
+                # Continue anyway - CSV generation should still work
             
             # Build CSV
             task.csv_bytes = build_anki_csv(cards)

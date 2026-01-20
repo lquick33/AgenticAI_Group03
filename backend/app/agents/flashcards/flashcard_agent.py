@@ -45,8 +45,8 @@ class FlashcardGeneratorAgent:
         self.language = language
         
         # Create structured LLMs for different tasks
-        self.skip_decision_llm = self.llm.with_structured_output(PageSkipDecision).with_config({"run_name": "flashcard_skip_decision"})
-        self.card_generation_llm = self.llm.with_structured_output(FlashcardGenerationResult).with_config({"run_name": "flashcard_generation"})
+        self.skip_decision_llm = self.llm.with_structured_output(PageSkipDecision).with_config({"run_name": "flashcard-llm-skip-decision"})
+        self.card_generation_llm = self.llm.with_structured_output(FlashcardGenerationResult).with_config({"run_name": "flashcard-llm-generation"})
     
     def _should_skip_page(
         self, 

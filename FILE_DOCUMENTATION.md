@@ -2669,7 +2669,7 @@ csv_bytes = build_anki_csv(cards)
 
 ### `backend/app/services/storage.py` (Flashcard Functions)
 
-**Purpose**: Extended with functions for flashcard generation support.
+**Purpose**: Extended with functions for flashcard generation support and retrieval.
 
 **New Functions**:
 - **get_messages_for_page()**: 
@@ -2680,6 +2680,12 @@ csv_bytes = build_anki_csv(cards)
   - Batch inserts flashcards into the `flashcards` table
   - Links cards to source page analyses via `source_page_analysis_id`
   - Handles tag conversion (list to space-separated string)
+  - Used automatically during flashcard generation to persist cards in Supabase
+- **get_flashcards_for_material()**: 
+  - Retrieves all flashcards for a course material from Supabase
+  - Finds flashcards by querying page analyses for the material and then fetching linked flashcards
+  - Returns list of flashcard dicts with: id, front, back, source_page_analysis_id, created_at, course_id, user_id
+  - Enables downloading flashcards at any time without needing the original task
 
 **Updated Functions**:
 - **get_all_page_analyses_for_material()**: 
@@ -2691,27 +2697,31 @@ csv_bytes = build_anki_csv(cards)
 
 **Usage**: 
 ```python
-from app.services.storage import get_messages_for_page, save_flashcards
+from app.services.storage import get_messages_for_page, save_flashcards, get_flashcards_for_material
 
 messages = get_messages_for_page(page_analysis_id, user_id)
 save_flashcards(cards, user_id, course_id)
+flashcards = get_flashcards_for_material(course_material_id, user_id)
 ```
 
 **Related Files**: 
 - `backend/app/agents/flashcards/flashcard_agent.py` - Uses these functions
+- `backend/app/services/flashcard_task_service.py` - Automatically saves flashcards to DB
+- `backend/app/api/endpoints.py` - Uses get_flashcards_for_material for retrieval endpoints
 - `backend/supabase/migrations/20260110111927_initial_schema.sql` - Database schema
 
 ---
 
 ### `backend/app/api/endpoints.py` (Flashcard Generation Endpoints)
 
-**Purpose**: Background task-based flashcard generation with progress tracking.
+**Purpose**: Background task-based flashcard generation with progress tracking and database persistence.
 
 **New Endpoints**:
 - **POST `/api/flashcards/generate`**:
   - Query parameters: `course_material_id`, `user_id`
   - Validates user and material ownership
   - Creates background task for flashcard generation
+  - **Automatically saves flashcards to Supabase** after generation
   - Returns immediately with `task_id` (HTTP 202)
   - Response: `FlashcardTaskResponse` with task_id and status
 
@@ -2725,6 +2735,20 @@ save_flashcards(cards, user_id, course_id)
   - Downloads CSV file when task status is "completed"
   - Returns CSV file as StreamingResponse
   - Filename format: `flashcards_{course_title}_{material_name}.csv`
+  - Note: Flashcards are also saved to Supabase, so they can be downloaded later via `/flashcards/download/{course_material_id}`
+
+- **GET `/api/flashcards/{course_material_id}`**:
+  - Query parameters: `user_id` (for authorization)
+  - Retrieves all flashcards for a course material from Supabase
+  - Returns JSON with flashcards list and count
+  - Allows accessing flashcards at any time without needing the original task
+
+- **GET `/api/flashcards/download/{course_material_id}`**:
+  - Query parameters: `user_id` (for authorization)
+  - Downloads flashcards directly from Supabase as CSV
+  - Generates CSV on-the-fly from database
+  - No task required - works anytime after flashcards have been generated
+  - Filename format: `flashcards_{course_title}_{material_name}.csv`
 
 - **POST `/api/flashcards/cancel/{task_id}`**:
   - Query parameters: `user_id` (for authorization)
@@ -2735,15 +2759,19 @@ save_flashcards(cards, user_id, course_id)
 - Non-blocking background processing (no more blocking the API)
 - Real-time progress tracking (0.0 to 1.0)
 - Async LLM calls with timeouts (30s skip decision, 60s card generation)
+- **Automatic persistence to Supabase** - Flashcards are saved to database after generation
+- **Database retrieval** - Flashcards can be accessed anytime via `/flashcards/{course_material_id}`
+- **On-demand CSV download** - Download flashcards from database without needing the original task
 - Proper error handling and task cancellation
 - User authentication and authorization
 - Filename sanitization for filesystem compatibility
+- Support for multiple flashcards per page (via `source_page_analysis_id`)
 
 **Dependencies**: 
-- `app.services.flashcard_task_service` - Background task management
+- `app.services.flashcard_task_service` - Background task management (now saves flashcards to DB)
 - `app.agents.flashcards` - FlashcardGeneratorAgent
 - `app.services.flashcard_service` - build_anki_csv
-- `app.services.storage` - Validation functions
+- `app.services.storage` - Validation functions, save_flashcards, get_flashcards_for_material
 
 **Usage**: 
 ```
