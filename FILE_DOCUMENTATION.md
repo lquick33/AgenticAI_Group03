@@ -913,6 +913,40 @@ background_tasks.add_task(
 
 ---
 
+### `backend/app/services/observability.py`
+
+**Purpose**: Langfuse Observability Service für zentrales Token-Tracking und Observability von LLM-Calls.
+
+**Key Components**:
+- **`get_langfuse_client()`**: Erstellt oder gibt Langfuse Client-Instanz zurück (verwendet `get_client()` aus Langfuse SDK)
+- **`create_callback_handler()`**: Erstellt Langfuse CallbackHandler für LangChain Integration
+  - Trackt automatisch: Token Usage, Model Parameters, Input/Output Messages, Latency, Errors
+  - Unterstützt user_id, session_id, metadata für Trace-Gruppierung
+- **`extract_token_usage()`**: Extrahiert Token-Usage aus LLM Response (optional, für Debugging)
+- **`flush_langfuse()`**: Flusht pending Langfuse Events (wichtig für short-lived processes)
+- **`shutdown_langfuse()`**: Graceful shutdown des Langfuse Clients
+
+**Features**:
+- Automatisches Token-Tracking über LangChain CallbackHandler
+- Automatische Kostenberechnung (wenn Modell-Preise in Langfuse konfiguriert)
+- Graceful Degradation (funktioniert auch ohne Langfuse-Konfiguration)
+- Feature Flag über `LANGFUSE_ENABLED` in config.py
+
+**Dependencies**: 
+- `langfuse>=3.10.1` (in requirements.txt)
+- Environment Variables: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `LANGFUSE_ENABLED`
+
+**Usage**: 
+- Wird automatisch vom TutorAgent verwendet (via `create_callback_handler()`)
+- Wird in API Endpoints für Trace-Wrapping verwendet (`/chat/initiate`, `/chat/message`)
+
+**Related Files**:
+- `backend/app/core/config.py` - Langfuse Konfiguration
+- `backend/app/agents/tutor/tutor_agent.py` - Verwendet CallbackHandler
+- `backend/app/api/endpoints.py` - Verwendet Langfuse Tracing
+
+---
+
 ### `backend/app/services/storage.py`
 
 **Purpose**: Supabase Storage and Database operations for file uploads and analysis storage.

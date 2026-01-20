@@ -7,6 +7,7 @@ FastAPI route handlers for PDF upload and processing.
 import io
 import json
 import logging
+import sys
 import traceback
 from typing import Optional, AsyncGenerator
 
@@ -48,6 +49,9 @@ from app.services.session_storage import (
     append_messages,
     load_conversation_with_messages,
 )
+from langfuse import get_client, propagate_attributes
+from app.core.config import settings
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -694,61 +698,143 @@ async def initiate_chat(
         
         # Stream response
         async def event_generator() -> AsyncGenerator[str, None]:
-            # First, inject system message and initial message
-            config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+            # Langfuse Tracing Setup
+            # WICHTIG: get_client() liest direkt aus os.environ, nicht aus settings!
+            # Daher müssen wir die Werte aus settings in os.environ setzen
+            if settings.LANGFUSE_PUBLIC_KEY and "LANGFUSE_PUBLIC_KEY" not in os.environ:
+                os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
+            if settings.LANGFUSE_SECRET_KEY and "LANGFUSE_SECRET_KEY" not in os.environ:
+                os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
+            if settings.LANGFUSE_BASE_URL and "LANGFUSE_HOST" not in os.environ:
+                # Langfuse SDK verwendet LANGFUSE_HOST für die Base URL
+                os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_BASE_URL
             
-            # Check if thread exists and load existing messages from LangGraph
-            snapshot = agent.graph.get_state(config)
-            is_new_thread = snapshot is None or not snapshot.values or not snapshot.values.get("messages")
-
-            # Base messages for the LLM call
-            base_messages = []
-
-            stored_messages = []
-            conversation_has_history = False
-            last_message_is_welcome_back = False
-
-            # Helper function to detect if a message is a "Welcome Back" message
-            def is_welcome_back_message(content: str) -> bool:
-                """Check if a message contains typical Welcome Back phrases."""
-                if not content:
-                    return False
-                content_lower = content.lower()
-                welcome_phrases = [
-                    "schön, dass du wieder da bist",
-                    "wir haben jetzt",
-                    "von",
-                    "seiten abgearbeitet",
-                    "kannst du dich an alles erinnern",
-                    "soll ich dir nochmal eine kurze zusammenfassung geben"
-                ]
-                # Check if at least 2 of the key phrases are present
-                matches = sum(1 for phrase in welcome_phrases if phrase in content_lower)
-                return matches >= 2
-
-            # Always check Supabase for conversation history when is_initial_open is true
-            # This allows us to detect returning users even if LangGraph state exists
-            if request.is_initial_open:
+            langfuse = get_client()
+            trace = None
+            trace_ctx = None  # Context Manager für __exit__()
+            propagate_ctx = None
+            
+            # Context Manager manuell starten
+            if langfuse and settings.LANGFUSE_ENABLED:
                 try:
-                    _, stored_messages = load_conversation_with_messages(
-                        user_id=request.user_id,
-                        course_material_id=course_material_id,
-                        limit=20,
+                    trace_input = {
+                        "user_id": request.user_id,
+                        "material_id": course_material_id,
+                        "page_number": request.page_number
+                    }
+                    logger.info(f"🟡 Langfuse: Starting trace 'tutor-agent-initiate' with input: {trace_input}")
+                    trace_ctx = langfuse.start_as_current_observation(
+                        as_type="span",
+                        name="tutor-agent-initiate",
+                        input=trace_input
                     )
-                    conversation_has_history = len(stored_messages) > 0
+                    # WICHTIG: __enter__() gibt den aktiven span zurück, aber wir brauchen den Context Manager für __exit__()
+                    trace = trace_ctx.__enter__()
+                    logger.info("🟢 Langfuse: Trace 'tutor-agent-initiate' started successfully")
+                    
+                    propagate_metadata = {
+                        "material_id": course_material_id,
+                        "page_number": request.page_number,
+                        "course_id": course_id
+                    }
+                    logger.info(f"🟡 Langfuse: Propagating attributes - user_id={request.user_id}, session_id={thread_id}, metadata={propagate_metadata}")
+                    propagate_ctx = propagate_attributes(
+                        user_id=request.user_id,
+                        session_id=thread_id,  # conversation_id als session
+                        tags=["tutor-agent", "chat-initiate"],
+                        metadata=propagate_metadata
+                    )
+                    propagate_ctx.__enter__()
+                    logger.info("🟢 Langfuse: Attributes propagated successfully")
+                except Exception as e:
+                    logger.error(f"🔴 Langfuse: Setup failed: {e}", exc_info=True)
+                    # Wir machen weiter, auch wenn Tracing fehlschlägt
+                    trace = None
+                    trace_ctx = None
+                    propagate_ctx = None
+            
+            try:
+                # First, inject system message and initial message
+                config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+                
+                # Check if thread exists and load existing messages from LangGraph
+                snapshot = agent.graph.get_state(config)
+                is_new_thread = snapshot is None or not snapshot.values or not snapshot.values.get("messages")
 
-                    # Check if the last assistant message is already a Welcome Back message
-                    if conversation_has_history:
-                        # Find the last assistant message
-                        for stored in reversed(stored_messages):
-                            if stored.get("role") == "assistant":
-                                last_content = stored.get("content", "")
-                                if is_welcome_back_message(last_content):
-                                    last_message_is_welcome_back = True
-                                break
+                # Base messages for the LLM call
+                base_messages = []
 
-                    # Bootstrap messages into LangGraph state if needed
-                    if is_new_thread:
+                stored_messages = []
+                conversation_has_history = False
+                last_message_is_welcome_back = False
+
+                # Helper function to detect if a message is a "Welcome Back" message
+                def is_welcome_back_message(content: str) -> bool:
+                    """Check if a message contains typical Welcome Back phrases."""
+                    if not content:
+                        return False
+                    content_lower = content.lower()
+                    welcome_phrases = [
+                        "schön, dass du wieder da bist",
+                        "wir haben jetzt",
+                        "von",
+                        "seiten abgearbeitet",
+                        "kannst du dich an alles erinnern",
+                        "soll ich dir nochmal eine kurze zusammenfassung geben"
+                    ]
+                    # Check if at least 2 of the key phrases are present
+                    matches = sum(1 for phrase in welcome_phrases if phrase in content_lower)
+                    return matches >= 2
+
+                # Always check Supabase for conversation history when is_initial_open is true
+                # This allows us to detect returning users even if LangGraph state exists
+                if request.is_initial_open:
+                    try:
+                        _, stored_messages = load_conversation_with_messages(
+                            user_id=request.user_id,
+                            course_material_id=course_material_id,
+                            limit=20,
+                        )
+                        conversation_has_history = len(stored_messages) > 0
+
+                        # Check if the last assistant message is already a Welcome Back message
+                        if conversation_has_history:
+                            # Find the last assistant message
+                            for stored in reversed(stored_messages):
+                                if stored.get("role") == "assistant":
+                                    last_content = stored.get("content", "")
+                                    if is_welcome_back_message(last_content):
+                                        last_message_is_welcome_back = True
+                                    break
+
+                        # Bootstrap messages into LangGraph state if needed
+                        if is_new_thread:
+                            for stored in stored_messages:
+                                role = stored.get("role")
+                                content = stored.get("content", "")
+                                if not content:
+                                    continue
+                                if role == "user":
+                                    base_messages.append(HumanMessage(content=content))
+                                elif role == "assistant":
+                                    base_messages.append(AIMessage(content=content))
+                                elif role == "system":
+                                    base_messages.append(SystemMessage(content=content))
+                    except Exception as bootstrap_error:
+                        logger.error(
+                            f"Failed to load conversation history from Supabase: {bootstrap_error}",
+                            exc_info=True,
+                        )
+                elif is_new_thread:
+                    # Only bootstrap if not initial open but LangGraph state is empty
+                    try:
+                        _, stored_messages = load_conversation_with_messages(
+                            user_id=request.user_id,
+                            course_material_id=course_material_id,
+                            limit=20,
+                        )
+                        conversation_has_history = len(stored_messages) > 0
+
                         for stored in stored_messages:
                             role = stored.get("role")
                             content = stored.get("content", "")
@@ -760,109 +846,83 @@ async def initiate_chat(
                                 base_messages.append(AIMessage(content=content))
                             elif role == "system":
                                 base_messages.append(SystemMessage(content=content))
-                except Exception as bootstrap_error:
-                    logger.error(
-                        f"Failed to load conversation history from Supabase: {bootstrap_error}",
-                        exc_info=True,
-                    )
-            elif is_new_thread:
-                # Only bootstrap if not initial open but LangGraph state is empty
-                try:
-                    _, stored_messages = load_conversation_with_messages(
-                        user_id=request.user_id,
-                        course_material_id=course_material_id,
-                        limit=20,
-                    )
-                    conversation_has_history = len(stored_messages) > 0
-
-                    for stored in stored_messages:
-                        role = stored.get("role")
-                        content = stored.get("content", "")
-                        if not content:
-                            continue
-                        if role == "user":
-                            base_messages.append(HumanMessage(content=content))
-                        elif role == "assistant":
-                            base_messages.append(AIMessage(content=content))
-                        elif role == "system":
-                            base_messages.append(SystemMessage(content=content))
-                except Exception as bootstrap_error:
-                    logger.error(
-                        f"Failed to bootstrap LangGraph state from Supabase: {bootstrap_error}",
-                        exc_info=True,
-                    )
-
-            # Update state with current page information (according to AGENT_DEVELOPMENT_RULES.md)
-            # The agent should always know which page we are currently viewing
-            
-            # Determine greeting type based on is_initial_open flag and conversation history
-            if request.is_initial_open:
-                # This is an initial opening of the study reader (first load or reopening)
-                last_page_number = None
-                metadata = conversation.get("metadata") or {}
-                if isinstance(metadata, dict):
-                    last_page_number = metadata.get("last_page_number")
-
-                if conversation_has_history:
-                    # Returning to an existing study session
-                    completed_pages = last_page_number or request.page_number
-                    total_pages_safe = total_pages or "unbekannt"
-
-                    if last_message_is_welcome_back:
-                        # Last message was already a Welcome Back message, send a normal greeting instead
-                        initial_human_content = (
-                            "The student has reopened the study reader, but you already sent them a welcome back message recently.\n\n"
-                            f"- Current page: {request.page_number}\n"
-                            f"- Page summary: {summary}\n\n"
-                            "GREETING INSTRUCTIONS (German):\n"
-                            "Begrüße den Studenten kurz und freundlich, aber NICHT mit einer erneuten 'Welcome Back' Nachricht.\n"
-                            "Formuliere eine normale, kurze Nachricht zur aktuellen Folie, etwa so:\n"
-                            f"\"Du bist gerade auf Folie {request.page_number}. [KURZE BESCHREIBUNG DER FOLIE BASIEREND AUF DER ZUSAMMENFASSUNG]. "
-                            "Gibt es etwas Spezielles, das du über diese Folie wissen möchtest?\"\n"
-                            "Halte die Nachricht kurz (1-2 Sätze) und fokussiere dich auf die aktuelle Folie."
+                    except Exception as bootstrap_error:
+                        logger.error(
+                            f"Failed to bootstrap LangGraph state from Supabase: {bootstrap_error}",
+                            exc_info=True,
                         )
+
+                # Update state with current page information (according to AGENT_DEVELOPMENT_RULES.md)
+                # The agent should always know which page we are currently viewing
+                
+                # Determine greeting type based on is_initial_open flag and conversation history
+                if request.is_initial_open:
+                    # This is an initial opening of the study reader (first load or reopening)
+                    last_page_number = None
+                    metadata = conversation.get("metadata") or {}
+                    if isinstance(metadata, dict):
+                        last_page_number = metadata.get("last_page_number")
+
+                    if conversation_has_history:
+                        # Returning to an existing study session
+                        completed_pages = last_page_number or request.page_number
+                        total_pages_safe = total_pages or "unbekannt"
+
+                        if last_message_is_welcome_back:
+                            # Last message was already a Welcome Back message, send a normal greeting instead
+                            initial_human_content = (
+                                "The student has reopened the study reader, but you already sent them a welcome back message recently.\n\n"
+                                f"- Current page: {request.page_number}\n"
+                                f"- Page summary: {summary}\n\n"
+                                "GREETING INSTRUCTIONS (German):\n"
+                                "Begrüße den Studenten kurz und freundlich, aber NICHT mit einer erneuten 'Welcome Back' Nachricht.\n"
+                                "Formuliere eine normale, kurze Nachricht zur aktuellen Folie, etwa so:\n"
+                                f"\"Du bist gerade auf Folie {request.page_number}. [KURZE BESCHREIBUNG DER FOLIE BASIEREND AUF DER ZUSAMMENFASSUNG]. "
+                                "Gibt es etwas Spezielles, das du über diese Folie wissen möchtest?\"\n"
+                                "Halte die Nachricht kurz (1-2 Sätze) und fokussiere dich auf die aktuelle Folie."
+                            )
+                        else:
+                            # No recent Welcome Back message, send one now
+                            # IMPORTANT:
+                            # For the list of \"already covered\" topics we now rely ONLY on the actual
+                            # chat history, not on syllabus/overview summaries from the slides.
+                            # This prevents the model from listing future topics that were only
+                            # announced on an agenda slide but not yet discussed in the conversation.
+                            topics_instructions = (
+                                "\n\nANALYSE DER BISHERIGEN THEMEN (nur Chat-Verlauf, keine Agenda-Folien!):\n"
+                                "- Analysiere ausschließlich den obigen Chat-Verlauf, um herauszufinden,\n"
+                                "  welche Themen ihr bereits inhaltlich BESPROCHEN habt.\n"
+                                "- Themen, die nur als zukünftige Inhalte auf einer Übersichts-/Agenda-Folie\n"
+                                "  erwähnt wurden (z.B. Rechengesetze, Binomische Formeln, Logarithmusgesetze),\n"
+                                "  dürfen NICHT in der Liste auftauchen, solange sie im Chat noch nicht erklärt\n"
+                                "  oder diskutiert wurden.\n"
+                                "- Fasse verwandte Punkte sinnvoll zusammen und formuliere eine kurze,\n"
+                                "  natürlich klingende Liste von 2–5 Hauptthemen, die bisher wirklich\n"
+                                "  behandelt wurden (z.B. \"Einführung in die Vorlesung\", \"Zahlenbereiche\",\n"
+                                "  \"imaginäre und komplexe Zahlen\").\n"
+                            )
+
+                            initial_human_content = (
+                                "The student is returning to this study session after closing and reopening the study reader.\n\n"
+                                f"- They have already worked through approximately {completed_pages} "
+                                f"of {total_pages_safe} pages in this material.\n"
+                                "- You have access to the previous chat history in the messages above.\n"
+                                f"{topics_instructions}\n\n"
+                                "GREETING INSTRUCTIONS (German):\n"
+                                "Begrüße den Studenten freundlich als Rückkehrer mit einer persönlichen Nachricht.\n"
+                                "Formuliere etwa so (sinngemäß, nicht wortwörtlich, aber sehr ähnlich):\n"
+                                f"\"Hi! Schön, dass du wieder da bist. Wir haben jetzt {completed_pages} von {total_pages_safe} "
+                                "Seiten abgearbeitet und dabei folgende Themen behandelt: [NENNE HIER DIE 2–5 WICHTIGSTEN THEMEN "
+                                "AUS DEM CHAT-VERLAUF, DIE WIRKLICH BEREITS BESPROCHEN WURDEN]. "
+                                "Kannst du dich an alles erinnern oder soll ich dir nochmal eine kurze Zusammenfassung geben?\"\n"
+                                "WICHTIG: Nutze wirklich nur den Chat-Verlauf als Grundlage für die Themenliste –\n"
+                                "Themen, die lediglich als zukünftige Inhalte angekündigt wurden, sollen NICHT erwähnt werden.\n"
+                                "Halte die Nachricht persönlich, freundlich und kurz (2-3 Sätze)."
+                            )
                     else:
-                        # No recent Welcome Back message, send one now
-                        # IMPORTANT:
-                        # For the list of \"already covered\" topics we now rely ONLY on the actual
-                        # chat history, not on syllabus/overview summaries from the slides.
-                        # This prevents the model from listing future topics that were only
-                        # announced on an agenda slide but not yet discussed in the conversation.
-                        topics_instructions = (
-                            "\n\nANALYSE DER BISHERIGEN THEMEN (nur Chat-Verlauf, keine Agenda-Folien!):\n"
-                            "- Analysiere ausschließlich den obigen Chat-Verlauf, um herauszufinden,\n"
-                            "  welche Themen ihr bereits inhaltlich BESPROCHEN habt.\n"
-                            "- Themen, die nur als zukünftige Inhalte auf einer Übersichts-/Agenda-Folie\n"
-                            "  erwähnt wurden (z.B. Rechengesetze, Binomische Formeln, Logarithmusgesetze),\n"
-                            "  dürfen NICHT in der Liste auftauchen, solange sie im Chat noch nicht erklärt\n"
-                            "  oder diskutiert wurden.\n"
-                            "- Fasse verwandte Punkte sinnvoll zusammen und formuliere eine kurze,\n"
-                            "  natürlich klingende Liste von 2–5 Hauptthemen, die bisher wirklich\n"
-                            "  behandelt wurden (z.B. \"Einführung in die Vorlesung\", \"Zahlenbereiche\",\n"
-                            "  \"imaginäre und komplexe Zahlen\").\n"
-                        )
-
+                        # First visit for this material (no previous chat history)
+                        total_pages_safe = total_pages or "unbekannt"
                         initial_human_content = (
-                            "The student is returning to this study session after closing and reopening the study reader.\n\n"
-                            f"- They have already worked through approximately {completed_pages} "
-                            f"of {total_pages_safe} pages in this material.\n"
-                            "- You have access to the previous chat history in the messages above.\n"
-                            f"{topics_instructions}\n\n"
-                            "GREETING INSTRUCTIONS (German):\n"
-                            "Begrüße den Studenten freundlich als Rückkehrer mit einer persönlichen Nachricht.\n"
-                            "Formuliere etwa so (sinngemäß, nicht wortwörtlich, aber sehr ähnlich):\n"
-                            f"\"Hi! Schön, dass du wieder da bist. Wir haben jetzt {completed_pages} von {total_pages_safe} "
-                            "Seiten abgearbeitet und dabei folgende Themen behandelt: [NENNE HIER DIE 2–5 WICHTIGSTEN THEMEN "
-                            "AUS DEM CHAT-VERLAUF, DIE WIRKLICH BEREITS BESPROCHEN WURDEN]. "
-                            "Kannst du dich an alles erinnern oder soll ich dir nochmal eine kurze Zusammenfassung geben?\"\n"
-                            "WICHTIG: Nutze wirklich nur den Chat-Verlauf als Grundlage für die Themenliste –\n"
-                            "Themen, die lediglich als zukünftige Inhalte angekündigt wurden, sollen NICHT erwähnt werden.\n"
-                            "Halte die Nachricht persönlich, freundlich und kurz (2-3 Sätze)."
-                        )
-                else:
-                    # First visit for this material (no previous chat history)
-                    total_pages_safe = total_pages or "unbekannt"
-                    initial_human_content = (
                         "This is the student's first visit to this study session for this lecture material.\n\n"
                         "IMPORTANT: Before greeting the student, use the get_course_material_summary tool to retrieve "
                         "the overall summary of this lecture material. This will give you context about the main topics "
@@ -883,73 +943,427 @@ async def initiate_chat(
                         "um eine informierte Begrüßung zu geben."
                     )
 
-                # Use bootstrapped messages if available, otherwise start fresh
-                initial_state = {
+                    # Use bootstrapped messages if available, otherwise start fresh
+                    initial_state = {
                     "messages": base_messages
                     + [
                         SystemMessage(content=system_message),
                         HumanMessage(content=initial_human_content),
                     ],
-                    "current_page": request.page_number,
-                    "material_id": request.material_id,
-                    "user_id": request.user_id,
-                }
-            else:
-                # This is just a page change within an ongoing session
-                # Use existing LangGraph state if available, otherwise bootstrap
-                if is_new_thread:
-                    # LangGraph state is empty, but we might have bootstrapped messages
-                    initial_state = {
-                        "messages": base_messages
-                        + [
-                            SystemMessage(content=system_message),
-                            HumanMessage(
-                                content=(
-                                    "The student has navigated to a new slide.\n"
-                                    f"- Current page: {request.page_number}\n"
-                                    f"- Page summary: {summary}\n\n"
-                                    "Continue the conversation naturally auf Deutsch, knüpfe locker an das "
-                                    "bisher Gesagte an und erkläre die neue Folie im Kontext der bisherigen Themen."
-                                )
-                            ),
-                        ],
                         "current_page": request.page_number,
                         "material_id": request.material_id,
                         "user_id": request.user_id,
                     }
                 else:
-                    # Existing thread in this backend process: load existing messages from snapshot
-                    existing_messages = snapshot.values.get("messages", [])
+                    # This is just a page change within an ongoing session
+                    # Use existing LangGraph state if available, otherwise bootstrap
+                    if is_new_thread:
+                        # LangGraph state is empty, but we might have bootstrapped messages
+                        initial_state = {
+                            "messages": base_messages
+                            + [
+                                SystemMessage(content=system_message),
+                                HumanMessage(
+                                    content=(
+                                        "The student has navigated to a new slide.\n"
+                                        f"- Current page: {request.page_number}\n"
+                                        f"- Page summary: {summary}\n\n"
+                                        "Continue the conversation naturally auf Deutsch, knüpfe locker an das "
+                                        "bisher Gesagte an und erkläre die neue Folie im Kontext der bisherigen Themen."
+                                    )
+                                ),
+                            ],
+                            "current_page": request.page_number,
+                            "material_id": request.material_id,
+                            "user_id": request.user_id,
+                        }
+                    else:
+                        # Existing thread in this backend process: load existing messages from snapshot
+                        existing_messages = snapshot.values.get("messages", [])
 
-                    # For simple page changes within an ongoing conversation, we use a lighter hint
-                    page_change_human = HumanMessage(
-                        content=(
-                            "The student has navigated to a new slide.\n"
-                            f"- Current page: {request.page_number}\n"
-                            f"- Page summary: {summary}\n\n"
-                            "Continue the ongoing conversation natürlich auf Deutsch, knüpfe locker an das "
-                            "bisher Gesagte an und erkläre die neue Folie im Kontext der bisherigen Themen."
+                        # For simple page changes within an ongoing conversation, we use a lighter hint
+                        page_change_human = HumanMessage(
+                            content=(
+                                "The student has navigated to a new slide.\n"
+                                f"- Current page: {request.page_number}\n"
+                                f"- Page summary: {summary}\n\n"
+                                "Continue the ongoing conversation natürlich auf Deutsch, knüpfe locker an das "
+                                "bisher Gesagte an und erkläre die neue Folie im Kontext der bisherigen Themen."
+                            )
                         )
-                    )
 
-                    initial_state = {
-                        "messages": existing_messages
-                        + [
-                            SystemMessage(content=system_message),
-                            page_change_human,
-                        ],
-                        "current_page": request.page_number,
-                        "material_id": request.material_id,
+                        initial_state = {
+                            "messages": existing_messages
+                            + [
+                                SystemMessage(content=system_message),
+                                page_change_human,
+                            ],
+                            "current_page": request.page_number,
+                            "material_id": request.material_id,
+                            "user_id": request.user_id,
+                        }
+                
+                # Prepare buffer for assistant response text for persistence
+                assistant_response_chunks: list[str] = []
+                last_sent_content = ""  # Track what we've already sent for incremental updates
+                
+                # Stream agent response with incremental content updates
+                logger.info(f"Starting agent stream for page {request.page_number}")
+                try:
+                    async for chunk in agent.graph.astream(initial_state, config):
+                        chunk_data = {}
+                        for node_name, node_data in chunk.items():
+                            if "messages" in node_data:
+                                messages = []
+                                for msg in node_data["messages"]:
+                                    # Extract tool responses (ToolMessage contains tool results)
+                                    if isinstance(msg, ToolMessage):
+                                        tool_call_id = getattr(msg, "tool_call_id", None) or getattr(msg, "name", None) or ""
+                                        tool_content = getattr(msg, "content", "")
+                                        
+                                        if tool_call_id and tool_content:
+                                            # Send tool response event
+                                            tool_response_event = {
+                                                "type": "tool_response",
+                                                "tool_call_id": tool_call_id,
+                                                "result": tool_content,
+                                                "message_id": f"msg-{len(assistant_response_chunks)}"
+                                            }
+                                            yield f"data: {json.dumps(tool_response_event)}\n\n"
+                                        continue
+
+                                    if hasattr(msg, "content"):
+                                        role = "assistant"
+                                        if isinstance(msg, SystemMessage):
+                                            role = "system"
+                                        elif isinstance(msg, HumanMessage):
+                                            role = "user"
+                                        elif isinstance(msg, AIMessage):
+                                            role = "assistant"
+                                            
+                                            # Extract tool calls if present
+                                            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                                tool_calls_data = []
+                                                for tool_call in msg.tool_calls:
+                                                    # Extract tool call information
+                                                    tool_id = getattr(tool_call, "id", None) or tool_call.get("id", "") if isinstance(tool_call, dict) else ""
+                                                    tool_name = getattr(tool_call, "name", None) or tool_call.get("name", "") if isinstance(tool_call, dict) else ""
+                                                    tool_args = getattr(tool_call, "args", None) or tool_call.get("args", {}) if isinstance(tool_call, dict) else {}
+                                                    
+                                                    if tool_id and tool_name:
+                                                        tool_calls_data.append({
+                                                            "id": tool_id,
+                                                            "name": tool_name,
+                                                            "args": tool_args if isinstance(tool_args, dict) else {}
+                                                        })
+                                                
+                                                if tool_calls_data:
+                                                    # Send tool call event
+                                                    tool_event = {
+                                                        "type": "tool_call",
+                                                        "tool_calls": tool_calls_data,
+                                                        "message_id": f"msg-{len(assistant_response_chunks)}"
+                                                    }
+                                                    yield f"data: {json.dumps(tool_event)}\n\n"
+
+                                        # Handle assistant messages with incremental streaming
+                                        if role == "assistant" and msg.content:
+                                            content_text = msg.content
+                                            if isinstance(msg.content, list):
+                                                try:
+                                                    content_text = "".join(
+                                                        part.get("text", "") if isinstance(part, dict) else str(part)
+                                                        for part in msg.content
+                                                    )
+                                                except Exception:
+                                                    content_text = str(msg.content)
+                                            
+                                            # Send incremental delta if content has grown
+                                            if content_text and content_text != last_sent_content:
+                                                # Calculate and send delta
+                                                if last_sent_content and content_text.startswith(last_sent_content):
+                                                    delta = content_text[len(last_sent_content):]
+                                                    if delta:
+                                                        # Send delta for ghostwriter effect
+                                                        delta_data = {
+                                                            "type": "delta",
+                                                            "role": "assistant",
+                                                            "delta": delta,
+                                                            "content": content_text
+                                                        }
+                                                        yield f"data: {json.dumps(delta_data)}\n\n"
+                                                        last_sent_content = content_text
+                                                else:
+                                                    # Content changed in a way we can't calculate delta
+                                                    # Send full message structure for compatibility
+                                                    messages.append({
+                                                        "role": role,
+                                                        "content": content_text
+                                                    })
+                                                    last_sent_content = content_text
+                                            
+                                            # Store for persistence
+                                            if str(content_text) not in assistant_response_chunks:
+                                                assistant_response_chunks.append(str(content_text))
+                                        else:
+                                            # Non-assistant messages: send normally
+                                            messages.append({
+                                                "role": role,
+                                                "content": msg.content,
+                                            })
+                                
+                                if messages:  # Only add if there are messages
+                                    chunk_data[node_name] = {"messages": messages}
+                        
+                        if chunk_data:  # Only yield if there's data
+                            logger.debug(f"Yielding chunk: {chunk_data}")
+                            yield f"data: {json.dumps(chunk_data)}\n\n"
+                    
+                    logger.info(f"Agent stream completed for page {request.page_number}")
+
+                    # Persist conversation messages and progress in Supabase
+                    try:
+                        full_assistant_response = "".join(assistant_response_chunks).strip()
+                        messages_to_store = []
+
+                        # Get page_analysis_id for context_page_id
+                        context_page_id = None
+                        try:
+                            context_page_id = get_page_analysis_id(
+                                course_material_id=course_material_id,
+                                page_number=request.page_number,
+                                user_id=request.user_id
+                            )
+                        except Exception as page_id_error:
+                            logger.warning(
+                                f"Failed to get page_analysis_id for page {request.page_number}: {page_id_error}"
+                            )
+
+                        if full_assistant_response:
+                            messages_to_store.append(
+                                {
+                                    "role": "assistant",
+                                    "content": full_assistant_response,
+                                    "context_page_id": context_page_id,
+                                }
+                            )
+
+                        if messages_to_store:
+                            append_messages(conversation_id, messages_to_store)
+                            update_conversation_progress(conversation_id, request.page_number)
+                    except Exception as persist_error:
+                        logger.error(
+                            f"Failed to persist chat initiate messages: {persist_error}",
+                            exc_info=True,
+                        )
+
+                    # Wenn der Stream erfolgreich durchläuft:
+                    if trace:
+                        logger.info("🟡 Langfuse: Updating trace 'tutor-agent-initiate' with completion status...")
+                        trace.update(output={"status": "completed"})
+                        logger.info("🟢 Langfuse: Trace 'tutor-agent-initiate' updated with completion status")
+                    yield "data: [DONE]\n\n"
+                except Exception as e:
+                    logger.error(f"Error in agent stream: {str(e)}", exc_info=True)
+                    
+                    # Trace als Error markieren
+                    if trace:
+                        logger.warning(f"🟡 Langfuse: Updating trace 'tutor-agent-initiate' with ERROR status: {str(e)}")
+                        trace.update(level="ERROR", status_message=str(e))
+                        logger.warning("🔴 Langfuse: Trace 'tutor-agent-initiate' marked as ERROR")
+                    
+                    error_data = {"error": str(e)}
+                    yield f"data: {json.dumps(error_data)}\n\n"
+                    yield "data: [DONE]\n\n"
+                
+                finally:
+                    # Cleanup Langfuse tracing
+                    # WICHTIG: Kein flush() hier! Das blockiert den Stream-Exit.
+                    exc_info = sys.exc_info()  # Holt die aktuelle Exception, falls vorhanden
+                    
+                    if propagate_ctx:
+                        try:
+                            logger.info("🟡 Langfuse: Closing propagate context...")
+                            propagate_ctx.__exit__(*exc_info)
+                            logger.info("🟢 Langfuse: Propagate context closed")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Error closing propagate context: {e}")
+
+                    if trace_ctx:
+                        try:
+                            # Übergibt Exception-Infos korrekt an Langfuse
+                            # WICHTIG: __exit__() muss auf dem Context Manager aufgerufen werden, nicht auf dem Span
+                            logger.info("🟡 Langfuse: Closing trace 'tutor-agent-initiate'...")
+                            trace_ctx.__exit__(*exc_info)
+                            logger.info("🟢 Langfuse: Trace 'tutor-agent-initiate' closed - data sent to Langfuse")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Error closing trace: {e}")
+            except Exception as e:
+                logger.error(f"Error in agent setup or streaming: {str(e)}", exc_info=True)
+                raise
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error initiating chat: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to initiate chat: {str(e)}"
+        )
+
+
+@router.post("/chat/message")
+async def send_chat_message(
+    request: ChatMessageRequest = Body(...)
+) -> StreamingResponse:
+    """
+    Send a message in an existing chat session.
+    
+    Args:
+        request: ChatMessageRequest with material_id, message, user_id
+        
+    Returns:
+        StreamingResponse with SSE events
+    """
+    try:
+        # Validate user
+        if not validate_user_exists(request.user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Initialize LLM and agent
+        llm = get_gemini_model()
+        agent = TutorAgent(llm=llm, checkpointer=_checkpointer)
+        
+        # Get course material to find course_material_id (for conversation lookup)
+        client = get_supabase_client()
+        material_response = (
+            client.table("course_materials")
+            .select("id, course_id")
+            .eq("id", request.material_id)
+            .eq("user_id", request.user_id)
+            .single()
+            .execute()
+        )
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+        course_material_id = material_response.data["id"]
+        course_id = material_response.data.get("course_id")
+
+        # Get or create study conversation in Supabase
+        conversation = get_or_create_study_conversation(
+            user_id=request.user_id,
+            course_material_id=course_material_id,
+            course_id=course_id,
+        )
+        conversation_id = conversation["id"]
+
+        # Thread ID: conversation_id for continuous conversation
+        thread_id = str(conversation_id)
+        
+        # Stream response
+        async def event_generator() -> AsyncGenerator[str, None]:
+            # Langfuse Tracing Setup
+            # WICHTIG: get_client() liest direkt aus os.environ, nicht aus settings!
+            # Daher müssen wir die Werte aus settings in os.environ setzen
+            if settings.LANGFUSE_PUBLIC_KEY and "LANGFUSE_PUBLIC_KEY" not in os.environ:
+                os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
+            if settings.LANGFUSE_SECRET_KEY and "LANGFUSE_SECRET_KEY" not in os.environ:
+                os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
+            if settings.LANGFUSE_BASE_URL and "LANGFUSE_HOST" not in os.environ:
+                # Langfuse SDK verwendet LANGFUSE_HOST für die Base URL
+                os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_BASE_URL
+            
+            langfuse = get_client()
+            trace = None
+            trace_ctx = None  # Context Manager für __exit__()
+            propagate_ctx = None
+            
+            if langfuse and settings.LANGFUSE_ENABLED:
+                try:
+                    trace_input = {
                         "user_id": request.user_id,
+                        "material_id": course_material_id,
+                        "message": request.message[:100]  # Truncate for input
                     }
+                    logger.info(f"🟡 Langfuse: Starting trace 'tutor-agent-message' with input: {trace_input}")
+                    trace_ctx = langfuse.start_as_current_observation(
+                        as_type="span",
+                        name="tutor-agent-message",
+                        input=trace_input
+                    )
+                    # WICHTIG: __enter__() gibt den aktiven span zurück, aber wir brauchen den Context Manager für __exit__()
+                    trace = trace_ctx.__enter__()
+                    logger.info("🟢 Langfuse: Trace 'tutor-agent-message' started successfully")
+                    
+                    propagate_metadata = {
+                        "material_id": course_material_id,
+                        "course_id": course_id
+                    }
+                    logger.info(f"🟡 Langfuse: Propagating attributes - user_id={request.user_id}, session_id={thread_id}, metadata={propagate_metadata}")
+                    propagate_ctx = propagate_attributes(
+                        user_id=request.user_id,
+                        session_id=thread_id,  # conversation_id als session
+                        tags=["tutor-agent", "chat-message"],
+                        metadata=propagate_metadata
+                    )
+                    propagate_ctx.__enter__()
+                    logger.info("🟢 Langfuse: Attributes propagated successfully")
+                except Exception as e:
+                    logger.error(f"🔴 Langfuse: Setup failed: {e}", exc_info=True)
+                    # Wir machen weiter, auch wenn Tracing fehlschlägt
+                    trace = None
+                    trace_ctx = None
+                    propagate_ctx = None
             
-            # Prepare buffer for assistant response text for persistence
-            assistant_response_chunks: list[str] = []
-            last_sent_content = ""  # Track what we've already sent for incremental updates
-            
-            # Stream agent response with incremental content updates
-            logger.info(f"Starting agent stream for page {request.page_number}")
             try:
+                config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+                
+                # Get current state to preserve current_page, material_id, user_id
+                snapshot = agent.graph.get_state(config)
+                current_page = None
+                material_id = request.material_id
+                user_id = request.user_id
+                
+                if snapshot and snapshot.values:
+                    # Preserve current_page from existing state if available
+                    current_page = snapshot.values.get("current_page")
+                # If LangGraph state is empty (e.g., after restart), fall back to conversation metadata
+                if current_page is None:
+                    metadata = conversation.get("metadata") or {}
+                    current_page = metadata.get("last_page_number")
+                
+                # Add user message to existing thread and preserve state
+                initial_state = {
+                    "messages": [HumanMessage(content=request.message)],
+                    "material_id": material_id,
+                    "user_id": user_id
+                }
+                
+                # Only add current_page if it exists in previous state or metadata
+                if current_page is not None:
+                    initial_state["current_page"] = current_page
+
+                # Prepare buffer for assistant response text for persistence
+                assistant_response_chunks: list[str] = []
+                last_sent_content = ""  # Track what we've already sent for incremental updates
+
+                # Stream agent response with incremental content updates
                 async for chunk in agent.graph.astream(initial_state, config):
                     chunk_data = {}
                     for node_name, node_data in chunk.items():
@@ -1049,36 +1463,41 @@ async def initiate_chat(
                                         # Non-assistant messages: send normally
                                         messages.append({
                                             "role": role,
-                                            "content": msg.content,
+                                            "content": msg.content
                                         })
-                            
-                            if messages:  # Only add if there are messages
+                            if messages:
                                 chunk_data[node_name] = {"messages": messages}
                     
-                    if chunk_data:  # Only yield if there's data
-                        logger.debug(f"Yielding chunk: {chunk_data}")
+                    if chunk_data:
                         yield f"data: {json.dumps(chunk_data)}\n\n"
-                
-                logger.info(f"Agent stream completed for page {request.page_number}")
 
-                # Persist conversation messages and progress in Supabase
+                # Persist user and assistant messages and update progress
                 try:
                     full_assistant_response = "".join(assistant_response_chunks).strip()
                     messages_to_store = []
 
-                    # Get page_analysis_id for context_page_id
+                    # Get page_analysis_id for context_page_id if current_page is available
                     context_page_id = None
-                    try:
-                        context_page_id = get_page_analysis_id(
-                            course_material_id=course_material_id,
-                            page_number=request.page_number,
-                            user_id=request.user_id
-                        )
-                    except Exception as page_id_error:
-                        logger.warning(
-                            f"Failed to get page_analysis_id for page {request.page_number}: {page_id_error}"
-                        )
+                    if current_page is not None:
+                        try:
+                            context_page_id = get_page_analysis_id(
+                                course_material_id=course_material_id,
+                                page_number=current_page,
+                                user_id=request.user_id
+                            )
+                        except Exception as page_id_error:
+                            logger.warning(
+                                f"Failed to get page_analysis_id for page {current_page}: {page_id_error}"
+                            )
 
+                    # Persist only the real user message and the final assistant reply
+                    messages_to_store.append(
+                        {
+                            "role": "user",
+                            "content": request.message,
+                            "context_page_id": context_page_id,
+                        }
+                    )
                     if full_assistant_response:
                         messages_to_store.append(
                             {
@@ -1088,283 +1507,55 @@ async def initiate_chat(
                             }
                         )
 
-                    if messages_to_store:
-                        append_messages(conversation_id, messages_to_store)
-                        update_conversation_progress(conversation_id, request.page_number)
+                    append_messages(conversation_id, messages_to_store)
+                    if current_page is not None:
+                        update_conversation_progress(conversation_id, current_page)
                 except Exception as persist_error:
                     logger.error(
-                        f"Failed to persist chat initiate messages: {persist_error}",
+                        f"Failed to persist chat message conversation: {persist_error}",
                         exc_info=True,
                     )
 
+                # Wenn der Stream erfolgreich durchläuft:
+                if trace:
+                    logger.info("🟡 Langfuse: Updating trace 'tutor-agent-message' with completion status...")
+                    trace.update(output={"status": "completed"})
+                    logger.info("🟢 Langfuse: Trace 'tutor-agent-message' updated with completion status")
                 yield "data: [DONE]\n\n"
             except Exception as e:
                 logger.error(f"Error in agent stream: {str(e)}", exc_info=True)
+                
+                # Trace als Error markieren
+                if trace:
+                    logger.warning(f"🟡 Langfuse: Updating trace 'tutor-agent-message' with ERROR status: {str(e)}")
+                    trace.update(level="ERROR", status_message=str(e))
+                    logger.warning("🔴 Langfuse: Trace 'tutor-agent-message' marked as ERROR")
+                
                 error_data = {"error": str(e)}
                 yield f"data: {json.dumps(error_data)}\n\n"
                 yield "data: [DONE]\n\n"
-        
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
-            }
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error initiating chat: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to initiate chat: {str(e)}"
-        )
-
-
-@router.post("/chat/message")
-async def send_chat_message(
-    request: ChatMessageRequest = Body(...)
-) -> StreamingResponse:
-    """
-    Send a message in an existing chat session.
-    
-    Args:
-        request: ChatMessageRequest with material_id, message, user_id
-        
-    Returns:
-        StreamingResponse with SSE events
-    """
-    try:
-        # Validate user
-        if not validate_user_exists(request.user_id):
-            raise HTTPException(
-                status_code=404,
-                detail="User not found. Please sign up first."
-            )
-        
-        # Initialize LLM and agent
-        llm = get_gemini_model()
-        agent = TutorAgent(llm=llm, checkpointer=_checkpointer)
-        
-        # Get course material to find course_material_id (for conversation lookup)
-        client = get_supabase_client()
-        material_response = (
-            client.table("course_materials")
-            .select("id, course_id")
-            .eq("id", request.material_id)
-            .eq("user_id", request.user_id)
-            .single()
-            .execute()
-        )
-        if not material_response.data:
-            raise HTTPException(
-                status_code=404,
-                detail="Course material not found or access denied",
-            )
-        course_material_id = material_response.data["id"]
-        course_id = material_response.data.get("course_id")
-
-        # Get or create study conversation in Supabase
-        conversation = get_or_create_study_conversation(
-            user_id=request.user_id,
-            course_material_id=course_material_id,
-            course_id=course_id,
-        )
-        conversation_id = conversation["id"]
-
-        # Thread ID: conversation_id for continuous conversation
-        thread_id = str(conversation_id)
-        
-        # Stream response
-        async def event_generator() -> AsyncGenerator[str, None]:
-            config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
-            
-            # Get current state to preserve current_page, material_id, user_id
-            snapshot = agent.graph.get_state(config)
-            current_page = None
-            material_id = request.material_id
-            user_id = request.user_id
-            
-            if snapshot and snapshot.values:
-                # Preserve current_page from existing state if available
-                current_page = snapshot.values.get("current_page")
-            # If LangGraph state is empty (e.g., after restart), fall back to conversation metadata
-            if current_page is None:
-                metadata = conversation.get("metadata") or {}
-                current_page = metadata.get("last_page_number")
-            
-            # Add user message to existing thread and preserve state
-            initial_state = {
-                "messages": [HumanMessage(content=request.message)],
-                "material_id": material_id,
-                "user_id": user_id
-            }
-            
-            # Only add current_page if it exists in previous state or metadata
-            if current_page is not None:
-                initial_state["current_page"] = current_page
-
-            # Prepare buffer for assistant response text for persistence
-            assistant_response_chunks: list[str] = []
-            last_sent_content = ""  # Track what we've already sent for incremental updates
-
-            # Stream agent response with incremental content updates
-            async for chunk in agent.graph.astream(initial_state, config):
-                chunk_data = {}
-                for node_name, node_data in chunk.items():
-                    if "messages" in node_data:
-                        messages = []
-                        for msg in node_data["messages"]:
-                            # Extract tool responses (ToolMessage contains tool results)
-                            if isinstance(msg, ToolMessage):
-                                tool_call_id = getattr(msg, "tool_call_id", None) or getattr(msg, "name", None) or ""
-                                tool_content = getattr(msg, "content", "")
-                                
-                                if tool_call_id and tool_content:
-                                    # Send tool response event
-                                    tool_response_event = {
-                                        "type": "tool_response",
-                                        "tool_call_id": tool_call_id,
-                                        "result": tool_content,
-                                        "message_id": f"msg-{len(assistant_response_chunks)}"
-                                    }
-                                    yield f"data: {json.dumps(tool_response_event)}\n\n"
-                                continue
-
-                            if hasattr(msg, "content"):
-                                role = "assistant"
-                                if isinstance(msg, SystemMessage):
-                                    role = "system"
-                                elif isinstance(msg, HumanMessage):
-                                    role = "user"
-                                elif isinstance(msg, AIMessage):
-                                    role = "assistant"
-                                    
-                                    # Extract tool calls if present
-                                    if hasattr(msg, "tool_calls") and msg.tool_calls:
-                                        tool_calls_data = []
-                                        for tool_call in msg.tool_calls:
-                                            # Extract tool call information
-                                            tool_id = getattr(tool_call, "id", None) or tool_call.get("id", "") if isinstance(tool_call, dict) else ""
-                                            tool_name = getattr(tool_call, "name", None) or tool_call.get("name", "") if isinstance(tool_call, dict) else ""
-                                            tool_args = getattr(tool_call, "args", None) or tool_call.get("args", {}) if isinstance(tool_call, dict) else {}
-                                            
-                                            if tool_id and tool_name:
-                                                tool_calls_data.append({
-                                                    "id": tool_id,
-                                                    "name": tool_name,
-                                                    "args": tool_args if isinstance(tool_args, dict) else {}
-                                                })
-                                        
-                                        if tool_calls_data:
-                                            # Send tool call event
-                                            tool_event = {
-                                                "type": "tool_call",
-                                                "tool_calls": tool_calls_data,
-                                                "message_id": f"msg-{len(assistant_response_chunks)}"
-                                            }
-                                            yield f"data: {json.dumps(tool_event)}\n\n"
-
-                                # Handle assistant messages with incremental streaming
-                                if role == "assistant" and msg.content:
-                                    content_text = msg.content
-                                    if isinstance(msg.content, list):
-                                        try:
-                                            content_text = "".join(
-                                                part.get("text", "") if isinstance(part, dict) else str(part)
-                                                for part in msg.content
-                                            )
-                                        except Exception:
-                                            content_text = str(msg.content)
-                                    
-                                    # Send incremental delta if content has grown
-                                    if content_text and content_text != last_sent_content:
-                                        # Calculate and send delta
-                                        if last_sent_content and content_text.startswith(last_sent_content):
-                                            delta = content_text[len(last_sent_content):]
-                                            if delta:
-                                                # Send delta for ghostwriter effect
-                                                delta_data = {
-                                                    "type": "delta",
-                                                    "role": "assistant",
-                                                    "delta": delta,
-                                                    "content": content_text
-                                                }
-                                                yield f"data: {json.dumps(delta_data)}\n\n"
-                                                last_sent_content = content_text
-                                        else:
-                                            # Content changed in a way we can't calculate delta
-                                            # Send full message structure for compatibility
-                                            messages.append({
-                                                "role": role,
-                                                "content": content_text
-                                            })
-                                            last_sent_content = content_text
-                                    
-                                    # Store for persistence
-                                    if str(content_text) not in assistant_response_chunks:
-                                        assistant_response_chunks.append(str(content_text))
-                                else:
-                                    # Non-assistant messages: send normally
-                                    messages.append({
-                                        "role": role,
-                                        "content": msg.content
-                                    })
-                        if messages:
-                            chunk_data[node_name] = {"messages": messages}
                 
-                if chunk_data:
-                    yield f"data: {json.dumps(chunk_data)}\n\n"
-
-            # Persist user and assistant messages and update progress
-            try:
-                full_assistant_response = "".join(assistant_response_chunks).strip()
-                messages_to_store = []
-
-                # Get page_analysis_id for context_page_id if current_page is available
-                context_page_id = None
-                if current_page is not None:
+            finally:
+                # Cleanup - KEIN FLUSH
+                exc_info = sys.exc_info()
+                
+                if propagate_ctx:
                     try:
-                        context_page_id = get_page_analysis_id(
-                            course_material_id=course_material_id,
-                            page_number=current_page,
-                            user_id=request.user_id
-                        )
-                    except Exception as page_id_error:
-                        logger.warning(
-                            f"Failed to get page_analysis_id for page {current_page}: {page_id_error}"
-                        )
-
-                # Persist only the real user message and the final assistant reply
-                messages_to_store.append(
-                    {
-                        "role": "user",
-                        "content": request.message,
-                        "context_page_id": context_page_id,
-                    }
-                )
-                if full_assistant_response:
-                    messages_to_store.append(
-                        {
-                            "role": "assistant",
-                            "content": full_assistant_response,
-                            "context_page_id": context_page_id,
-                        }
-                    )
-
-                append_messages(conversation_id, messages_to_store)
-                if current_page is not None:
-                    update_conversation_progress(conversation_id, current_page)
-            except Exception as persist_error:
-                logger.error(
-                    f"Failed to persist chat message conversation: {persist_error}",
-                    exc_info=True,
-                )
-
-            yield "data: [DONE]\n\n"
+                        logger.info("🟡 Langfuse: Closing propagate context...")
+                        propagate_ctx.__exit__(*exc_info)
+                        logger.info("🟢 Langfuse: Propagate context closed")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Error closing propagate context: {e}")
+                
+                if trace_ctx:
+                    try:
+                        # Übergibt Exception-Infos korrekt an Langfuse
+                        # WICHTIG: __exit__() muss auf dem Context Manager aufgerufen werden, nicht auf dem Span
+                        logger.info("🟡 Langfuse: Closing trace 'tutor-agent-message'...")
+                        trace_ctx.__exit__(*exc_info)
+                        logger.info("🟢 Langfuse: Trace 'tutor-agent-message' closed - data sent to Langfuse")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Error closing trace: {e}")
         
         return StreamingResponse(
             event_generator(),
