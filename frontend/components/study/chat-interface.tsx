@@ -2,6 +2,7 @@
 
 import { useRef } from 'react'
 import { ConversationEmptyState } from '@/components/ai/conversation'
+import { Loader } from '@/components/ui/loader'
 import { ChatMessage } from './chat-message'
 import { TutorPromptInput } from './tutor-prompt-input'
 import type { ChatMessage as ChatMessageType } from '@/types'
@@ -22,6 +23,9 @@ export function ChatInterface({
   contextInfo,
 }: ChatInterfaceProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  const isInitiallyLoading = messages.length === 0 && (isLoading || isStreaming)
+
   return (
     <div className="flex flex-col h-full min-h-0 bg-[#f6f4f1]">
       {/* Optional Context Banner */}
@@ -49,7 +53,31 @@ export function ChatInterface({
           ref={scrollRef}
           className="h-full overflow-y-auto px-4 py-4 space-y-6"
         >
-          {messages.length === 0 ? (
+          {isInitiallyLoading ? (
+            <div className="flex h-full items-center">
+              <div className="flex items-start space-x-3 justify-start">
+                {/* Avatar wie beim Tutor */}
+                <div className="w-8 h-8 bg-black rounded-full flex items-center justify-center flex-shrink-0">
+                  <span className="text-white text-sm font-medium">H</span>
+                </div>
+
+                {/* „Nachrichten“-Bubble im gleichen Layout wie ChatMessage */}
+                <div className="flex-1 max-w-[80%]">
+                  <div className="rounded-2xl px-4 py-3 bg-black text-white">
+                    <div className="flex items-center gap-3">
+                      <Loader size={18} className="text-white" />
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium">Tutor lädt …</p>
+                        <p className="text-xs text-white/70">
+                          Die erste Nachricht wird vorbereitet.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : messages.length === 0 ? (
             <ConversationEmptyState
               title="Noch keine Nachrichten"
               description="Beginne eine Unterhaltung mit dem Tutor"

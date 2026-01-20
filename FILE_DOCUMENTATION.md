@@ -2115,3 +2115,73 @@ python test_tutor_agent.py --debug
 - `backend/app/services/analyzer.py` - LLM initialization
 
 ---
+
+### `backend/app/services/session_storage.py`
+
+**Purpose**: Helper module for persisting study session conversations and chat messages in Supabase.
+
+**Key Components**:
+- `get_or_create_study_conversation(user_id, course_material_id, course_id?, initial_page?)`:
+  - Finds or creates a row in `conversations` with `session_type = 'study'` and `metadata.course_material_id`.
+  - Stores `last_page_number` in `metadata` when provided.
+- `update_conversation_progress(conversation_id, last_page_number)`:
+  - Safely patches the `metadata` JSONB of a conversation to update the last visited page.
+- `append_messages(conversation_id, messages_with_roles)`:
+  - Inserts chat messages into `messages` with `role`, `content`, and optional `context_page_id`.
+  - Skips invalid entries to avoid breaking chat flow.
+- `load_conversation_with_messages(user_id, course_material_id, limit=50)`:
+  - Loads the study conversation and up to `limit` most recent messages (oldest-first) for a user and material.
+
+**Database Tables Used**:
+- `conversations`: Study sessions with `session_type = 'study'` and metadata (course_material_id, last_page_number).
+- `messages`: Individual chat messages linked via `conversation_id`.
+
+**Usage**:
+```python
+from app.services.session_storage import (
+    get_or_create_study_conversation,
+    update_conversation_progress,
+    append_messages,
+    load_conversation_with_messages,
+)
+```
+
+---
+
+### `backend/app/api/endpoints.py` (Study Session Persistence Updates)
+
+**Purpose**: Extend existing chat endpoints to persist tutor conversations and study progress in Supabase and expose a session-loading endpoint for the frontend.
+
+**New/Updated Behaviors**:
+- `/api/chat/initiate`:
+  - Looks up `course_material_id` and `course_id` from `course_materials`.
+  - Uses `get_or_create_study_conversation` to bind a Supabase `conversation` to `(user_id, course_material_id)`.
+  - Uses `conversation.id` as `thread_id` for LangGraph `MemorySaver`.
+  - Streams the tutor greeting for the current page and buffers assistant chunks.
+  - After streaming, persists:
+    - a synthetic `user` message (`"Let's continue with page X."`),
+    - a combined `assistant` response,
+    - and updates `last_page_number` in `conversations.metadata`.
+  - Optionally bootstraps LangGraph state from recent Supabase messages if the in-memory graph has no history (e.g., after backend restart).
+- `/api/chat/message`:
+  - Resolves the same study `conversation` for `(user_id, material_id)` and uses its `id` as `thread_id`.
+  - Reads `current_page` from LangGraph state, falling back to `conversations.metadata.last_page_number` when necessary.
+  - Streams the tutor reply, buffers assistant chunks, and persists:
+    - the `user` message,
+    - the combined `assistant` response,
+    - and updated `last_page_number` if known.
+- `/api/study/session` (new):
+  - Query params: `material_id`, `user_id`, optional `limit`.
+  - Validates user and ownership of `course_materials` record.
+  - Uses `load_conversation_with_messages` to load the study conversation and recent messages.
+  - Determines `lastPage` from `metadata.last_page_number` (bounded by `page_count`), defaults to 1.
+  - Returns shape:
+    - `{ "lastPage": number, "messages": [{ id, role, content, timestamp }] }`
+  - Used by the frontend to restore page position and chat history when reopening the Study Reader.
+
+**Related Files**:
+- `backend/app/services/session_storage.py` - Supabase helpers for conversations and messages.
+- `frontend/lib/api/study.ts` - Client functions including `getStudySession`.
+- `frontend/components/study/study-reader.tsx` - Uses session data to restore state on mount.
+
+---
