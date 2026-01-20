@@ -274,7 +274,7 @@ def get_page_analysis(
     Args:
         course_material_id: Course material ID
         page_number: Page number (1-indexed)
-        user_id: User ID for authorization (RLS)
+        user_id: User ID for authorization (RLS) - used for validation only
         
     Returns:
         Page analysis record as dict with summary, key_terms, exam_questions, diagram_description
@@ -286,6 +286,27 @@ def get_page_analysis(
     client = get_supabase_client()
     
     try:
+        # First, get the user_id from the course_material to ensure we use the correct one
+        # This prevents issues where the state might have a stale user_id
+        material_response = client.table("course_materials").select(
+            "user_id"
+        ).eq("id", course_material_id).single().execute()
+        
+        if not material_response.data:
+            raise ValueError(
+                f"Course material not found: {course_material_id}"
+            )
+        
+        material_user_id = material_response.data["user_id"]
+        
+        # Validate that the requesting user_id matches the material's user_id
+        # This ensures proper authorization
+        if material_user_id != user_id:
+            raise ValueError(
+                f"Access denied: user_id {user_id} does not match course material owner {material_user_id}"
+            )
+        
+        # Now query with the correct user_id from the material
         response = client.table("page_analyses").select(
             "id, summary, key_terms, exam_questions, diagram_description, raw_analysis"
         ).eq(
@@ -293,7 +314,7 @@ def get_page_analysis(
         ).eq(
             "page_number", page_number
         ).eq(
-            "user_id", user_id
+            "user_id", material_user_id
         ).execute()
         
         if response.data and len(response.data) > 0:
@@ -326,7 +347,7 @@ def get_page_analysis_id(
     Args:
         course_material_id: Course material ID
         page_number: Page number (1-indexed)
-        user_id: User ID for authorization (RLS)
+        user_id: User ID for authorization (RLS) - used for validation only
         
     Returns:
         Page analysis ID (UUID) or None if not found
@@ -337,6 +358,21 @@ def get_page_analysis_id(
     client = get_supabase_client()
     
     try:
+        # First, get the user_id from the course_material to ensure we use the correct one
+        material_response = client.table("course_materials").select(
+            "user_id"
+        ).eq("id", course_material_id).single().execute()
+        
+        if not material_response.data:
+            return None
+        
+        material_user_id = material_response.data["user_id"]
+        
+        # Validate that the requesting user_id matches the material's user_id
+        if material_user_id != user_id:
+            return None
+        
+        # Now query with the correct user_id from the material
         response = client.table("page_analyses").select(
             "id"
         ).eq(
@@ -344,7 +380,7 @@ def get_page_analysis_id(
         ).eq(
             "page_number", page_number
         ).eq(
-            "user_id", user_id
+            "user_id", material_user_id
         ).execute()
         
         if response.data and len(response.data) > 0:

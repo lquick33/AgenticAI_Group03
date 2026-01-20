@@ -248,6 +248,36 @@ export function StudyReader({
             return
           }
 
+          // Handle tool response events
+          if (chunk.type === 'tool_response' && chunk.tool_call_id && chunk.result) {
+            setMessages((prev) => {
+              const lastStreamingIndex = prev.findLastIndex(
+                (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+              )
+              
+              if (lastStreamingIndex >= 0) {
+                const messageId = prev[lastStreamingIndex].id
+                const updated = [...prev]
+                
+                // Find the tool call with matching ID and update it with result
+                if (updated[lastStreamingIndex].toolCalls) {
+                  updated[lastStreamingIndex] = {
+                    ...updated[lastStreamingIndex],
+                    toolCalls: updated[lastStreamingIndex].toolCalls!.map(toolCall => 
+                      toolCall.id === chunk.tool_call_id
+                        ? { ...toolCall, result: chunk.result, state: 'completed' as const }
+                        : toolCall
+                    ),
+                  }
+                }
+                
+                return updated
+              }
+              return prev
+            })
+            return
+          }
+
           // Handle delta events for ghostwriter effect
           if (chunk.type === 'delta' && chunk.role === 'assistant' && chunk.delta) {
             setMessages((prev) => {
@@ -579,6 +609,35 @@ export function StudyReader({
                     ...updated[lastStreamingIndex],
                     toolCalls: [...currentToolCalls, ...chunk.tool_calls],
                   }
+                  return updated
+                }
+                return prev
+              })
+              return
+            }
+
+            // Handle tool response events
+            if (chunk.type === 'tool_response' && chunk.tool_call_id && chunk.result) {
+              setMessages((prev) => {
+                const lastStreamingIndex = prev.findLastIndex(
+                  (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
+                )
+                
+                if (lastStreamingIndex >= 0) {
+                  const updated = [...prev]
+                  
+                  // Find the tool call with matching ID and update it with result
+                  if (updated[lastStreamingIndex].toolCalls) {
+                    updated[lastStreamingIndex] = {
+                      ...updated[lastStreamingIndex],
+                      toolCalls: updated[lastStreamingIndex].toolCalls!.map(toolCall => 
+                        toolCall.id === chunk.tool_call_id
+                          ? { ...toolCall, result: chunk.result, state: 'completed' as const }
+                          : toolCall
+                      ),
+                    }
+                  }
+                  
                   return updated
                 }
                 return prev

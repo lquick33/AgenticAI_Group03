@@ -114,6 +114,7 @@ export interface ToolCall {
   id: string
   name: string
   args: Record<string, any>
+  result?: string
   state?: 'pending' | 'running' | 'completed' | 'error'
 }
 
