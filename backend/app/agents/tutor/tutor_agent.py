@@ -18,6 +18,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from app.agents.base import BaseAgent, State
 from app.tools.page_analysis_tool import GetPageAnalysisTool
 from app.tools.course_material_tool import GetCourseMaterialSummaryTool
+from app.services.observability import create_callback_handler
+from app.core.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class TutorState(State):
@@ -530,10 +535,49 @@ class TutorAgent(BaseAgent):
                     )
                 messages_for_llm.insert(0, SystemMessage(content=enhanced_content))
         
-        # Call LLM with streaming support
-        # Note: For token-level streaming, we'll use astream_events in the endpoint
-        # For now, we keep invoke for compatibility, but the endpoint will handle streaming
-        response = self.llm.invoke(messages_for_llm)
+        # Create Langfuse callback handler für automatisches Tracking
+        # Der CallbackHandler trackt automatisch:
+        # - Token Usage (wird aus response_metadata extrahiert)
+        # - Model Parameters
+        # - Input/Output Messages
+        # - Latency
+        # - Errors
+        callback_handler = create_callback_handler()
+        
+        # Prepare config with callbacks and metadata
+        # In Langfuse SDK v3+, user_id, session_id und metadata werden via config metadata übergeben
+        config = {}
+        if callback_handler:
+            metadata = {
+                "langfuse_user_id": state.get("user_id"),
+                "langfuse_session_id": state.get("material_id"),  # Use material_id as session
+                "material_id": state.get("material_id"),
+                "current_page": state.get("current_page"),
+                "agent_name": self.name,
+                "language": self.language
+            }
+            config["callbacks"] = [callback_handler]
+            config["metadata"] = metadata
+            logger.info(f"🟡 Langfuse: Sending LLM call with metadata: user_id={metadata.get('langfuse_user_id')}, session_id={metadata.get('langfuse_session_id')}, material_id={metadata.get('material_id')}, page={metadata.get('current_page')}")
+        
+        # Call LLM with callbacks
+        # Der CallbackHandler trackt automatisch Token-Usage, Model Parameters, etc.
+        response = self.llm.invoke(messages_for_llm, config=config)
+        
+        if callback_handler:
+            logger.info("🟢 Langfuse: LLM call completed - data tracked by CallbackHandler")
+        
+        # Optional: Token-Usage für Debugging loggen
+        if settings.DEBUG and callback_handler:
+            try:
+                # Token-Usage wird bereits vom CallbackHandler getrackt
+                # Diese Extraktion ist nur für lokales Logging
+                if hasattr(response, "response_metadata"):
+                    usage_meta = response.response_metadata.get("usage_metadata", {})
+                    if usage_meta:
+                        logger.info(f"🟢 Langfuse: Token usage tracked - {usage_meta}")
+            except Exception:
+                pass  # Nicht kritisch wenn Token-Usage nicht extrahiert werden kann
         
         # Return updated state (MessagesState will automatically add the message)
         return {"messages": [response]}
