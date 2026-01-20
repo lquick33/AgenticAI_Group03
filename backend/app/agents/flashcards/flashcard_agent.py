@@ -16,6 +16,7 @@ from app.services.storage import (
     get_messages_for_page,
 )
 from app.services.analyzer import get_gemini_model
+from app.services.observability import create_callback_handler
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +45,26 @@ class FlashcardGeneratorAgent:
         self.language = language
         
         # Create structured LLMs for different tasks
-        self.skip_decision_llm = self.llm.with_structured_output(PageSkipDecision)
-        self.card_generation_llm = self.llm.with_structured_output(FlashcardGenerationResult)
+        self.skip_decision_llm = self.llm.with_structured_output(PageSkipDecision).with_config({"run_name": "flashcard_skip_decision"})
+        self.card_generation_llm = self.llm.with_structured_output(FlashcardGenerationResult).with_config({"run_name": "flashcard_generation"})
     
-    def _should_skip_page(self, page_analysis: Dict[str, Any]) -> tuple[bool, str]:
+    def _should_skip_page(
+        self, 
+        page_analysis: Dict[str, Any],
+        user_id: Optional[str] = None,
+        course_material_id: Optional[str] = None,
+        course_id: Optional[str] = None,
+        page_number: Optional[int] = None
+    ) -> tuple[bool, str]:
         """
         Determine if a page should be skipped (intro/title/TOC).
         
         Args:
             page_analysis: Page analysis dict with summary, key_terms, etc.
+            user_id: User ID for Langfuse tracking (optional)
+            course_material_id: Course material ID for Langfuse tracking (optional)
+            course_id: Course ID for Langfuse tracking (optional)
+            page_number: Page number for Langfuse tracking (optional)
             
         Returns:
             Tuple of (should_skip: bool, reason: str)
@@ -91,9 +103,32 @@ Skip the page if it is:
 
 Respond with JSON: {{"skip": true/false, "reason": "Brief reason"}}"""
         
+        # Create Langfuse callback handler für automatisches Tracking
+        callback_handler = create_callback_handler()
+        
+        # Prepare config with callbacks and metadata
+        config = {}
+        if callback_handler:
+            metadata = {
+                "langfuse_user_id": user_id,
+                "langfuse_session_id": course_material_id,  # Use material_id as session
+                "material_id": course_material_id,
+                "course_id": course_id,
+                "page_number": page_number,
+                "agent_name": "FlashcardGeneratorAgent",
+                "operation": "skip_decision"
+            }
+            config["callbacks"] = [callback_handler]
+            config["metadata"] = metadata
+            logger.debug(f"🟡 Langfuse: Sending skip_decision LLM call with metadata: user_id={user_id}, material_id={course_material_id}, page={page_number}")
+        
         try:
             message = HumanMessage(content=prompt)
-            decision = self.skip_decision_llm.invoke([message])
+            decision = self.skip_decision_llm.invoke([message], config=config if config else None)
+            
+            if callback_handler:
+                logger.debug("🟢 Langfuse: Skip decision LLM call completed - data tracked by CallbackHandler")
+            
             return decision.skip, decision.reason
         except Exception as e:
             logger.warning(f"Error in skip decision for page: {str(e)}")
@@ -106,7 +141,8 @@ Respond with JSON: {{"skip": true/false, "reason": "Brief reason"}}"""
         messages: List[Dict[str, Any]],
         course_id: str,
         material_id: str,
-        page_number: int
+        page_number: int,
+        user_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Generate flashcards for a single page.
@@ -188,9 +224,31 @@ Create at least 1, ideally 2-4 flashcards for this page.
 
 Respond with JSON: {{"cards": [{{"front": "...", "back": "...", "tags": ["tag1", "tag2", ...]}}, ...]}}"""
         
+        # Create Langfuse callback handler für automatisches Tracking
+        callback_handler = create_callback_handler()
+        
+        # Prepare config with callbacks and metadata
+        config = {}
+        if callback_handler:
+            metadata = {
+                "langfuse_user_id": user_id,
+                "langfuse_session_id": material_id,  # Use material_id as session
+                "material_id": material_id,
+                "course_id": course_id,
+                "page_number": page_number,
+                "agent_name": "FlashcardGeneratorAgent",
+                "operation": "card_generation"
+            }
+            config["callbacks"] = [callback_handler]
+            config["metadata"] = metadata
+            logger.debug(f"🟡 Langfuse: Sending card_generation LLM call with metadata: user_id={user_id}, material_id={material_id}, course_id={course_id}, page={page_number}")
+        
         try:
             message = HumanMessage(content=prompt)
-            result = self.card_generation_llm.invoke([message])
+            result = self.card_generation_llm.invoke([message], config=config if config else None)
+            
+            if callback_handler:
+                logger.debug("🟢 Langfuse: Card generation LLM call completed - data tracked by CallbackHandler")
             
             # Convert to dict format with source_page_analysis_id
             cards = []
@@ -243,7 +301,13 @@ Respond with JSON: {{"cards": [{{"front": "...", "back": "...", "tags": ["tag1",
             page_id = page_analysis.get("id")
             
             # Check if page should be skipped
-            should_skip, reason = self._should_skip_page(page_analysis)
+            should_skip, reason = self._should_skip_page(
+                page_analysis,
+                user_id=user_id,
+                course_material_id=course_material_id,
+                course_id=course_id,
+                page_number=page_number
+            )
             
             if should_skip:
                 logger.debug(f"Skipping page {page_number}: {reason}")
@@ -260,7 +324,8 @@ Respond with JSON: {{"cards": [{{"front": "...", "back": "...", "tags": ["tag1",
                 messages=messages,
                 course_id=course_id,
                 material_id=course_material_id,
-                page_number=page_number
+                page_number=page_number,
+                user_id=user_id
             )
             
             all_cards.extend(cards)
