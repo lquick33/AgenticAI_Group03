@@ -2703,37 +2703,71 @@ save_flashcards(cards, user_id, course_id)
 
 ---
 
-### `backend/app/api/endpoints.py` (Flashcard Export Endpoint)
+### `backend/app/api/endpoints.py` (Flashcard Generation Endpoints)
 
-**Purpose**: Extended with flashcard export endpoint.
+**Purpose**: Background task-based flashcard generation with progress tracking.
 
-**New Endpoint**:
-- **GET `/api/flashcards/export`**:
+**New Endpoints**:
+- **POST `/api/flashcards/generate`**:
   - Query parameters: `course_material_id`, `user_id`
   - Validates user and material ownership
-  - Generates flashcards using FlashcardGeneratorAgent
+  - Creates background task for flashcard generation
+  - Returns immediately with `task_id` (HTTP 202)
+  - Response: `FlashcardTaskResponse` with task_id and status
+
+- **GET `/api/flashcards/status/{task_id}`**:
+  - Query parameters: `user_id` (for authorization)
+  - Returns current task status and progress
+  - Response: `FlashcardTaskStatusResponse` with progress (0.0-1.0), page counts, etc.
+
+- **GET `/api/flashcards/download/{task_id}`**:
+  - Query parameters: `user_id` (for authorization)
+  - Downloads CSV file when task status is "completed"
   - Returns CSV file as StreamingResponse
   - Filename format: `flashcards_{course_title}_{material_name}.csv`
 
+- **POST `/api/flashcards/cancel/{task_id}`**:
+  - Query parameters: `user_id` (for authorization)
+  - Cancels a running task
+  - Returns success status
+
 **Key Features**:
+- Non-blocking background processing (no more blocking the API)
+- Real-time progress tracking (0.0 to 1.0)
+- Async LLM calls with timeouts (30s skip decision, 60s card generation)
+- Proper error handling and task cancellation
 - User authentication and authorization
-- Error handling for missing materials or generation failures
-- Proper CSV content type and download headers
 - Filename sanitization for filesystem compatibility
 
 **Dependencies**: 
+- `app.services.flashcard_task_service` - Background task management
 - `app.agents.flashcards` - FlashcardGeneratorAgent
 - `app.services.flashcard_service` - build_anki_csv
 - `app.services.storage` - Validation functions
 
 **Usage**: 
 ```
-GET /api/flashcards/export?course_material_id=...&user_id=...
+# Start generation
+POST /api/flashcards/generate?course_material_id=...&user_id=...
+→ Returns: {"task_id": "...", "status": "pending", "message": "..."}
+
+# Check progress
+GET /api/flashcards/status/{task_id}?user_id=...
+→ Returns: {"task_id": "...", "status": "running", "progress": 0.5, ...}
+
+# Download when completed
+GET /api/flashcards/download/{task_id}?user_id=...
+→ Returns: CSV file
+
+# Cancel if needed
+POST /api/flashcards/cancel/{task_id}?user_id=...
+→ Returns: {"success": true, "message": "Task cancelled"}
 ```
 
 **Related Files**: 
-- `frontend/lib/api/study.ts` - API client function
-- `frontend/components/study/congratulations-screen.tsx` - UI component
+- `backend/app/services/flashcard_task_service.py` - Task service implementation
+- `frontend/lib/api/study.ts` - API client functions (needs update)
+- `frontend/components/study/congratulations-screen.tsx` - UI component (needs update)
 
 ---
 
@@ -2768,6 +2802,66 @@ llm.with_structured_output(FlashcardGenerationResult)
 
 **Related Files**: 
 - `backend/app/agents/flashcards/flashcard_agent.py` - Uses these models
+
+---
+
+### `backend/app/services/flashcard_task_service.py`
+
+**Purpose**: Background task service for managing flashcard generation with progress tracking.
+
+**Key Components**:
+- **FlashcardTask**: Task model with status, progress, and metadata
+  - Status enum: `pending`, `running`, `completed`, `failed`, `cancelled`
+  - Progress tracking: 0.0 to 1.0
+  - Page counts: total_pages, processed_pages
+  - Error handling: error_message field
+  - Result storage: csv_bytes, filename
+
+- **FlashcardTaskService**: Singleton service managing tasks
+  - `create_task()`: Creates new background task
+  - `get_task()`: Retrieves task by ID
+  - `cancel_task()`: Cancels running task
+  - `_run_task()`: Background task execution
+  - `_generate_flashcards_async()`: Async wrapper with timeouts
+
+**Key Features**:
+- In-memory task storage (can be replaced with Redis/DB in production)
+- Async/await support for non-blocking execution
+- Timeouts: 30s for skip decisions, 60s for card generation
+- Progress updates during processing
+- Error handling and cancellation support
+- Thread-safe task management with asyncio.Lock
+
+**Dependencies**: 
+- `app.agents.flashcards` - FlashcardGeneratorAgent
+- `app.services.flashcard_service` - build_anki_csv
+- `app.services.storage` - Database functions
+- `asyncio` - Async task management
+
+**Usage**: 
+```python
+from app.services.flashcard_task_service import get_flashcard_task_service
+
+task_service = get_flashcard_task_service()
+task_id = await task_service.create_task(
+    course_material_id="...",
+    user_id="...",
+    course_id="..."
+)
+
+task = await task_service.get_task(task_id)
+print(f"Progress: {task.progress * 100}%")
+```
+
+**Production Considerations**:
+- In-memory storage is lost on server restart
+- For production, consider Redis or database-backed task storage
+- Could be replaced with Celery, RQ, or cloud task services
+- Task cleanup: Old completed tasks should be purged periodically
+
+**Related Files**: 
+- `backend/app/api/endpoints.py` - Uses this service for endpoints
+- `backend/app/agents/flashcards/flashcard_agent.py` - Called by task service
 
 ---
 

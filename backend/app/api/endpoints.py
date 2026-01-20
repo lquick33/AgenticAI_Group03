@@ -29,7 +29,9 @@ from app.models.schemas import (
     PageAnalysisQuery,
     PageAnalysisDataResponse,
     ChatInitiateRequest,
-    ChatMessageRequest
+    ChatMessageRequest,
+    FlashcardTaskResponse,
+    FlashcardTaskStatusResponse,
 )
 from app.services.pdf_processor import process_pdf_background
 from app.services.storage import (
@@ -43,6 +45,7 @@ from app.services.storage import (
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_csv
+from app.services.flashcard_task_service import get_flashcard_task_service
 from app.services.session_storage import (
     get_or_create_study_conversation,
     update_conversation_progress,
@@ -1911,29 +1914,29 @@ async def get_study_session(
         )
 
 
-@router.get("/flashcards/export")
-async def export_flashcards(
+@router.post("/flashcards/generate", response_model=FlashcardTaskResponse, status_code=202)
+async def generate_flashcards(
     course_material_id: str = Query(..., description="Course material ID (UUID)"),
     user_id: str = Query(..., description="User ID (UUID)")
-) -> StreamingResponse:
+) -> FlashcardTaskResponse:
     """
-    Export flashcards for a course material as Anki-compatible CSV.
+    Start flashcard generation as a background task.
     
     This endpoint:
     1. Validates user exists
     2. Validates course material belongs to user
-    3. Generates flashcards using FlashcardGeneratorAgent
-    4. Returns CSV file for download
+    3. Creates a background task for flashcard generation
+    4. Returns immediately with task ID for progress tracking
     
     Args:
         course_material_id: Course material ID (UUID)
         user_id: User ID (UUID)
         
     Returns:
-        StreamingResponse with CSV file
+        FlashcardTaskResponse with task_id and status
         
     Raises:
-        HTTPException: If validation fails or generation fails
+        HTTPException: If validation fails
     """
     try:
         # Validate user exists
@@ -1948,7 +1951,7 @@ async def export_flashcards(
         # Get course material and validate ownership
         material_response = (
             client.table("course_materials")
-            .select("id, course_id, file_name, user_id")
+            .select("id, course_id, user_id")
             .eq("id", course_material_id)
             .eq("user_id", user_id)
             .single()
@@ -1963,68 +1966,150 @@ async def export_flashcards(
         
         material = material_response.data
         course_id = material["course_id"]
-        file_name = material.get("file_name", "material")
         
-        # Get course for filename
-        course_response = (
-            client.table("courses")
-            .select("title")
-            .eq("id", course_id)
-            .eq("user_id", user_id)
-            .single()
-            .execute()
+        # Create background task
+        task_service = get_flashcard_task_service()
+        task_id = await task_service.create_task(
+            course_material_id=course_material_id,
+            user_id=user_id,
+            course_id=course_id,
         )
         
-        course_title = "course"
-        if course_response.data:
-            course_title = course_response.data.get("title", "course")
+        logger.info(f"Created flashcard generation task {task_id} for material {course_material_id}")
         
-        # Sanitize filename (remove invalid characters)
-        import re
-        safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
-        safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
+        return FlashcardTaskResponse(
+            task_id=task_id,
+            status="pending",
+            message="Flashcard generation started. Use the task_id to check progress."
+        )
         
-        # Generate flashcards
-        try:
-            agent = FlashcardGeneratorAgent()
-            cards = agent.generate_flashcards(
-                course_material_id=course_material_id,
-                user_id=user_id,
-                course_id=course_id,
-                save_to_db=False  # Don't save to DB, just export
-            )
-        except Exception as e:
-            logger.error(f"Error generating flashcards: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to generate flashcards: {str(e)}",
-            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating flashcard generation task: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start flashcard generation: {str(e)}",
+        )
+
+
+@router.get("/flashcards/status/{task_id}", response_model=FlashcardTaskStatusResponse, status_code=200)
+async def get_flashcard_task_status(
+    task_id: str = Path(..., description="Task ID"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> FlashcardTaskStatusResponse:
+    """
+    Get the status of a flashcard generation task.
+    
+    Args:
+        task_id: Task ID returned from /flashcards/generate
+        user_id: User ID (UUID) for authorization
         
-        if not cards:
+    Returns:
+        FlashcardTaskStatusResponse with current progress and status
+        
+    Raises:
+        HTTPException: If task not found or access denied
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
             raise HTTPException(
                 status_code=404,
-                detail="No flashcards could be generated. Make sure the material has been processed and contains relevant content.",
+                detail="User not found. Please sign up first.",
             )
         
-        # Build CSV
-        try:
-            csv_bytes = build_anki_csv(cards)
-        except Exception as e:
-            logger.error(f"Error building CSV: {str(e)}", exc_info=True)
+        task_service = get_flashcard_task_service()
+        task = await task_service.get_task(task_id)
+        
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found",
+            )
+        
+        # Verify task belongs to user
+        if task.user_id != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied",
+            )
+        
+        return FlashcardTaskStatusResponse(**task.to_dict())
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting flashcard task status: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get task status: {str(e)}",
+        )
+
+
+@router.get("/flashcards/download/{task_id}")
+async def download_flashcards(
+    task_id: str = Path(..., description="Task ID"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> StreamingResponse:
+    """
+    Download the generated flashcard CSV file.
+    
+    This endpoint can only be called when the task status is "completed".
+    
+    Args:
+        task_id: Task ID returned from /flashcards/generate
+        user_id: User ID (UUID) for authorization
+        
+    Returns:
+        StreamingResponse with CSV file
+        
+    Raises:
+        HTTPException: If task not found, not completed, or access denied
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first.",
+            )
+        
+        task_service = get_flashcard_task_service()
+        task = await task_service.get_task(task_id)
+        
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found",
+            )
+        
+        # Verify task belongs to user
+        if task.user_id != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied",
+            )
+        
+        # Check if task is completed
+        if task.status != "completed":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Task is not completed yet. Current status: {task.status}",
+            )
+        
+        if not task.csv_bytes or not task.filename:
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to build CSV file: {str(e)}",
+                detail="Task completed but CSV file is missing",
             )
         
-        # Create filename
-        filename = f"flashcards_{safe_course_title}_{safe_file_name}.csv"
-        
-        # Return as streaming response
+        # Return CSV file
         return StreamingResponse(
-            io.BytesIO(csv_bytes),
+            io.BytesIO(task.csv_bytes),
             media_type="text/csv",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": f'attachment; filename="{task.filename}"',
                 "Content-Type": "text/csv; charset=utf-8"
             }
         )
@@ -2032,8 +2117,73 @@ async def export_flashcards(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting flashcards: {str(e)}", exc_info=True)
+        logger.error(f"Error downloading flashcards: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to export flashcards: {str(e)}",
+            detail=f"Failed to download flashcards: {str(e)}",
+        )
+
+
+@router.post("/flashcards/cancel/{task_id}", status_code=200)
+async def cancel_flashcard_task(
+    task_id: str = Path(..., description="Task ID"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> dict:
+    """
+    Cancel a running flashcard generation task.
+    
+    Args:
+        task_id: Task ID returned from /flashcards/generate
+        user_id: User ID (UUID) for authorization
+        
+    Returns:
+        Dict with success status
+        
+    Raises:
+        HTTPException: If task not found or access denied
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first.",
+            )
+        
+        task_service = get_flashcard_task_service()
+        task = await task_service.get_task(task_id)
+        
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found",
+            )
+        
+        # Verify task belongs to user
+        if task.user_id != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied",
+            )
+        
+        # Cancel task
+        cancelled = await task_service.cancel_task(task_id)
+        
+        if not cancelled:
+            raise HTTPException(
+                status_code=400,
+                detail="Task cannot be cancelled (may already be completed or failed)",
+            )
+        
+        logger.info(f"Cancelled flashcard generation task {task_id}")
+        
+        return {"success": True, "message": "Task cancelled"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling flashcard task: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to cancel task: {str(e)}",
         )
