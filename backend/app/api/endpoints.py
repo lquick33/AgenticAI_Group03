@@ -9,16 +9,16 @@ import json
 import logging
 import traceback
 from typing import Optional, AsyncGenerator
-from langchain_core.messages import SystemMessage, HumanMessage
-from langgraph.checkpoint.memory import MemorySaver
-
-from app.agents.tutor import TutorAgent
-from app.services.analyzer import get_gemini_model
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body
 from fastapi.responses import StreamingResponse
 from pdf2image import convert_from_bytes
 from PIL import Image
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langgraph.checkpoint.memory import MemorySaver
+
+from app.agents.tutor import TutorAgent
+from app.services.analyzer import get_gemini_model
 
 from app.models.schemas import (
     UploadResponse,
@@ -37,7 +37,13 @@ from app.services.storage import (
     validate_user_exists,
     get_course,
     get_supabase_client,
-    get_page_analysis
+    get_page_analysis,
+)
+from app.services.session_storage import (
+    get_or_create_study_conversation,
+    update_conversation_progress,
+    append_messages,
+    load_conversation_with_messages,
 )
 
 logger = logging.getLogger(__name__)
@@ -632,7 +638,7 @@ async def initiate_chat(
                 detail="User not found. Please sign up first."
             )
         
-        # Get course material to find course_material_id
+        # Get course material to find course_material_id and course_id
         client = get_supabase_client()
         material_response = client.table("course_materials").select(
             "id, course_id"
@@ -643,8 +649,8 @@ async def initiate_chat(
                 status_code=404,
                 detail="Course material not found or access denied"
             )
-        
         course_material_id = material_response.data["id"]
+        course_id = material_response.data.get("course_id")
         
         # Get page analysis data for system message
         try:
@@ -660,13 +666,19 @@ async def initiate_chat(
         
         # Initialize LLM and agent
         llm = get_gemini_model()
-        agent = TutorAgent(
-            llm=llm,
-            checkpointer=_checkpointer
-        )
+        agent = TutorAgent(llm=llm, checkpointer=_checkpointer)
         
-        # Thread ID: material_id for continuous conversation
-        thread_id = request.material_id
+        # Get or create study conversation in Supabase
+        conversation = get_or_create_study_conversation(
+            user_id=request.user_id,
+            course_material_id=course_material_id,
+            course_id=course_id,
+            initial_page=request.page_number,
+        )
+        conversation_id = conversation["id"]
+        
+        # Thread ID: conversation_id for continuous conversation
+        thread_id = str(conversation_id)
         
         # Create system message for page change
         # This message is added to the conversation context but not shown to the user
@@ -687,39 +699,73 @@ async def initiate_chat(
             # First, inject system message and initial message
             config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
             
-            # Check if thread exists and load existing messages
+            # Check if thread exists and load existing messages from LangGraph
             snapshot = agent.graph.get_state(config)
             is_new_thread = snapshot is None or not snapshot.values or not snapshot.values.get("messages")
-            
+
+            # Base messages for the LLM call
+            base_messages = []
+
+            # Optional bootstrap: if LangGraph has no messages but Supabase has history,
+            # reconstruct recent messages into the graph state so the agent has context
+            if is_new_thread:
+                try:
+                    _, stored_messages = load_conversation_with_messages(
+                        user_id=request.user_id,
+                        course_material_id=course_material_id,
+                        limit=20,
+                    )
+                    for stored in stored_messages:
+                        role = stored.get("role")
+                        content = stored.get("content", "")
+                        if not content:
+                            continue
+                        if role == "user":
+                            base_messages.append(HumanMessage(content=content))
+                        elif role == "assistant":
+                            base_messages.append(AIMessage(content=content))
+                        elif role == "system":
+                            base_messages.append(SystemMessage(content=content))
+                except Exception as bootstrap_error:
+                    logger.error(
+                        f"Failed to bootstrap LangGraph state from Supabase: {bootstrap_error}",
+                        exc_info=True,
+                    )
+
             # Update state with current page information (according to AGENT_DEVELOPMENT_RULES.md)
             # The agent should always know which page we are currently viewing
             if is_new_thread:
-                # New thread: add system message and page change message
+                # New thread: include any bootstrapped messages, then add system and page change message
                 initial_state = {
-                    "messages": [
+                    "messages": base_messages
+                    + [
                         SystemMessage(content=system_message),
-                        HumanMessage(content=initial_message)
+                        HumanMessage(content=initial_message),
                     ],
                     "current_page": request.page_number,
                     "material_id": request.material_id,
-                    "user_id": request.user_id
+                    "user_id": request.user_id,
                 }
             else:
-                # Existing thread: load existing messages and add page change notification
+                # Existing thread: load existing messages from snapshot and add page change notification
                 existing_messages = snapshot.values.get("messages", [])
-                
+
                 # Add system message about page change (as a subtle notification)
                 # and a human message to trigger agent response
                 # This feels like a natural continuation of the conversation
                 initial_state = {
-                    "messages": existing_messages + [
+                    "messages": existing_messages
+                    + [
                         SystemMessage(content=system_message),
-                        HumanMessage(content=initial_message)
+                        HumanMessage(content=initial_message),
                     ],
                     "current_page": request.page_number,
                     "material_id": request.material_id,
-                    "user_id": request.user_id
+                    "user_id": request.user_id,
                 }
+            
+            # Prepare buffer for assistant response text for persistence
+            assistant_response_chunks: list[str] = []
             
             # Stream agent response
             logger.info(f"Starting agent stream for page {request.page_number}")
@@ -730,17 +776,39 @@ async def initiate_chat(
                         if "messages" in node_data:
                             messages = []
                             for msg in node_data["messages"]:
+                                # Skip tool messages entirely for UI and persistence
+                                if isinstance(msg, ToolMessage):
+                                    continue
+
                                 if hasattr(msg, "content"):
                                     role = "assistant"
                                     if isinstance(msg, SystemMessage):
                                         role = "system"
                                     elif isinstance(msg, HumanMessage):
                                         role = "user"
-                                    
-                                    messages.append({
-                                        "role": role,
-                                        "content": msg.content
-                                    })
+                                    elif isinstance(msg, AIMessage):
+                                        role = "assistant"
+
+                                    # Collect assistant content for persistence
+                                    if role == "assistant" and msg.content:
+                                        # msg.content can be str or list; convert to string for storage
+                                        content_text = msg.content
+                                        if isinstance(msg.content, list):
+                                            try:
+                                                content_text = "".join(
+                                                    part.get("text", "") if isinstance(part, dict) else str(part)
+                                                    for part in msg.content
+                                                )
+                                            except Exception:
+                                                content_text = str(msg.content)
+                                        assistant_response_chunks.append(str(content_text))
+
+                                    messages.append(
+                                        {
+                                            "role": role,
+                                            "content": msg.content,
+                                        }
+                                    )
                             if messages:  # Only add if there are messages
                                 chunk_data[node_name] = {"messages": messages}
                     
@@ -749,6 +817,30 @@ async def initiate_chat(
                         yield f"data: {json.dumps(chunk_data)}\n\n"
                 
                 logger.info(f"Agent stream completed for page {request.page_number}")
+
+                # Persist conversation messages and progress in Supabase
+                try:
+                    full_assistant_response = "".join(assistant_response_chunks).strip()
+                    messages_to_store = []
+
+                    if full_assistant_response:
+                        messages_to_store.append(
+                            {
+                                "role": "assistant",
+                                "content": full_assistant_response,
+                                "context_page_id": None,
+                            }
+                        )
+
+                    if messages_to_store:
+                        append_messages(conversation_id, messages_to_store)
+                        update_conversation_progress(conversation_id, request.page_number)
+                except Exception as persist_error:
+                    logger.error(
+                        f"Failed to persist chat initiate messages: {persist_error}",
+                        exc_info=True,
+                    )
+
                 yield "data: [DONE]\n\n"
             except Exception as e:
                 logger.error(f"Error in agent stream: {str(e)}", exc_info=True)
@@ -799,13 +891,36 @@ async def send_chat_message(
         
         # Initialize LLM and agent
         llm = get_gemini_model()
-        agent = TutorAgent(
-            llm=llm,
-            checkpointer=_checkpointer
-        )
+        agent = TutorAgent(llm=llm, checkpointer=_checkpointer)
         
-        # Thread ID: material_id for continuous conversation
-        thread_id = request.material_id
+        # Get course material to find course_material_id (for conversation lookup)
+        client = get_supabase_client()
+        material_response = (
+            client.table("course_materials")
+            .select("id, course_id")
+            .eq("id", request.material_id)
+            .eq("user_id", request.user_id)
+            .single()
+            .execute()
+        )
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+        course_material_id = material_response.data["id"]
+        course_id = material_response.data.get("course_id")
+
+        # Get or create study conversation in Supabase
+        conversation = get_or_create_study_conversation(
+            user_id=request.user_id,
+            course_material_id=course_material_id,
+            course_id=course_id,
+        )
+        conversation_id = conversation["id"]
+
+        # Thread ID: conversation_id for continuous conversation
+        thread_id = str(conversation_id)
         
         # Stream response
         async def event_generator() -> AsyncGenerator[str, None]:
@@ -820,6 +935,10 @@ async def send_chat_message(
             if snapshot and snapshot.values:
                 # Preserve current_page from existing state if available
                 current_page = snapshot.values.get("current_page")
+            # If LangGraph state is empty (e.g., after restart), fall back to conversation metadata
+            if current_page is None:
+                metadata = conversation.get("metadata") or {}
+                current_page = metadata.get("last_page_number")
             
             # Add user message to existing thread and preserve state
             initial_state = {
@@ -828,10 +947,13 @@ async def send_chat_message(
                 "user_id": user_id
             }
             
-            # Only add current_page if it exists in previous state
+            # Only add current_page if it exists in previous state or metadata
             if current_page is not None:
                 initial_state["current_page"] = current_page
-            
+
+            # Prepare buffer for assistant response text for persistence
+            assistant_response_chunks: list[str] = []
+
             # Stream agent response
             async for chunk in agent.graph.astream(initial_state, config):
                 chunk_data = {}
@@ -839,21 +961,73 @@ async def send_chat_message(
                     if "messages" in node_data:
                         messages = []
                         for msg in node_data["messages"]:
+                            # Skip tool messages entirely for UI and persistence
+                            if isinstance(msg, ToolMessage):
+                                continue
+
                             if hasattr(msg, "content"):
                                 role = "assistant"
                                 if isinstance(msg, SystemMessage):
                                     role = "system"
                                 elif isinstance(msg, HumanMessage):
                                     role = "user"
+                                elif isinstance(msg, AIMessage):
+                                    role = "assistant"
+
+                                # Collect assistant content for persistence
+                                if role == "assistant" and msg.content:
+                                    content_text = msg.content
+                                    if isinstance(msg.content, list):
+                                        try:
+                                            content_text = "".join(
+                                                part.get("text", "") if isinstance(part, dict) else str(part)
+                                                for part in msg.content
+                                            )
+                                        except Exception:
+                                            content_text = str(msg.content)
+                                    assistant_response_chunks.append(str(content_text))
                                 
                                 messages.append({
                                     "role": role,
                                     "content": msg.content
                                 })
-                        chunk_data[node_name] = {"messages": messages}
+                        if messages:
+                            chunk_data[node_name] = {"messages": messages}
                 
-                yield f"data: {json.dumps(chunk_data)}\n\n"
-            
+                if chunk_data:
+                    yield f"data: {json.dumps(chunk_data)}\n\n"
+
+            # Persist user and assistant messages and update progress
+            try:
+                full_assistant_response = "".join(assistant_response_chunks).strip()
+                messages_to_store = []
+
+                # Persist only the real user message and the final assistant reply
+                messages_to_store.append(
+                    {
+                        "role": "user",
+                        "content": request.message,
+                        "context_page_id": None,
+                    }
+                )
+                if full_assistant_response:
+                    messages_to_store.append(
+                        {
+                            "role": "assistant",
+                            "content": full_assistant_response,
+                            "context_page_id": None,
+                        }
+                    )
+
+                append_messages(conversation_id, messages_to_store)
+                if current_page is not None:
+                    update_conversation_progress(conversation_id, current_page)
+            except Exception as persist_error:
+                logger.error(
+                    f"Failed to persist chat message conversation: {persist_error}",
+                    exc_info=True,
+                )
+
             yield "data: [DONE]\n\n"
         
         return StreamingResponse(
@@ -873,4 +1047,87 @@ async def send_chat_message(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to send message: {str(e)}"
+        )
+
+
+@router.get("/study/session", status_code=200)
+async def get_study_session(
+    material_id: str = Query(..., description="Course material ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)"),
+    limit: int = Query(50, description="Maximum number of messages to return"),
+) -> dict:
+    """
+    Get persisted study session state for a given user and course material.
+
+    Returns the last visited page and recent chat messages so the frontend
+    can restore the reader position and chat history.
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first.",
+            )
+
+        client = get_supabase_client()
+
+        # Validate that course material belongs to user and get course_material_id
+        material_response = (
+            client.table("course_materials")
+            .select("id, page_count")
+            .eq("id", material_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+
+        course_material_id = material_response.data["id"]
+        page_count = material_response.data.get("page_count") or 0
+
+        # Load conversation and messages
+        conversation, messages = load_conversation_with_messages(
+            user_id=user_id,
+            course_material_id=course_material_id,
+            limit=limit,
+        )
+
+        last_page = 1
+        if conversation and isinstance(conversation.get("metadata"), dict):
+            last_page = conversation["metadata"].get("last_page_number") or 1
+
+        # Ensure last_page is within bounds
+        if page_count and last_page > page_count:
+            last_page = page_count
+        if last_page < 1:
+            last_page = 1
+
+        # Map messages to frontend format
+        mapped_messages = [
+            {
+                "id": msg["id"],
+                "role": msg["role"],
+                "content": msg["content"],
+                "timestamp": msg.get("created_at"),
+            }
+            for msg in messages
+        ]
+
+        return {
+            "lastPage": last_page,
+            "messages": mapped_messages,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading study session: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load study session: {str(e)}",
         )

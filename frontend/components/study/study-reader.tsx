@@ -6,7 +6,7 @@ import { Panel, Group, Separator as PanelResizeHandle } from 'react-resizable-pa
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ChatInterface } from './chat-interface'
-import { initiateChat, sendMessage } from '@/lib/api/study'
+import { initiateChat, sendMessage, getStudySession } from '@/lib/api/study'
 import type { ChatMessage } from '@/types'
 
 // Dynamically import PDF Viewer with SSR disabled
@@ -45,10 +45,14 @@ export function StudyReader({
 
   // Handle page change - initiate chat
   const handlePageChange = useCallback(
-    async (newPage: number) => {
+    async (newPage: number, skipStateUpdate: boolean = false) => {
       if (newPage < 1 || newPage > pageCount) return
 
-      setCurrentPage(newPage)
+      // Only update state if not explicitly skipped (to prevent double triggers during init)
+      // React will optimize if the value hasn't actually changed
+      if (!skipStateUpdate) {
+        setCurrentPage(newPage)
+      }
       setIsLoading(true)
       setIsStreaming(true)
 
@@ -347,19 +351,61 @@ export function StudyReader({
     [materialId, userId, generateMessageId]
   )
 
-  // Initialize chat on first load
+  // Track if we're initializing to prevent double calls
+  const isInitializing = useRef(true)
+
+  // Initialize session (page + chat) on first load
   useEffect(() => {
-    handlePageChange(1)
+    let isMounted = true
+
+    const initSession = async () => {
+      try {
+        const session = await getStudySession(materialId, userId)
+
+        if (!isMounted) return
+
+        const initialPage = session.lastPage && session.lastPage > 0 ? session.lastPage : 1
+
+        if (session.messages && session.messages.length > 0) {
+          setMessages(session.messages)
+        }
+
+        // Set page first
+        setCurrentPage(initialPage)
+        
+        // Mark initialization as complete AFTER setting page
+        // This prevents the effect from triggering when handlePageChange calls setCurrentPage
+        isInitializing.current = false
+        
+        // Directly call handlePageChange for initial page with skipStateUpdate=true
+        // This prevents handlePageChange from calling setCurrentPage again (which would trigger the effect)
+        await handlePageChange(initialPage, true)
+      } catch (error) {
+        console.error('[StudyReader] Failed to load study session, falling back to page 1:', error)
+        if (!isMounted) return
+        
+        setCurrentPage(1)
+        isInitializing.current = false
+        await handlePageChange(1, true)
+      }
+    }
+
+    // Fire and forget; handle errors inside
+    initSession()
+
+    return () => {
+      isMounted = false
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only run on mount
 
-  // Handle page change (but not on initial mount)
-  const isInitialMount = useRef(true)
+  // Handle page change (but not during initial session load)
   useEffect(() => {
-    if (isInitialMount.current) {
-      isInitialMount.current = false
+    // Skip if we're still initializing (session load in progress)
+    if (isInitializing.current) {
       return
     }
+    
     if (currentPage > 0) {
       handlePageChange(currentPage)
     }
