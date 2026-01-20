@@ -704,6 +704,25 @@ async def initiate_chat(
 
             stored_messages = []
             conversation_has_history = False
+            last_message_is_welcome_back = False
+
+            # Helper function to detect if a message is a "Welcome Back" message
+            def is_welcome_back_message(content: str) -> bool:
+                """Check if a message contains typical Welcome Back phrases."""
+                if not content:
+                    return False
+                content_lower = content.lower()
+                welcome_phrases = [
+                    "schön, dass du wieder da bist",
+                    "wir haben jetzt",
+                    "von",
+                    "seiten abgearbeitet",
+                    "kannst du dich an alles erinnern",
+                    "soll ich dir nochmal eine kurze zusammenfassung geben"
+                ]
+                # Check if at least 2 of the key phrases are present
+                matches = sum(1 for phrase in welcome_phrases if phrase in content_lower)
+                return matches >= 2
 
             # Always check Supabase for conversation history when is_initial_open is true
             # This allows us to detect returning users even if LangGraph state exists
@@ -715,6 +734,16 @@ async def initiate_chat(
                         limit=20,
                     )
                     conversation_has_history = len(stored_messages) > 0
+
+                    # Check if the last assistant message is already a Welcome Back message
+                    if conversation_has_history:
+                        # Find the last assistant message
+                        for stored in reversed(stored_messages):
+                            if stored.get("role") == "assistant":
+                                last_content = stored.get("content", "")
+                                if is_welcome_back_message(last_content):
+                                    last_message_is_welcome_back = True
+                                break
 
                     # Bootstrap messages into LangGraph state if needed
                     if is_new_thread:
@@ -777,42 +806,57 @@ async def initiate_chat(
                     completed_pages = last_page_number or request.page_number
                     total_pages_safe = total_pages or "unbekannt"
 
-                    # IMPORTANT:
-                    # For the list of \"already covered\" topics we now rely ONLY on the actual
-                    # chat history, not on syllabus/overview summaries from the slides.
-                    # This prevents the model from listing future topics that were only
-                    # announced on an agenda slide but not yet discussed in the conversation.
-                    topics_instructions = (
-                        "\n\nANALYSE DER BISHERIGEN THEMEN (nur Chat-Verlauf, keine Agenda-Folien!):\n"
-                        "- Analysiere ausschließlich den obigen Chat-Verlauf, um herauszufinden,\n"
-                        "  welche Themen ihr bereits inhaltlich BESPROCHEN habt.\n"
-                        "- Themen, die nur als zukünftige Inhalte auf einer Übersichts-/Agenda-Folie\n"
-                        "  erwähnt wurden (z.B. Rechengesetze, Binomische Formeln, Logarithmusgesetze),\n"
-                        "  dürfen NICHT in der Liste auftauchen, solange sie im Chat noch nicht erklärt\n"
-                        "  oder diskutiert wurden.\n"
-                        "- Fasse verwandte Punkte sinnvoll zusammen und formuliere eine kurze,\n"
-                        "  natürlich klingende Liste von 2–5 Hauptthemen, die bisher wirklich\n"
-                        "  behandelt wurden (z.B. \"Einführung in die Vorlesung\", \"Zahlenbereiche\",\n"
-                        "  \"imaginäre und komplexe Zahlen\").\n"
-                    )
+                    if last_message_is_welcome_back:
+                        # Last message was already a Welcome Back message, send a normal greeting instead
+                        initial_human_content = (
+                            "The student has reopened the study reader, but you already sent them a welcome back message recently.\n\n"
+                            f"- Current page: {request.page_number}\n"
+                            f"- Page summary: {summary}\n\n"
+                            "GREETING INSTRUCTIONS (German):\n"
+                            "Begrüße den Studenten kurz und freundlich, aber NICHT mit einer erneuten 'Welcome Back' Nachricht.\n"
+                            "Formuliere eine normale, kurze Nachricht zur aktuellen Folie, etwa so:\n"
+                            f"\"Du bist gerade auf Folie {request.page_number}. [KURZE BESCHREIBUNG DER FOLIE BASIEREND AUF DER ZUSAMMENFASSUNG]. "
+                            "Gibt es etwas Spezielles, das du über diese Folie wissen möchtest?\"\n"
+                            "Halte die Nachricht kurz (1-2 Sätze) und fokussiere dich auf die aktuelle Folie."
+                        )
+                    else:
+                        # No recent Welcome Back message, send one now
+                        # IMPORTANT:
+                        # For the list of \"already covered\" topics we now rely ONLY on the actual
+                        # chat history, not on syllabus/overview summaries from the slides.
+                        # This prevents the model from listing future topics that were only
+                        # announced on an agenda slide but not yet discussed in the conversation.
+                        topics_instructions = (
+                            "\n\nANALYSE DER BISHERIGEN THEMEN (nur Chat-Verlauf, keine Agenda-Folien!):\n"
+                            "- Analysiere ausschließlich den obigen Chat-Verlauf, um herauszufinden,\n"
+                            "  welche Themen ihr bereits inhaltlich BESPROCHEN habt.\n"
+                            "- Themen, die nur als zukünftige Inhalte auf einer Übersichts-/Agenda-Folie\n"
+                            "  erwähnt wurden (z.B. Rechengesetze, Binomische Formeln, Logarithmusgesetze),\n"
+                            "  dürfen NICHT in der Liste auftauchen, solange sie im Chat noch nicht erklärt\n"
+                            "  oder diskutiert wurden.\n"
+                            "- Fasse verwandte Punkte sinnvoll zusammen und formuliere eine kurze,\n"
+                            "  natürlich klingende Liste von 2–5 Hauptthemen, die bisher wirklich\n"
+                            "  behandelt wurden (z.B. \"Einführung in die Vorlesung\", \"Zahlenbereiche\",\n"
+                            "  \"imaginäre und komplexe Zahlen\").\n"
+                        )
 
-                    initial_human_content = (
-                        "The student is returning to this study session after closing and reopening the study reader.\n\n"
-                        f"- They have already worked through approximately {completed_pages} "
-                        f"of {total_pages_safe} pages in this material.\n"
-                        "- You have access to the previous chat history in the messages above.\n"
-                        f"{topics_instructions}\n\n"
-                        "GREETING INSTRUCTIONS (German):\n"
-                        "Begrüße den Studenten freundlich als Rückkehrer mit einer persönlichen Nachricht.\n"
-                        "Formuliere etwa so (sinngemäß, nicht wortwörtlich, aber sehr ähnlich):\n"
-                        f"\"Hi! Schön, dass du wieder da bist. Wir haben jetzt {completed_pages} von {total_pages_safe} "
-                        "Seiten abgearbeitet und dabei folgende Themen behandelt: [NENNE HIER DIE 2–5 WICHTIGSTEN THEMEN "
-                        "AUS DEM CHAT-VERLAUF, DIE WIRKLICH BEREITS BESPROCHEN WURDEN]. "
-                        "Kannst du dich an alles erinnern oder soll ich dir nochmal eine kurze Zusammenfassung geben?\"\n"
-                        "WICHTIG: Nutze wirklich nur den Chat-Verlauf als Grundlage für die Themenliste –\n"
-                        "Themen, die lediglich als zukünftige Inhalte angekündigt wurden, sollen NICHT erwähnt werden.\n"
-                        "Halte die Nachricht persönlich, freundlich und kurz (2-3 Sätze)."
-                    )
+                        initial_human_content = (
+                            "The student is returning to this study session after closing and reopening the study reader.\n\n"
+                            f"- They have already worked through approximately {completed_pages} "
+                            f"of {total_pages_safe} pages in this material.\n"
+                            "- You have access to the previous chat history in the messages above.\n"
+                            f"{topics_instructions}\n\n"
+                            "GREETING INSTRUCTIONS (German):\n"
+                            "Begrüße den Studenten freundlich als Rückkehrer mit einer persönlichen Nachricht.\n"
+                            "Formuliere etwa so (sinngemäß, nicht wortwörtlich, aber sehr ähnlich):\n"
+                            f"\"Hi! Schön, dass du wieder da bist. Wir haben jetzt {completed_pages} von {total_pages_safe} "
+                            "Seiten abgearbeitet und dabei folgende Themen behandelt: [NENNE HIER DIE 2–5 WICHTIGSTEN THEMEN "
+                            "AUS DEM CHAT-VERLAUF, DIE WIRKLICH BEREITS BESPROCHEN WURDEN]. "
+                            "Kannst du dich an alles erinnern oder soll ich dir nochmal eine kurze Zusammenfassung geben?\"\n"
+                            "WICHTIG: Nutze wirklich nur den Chat-Verlauf als Grundlage für die Themenliste –\n"
+                            "Themen, die lediglich als zukünftige Inhalte angekündigt wurden, sollen NICHT erwähnt werden.\n"
+                            "Halte die Nachricht persönlich, freundlich und kurz (2-3 Sätze)."
+                        )
                 else:
                     # First visit for this material (no previous chat history)
                     total_pages_safe = total_pages or "unbekannt"
