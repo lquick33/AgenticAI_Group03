@@ -124,3 +124,24 @@ class PageAnalysisDataResponse(BaseModel):
     exam_questions: list[str]
     diagram_description: Optional[str] = None
     raw_analysis: Optional[dict] = None
+
+
+class PageSkipDecision(BaseModel):
+    """Decision model for whether to skip a page (intro/title/table of contents)."""
+    
+    skip: bool = Field(..., description="True if this page should be skipped (intro/title/TOC), False otherwise")
+    reason: str = Field(..., description="Brief reason for the decision")
+
+
+class Flashcard(BaseModel):
+    """Model for a single flashcard."""
+    
+    front: str = Field(..., description="Front side of the flashcard (question or term)")
+    back: str = Field(..., description="Back side of the flashcard (answer or definition)")
+    tags: list[str] = Field(default_factory=list, description="Tags for categorization (e.g., course_id, page_number, topic)")
+
+
+class FlashcardGenerationResult(BaseModel):
+    """Result model for flashcard generation for a single page."""
+    
+    cards: list[Flashcard] = Field(..., description="List of flashcards generated for this page")

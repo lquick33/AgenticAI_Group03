@@ -6,6 +6,7 @@ import { Panel, Group, Separator as PanelResizeHandle } from 'react-resizable-pa
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ChatInterface } from './chat-interface'
+import { CongratulationsScreen } from './congratulations-screen'
 import { initiateChat, sendMessage, getStudySession } from '@/lib/api/study'
 import type { ChatMessage, ToolCall } from '@/types'
 
@@ -33,6 +34,7 @@ export function StudyReader({
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
+  const [showCongratulations, setShowCongratulations] = useState(false)
   const [showTools, setShowTools] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('study-reader-show-tools')
@@ -1104,12 +1106,24 @@ export function StudyReader({
   const handleNextPage = () => {
     if (currentPage < pageCount) {
       setCurrentPage(currentPage + 1)
+    } else if (currentPage === pageCount) {
+      // Show congratulations screen when user clicks next on last page
+      setShowCongratulations(true)
     }
   }
 
   return (
-    <div className="flex flex-col h-full max-h-full min-h-0 overflow-hidden">
-      <Group
+    <>
+      {showCongratulations && (
+        <CongratulationsScreen
+          materialId={materialId}
+          courseId={courseId}
+          userId={userId}
+          onClose={() => setShowCongratulations(false)}
+        />
+      )}
+      <div className="flex flex-col h-full max-h-full min-h-0 overflow-hidden">
+        <Group
         direction="horizontal"
         className="flex-1 min-h-0 max-h-full overflow-hidden"
         onLayout={(sizes) => {
@@ -1185,5 +1199,6 @@ export function StudyReader({
         </Panel>
       </Group>
     </div>
+    </>
   )
 }
