@@ -40,62 +40,174 @@ class StateAwareToolNode(ToolNode):
     calling tools.
     """
     
-    def __call__(self, state: TutorState) -> TutorState:
+    def invoke(self, input: TutorState, config: Optional[Any] = None) -> TutorState:
         """
         Execute tools with automatic state injection.
         
+        This overrides the invoke method to inject state values before
+        tool execution, ensuring required parameters are always present.
+        
         Args:
-            state: Current agent state
+            input: Current agent state
+            config: Optional configuration
             
         Returns:
             Updated state with tool results
         """
-        messages = state["messages"]
+        messages = input.get("messages", [])
         if not messages:
-            return state
+            return input
         
         last_message = messages[-1]
         
         # Check if last message has tool calls
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-            # Inject state values into tool calls
+            # Create a modified copy of tool calls with injected state values
+            modified_tool_calls = []
             for tool_call in last_message.tool_calls:
-                if hasattr(tool_call, 'args') or isinstance(tool_call, dict):
-                    # Handle both dict and object-style tool calls
-                    args = tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
+                # Get tool call information
+                if isinstance(tool_call, dict):
+                    tool_name = tool_call.get("name", "")
+                    tool_id = tool_call.get("id", "")
+                    args = dict(tool_call.get("args", {}) or {})
+                else:
+                    tool_name = getattr(tool_call, "name", "")
+                    tool_id = getattr(tool_call, "id", "")
+                    args = dict(getattr(tool_call, "args", {}) or {})
+                
+                # Inject state values for get_page_analysis tool
+                if tool_name == "get_page_analysis":
+                    # Always inject course_material_id from state if missing
+                    if "course_material_id" not in args or not args.get("course_material_id"):
+                        if input.get("material_id"):
+                            args["course_material_id"] = input["material_id"]
                     
-                    # Map material_id (State) to course_material_id (Tool argument)
-                    if "course_material_id" not in args and state.get("material_id"):
-                        if isinstance(tool_call, dict):
-                            tool_call["args"] = tool_call.get("args", {})
-                            tool_call["args"]["course_material_id"] = state["material_id"]
-                        else:
-                            if not hasattr(tool_call, "args"):
-                                tool_call.args = {}
-                            tool_call.args["course_material_id"] = state["material_id"]
+                    # Inject user_id from state if missing
+                    if "user_id" not in args or not args.get("user_id"):
+                        if input.get("user_id"):
+                            args["user_id"] = input["user_id"]
                     
-                    # Inject page_number from state
-                    if "page_number" not in args and state.get("current_page"):
-                        if isinstance(tool_call, dict):
-                            tool_call["args"] = tool_call.get("args", {})
-                            tool_call["args"]["page_number"] = state["current_page"]
-                        else:
-                            if not hasattr(tool_call, "args"):
-                                tool_call.args = {}
-                            tool_call.args["page_number"] = state["current_page"]
-                    
-                    # Inject user_id from state
-                    if "user_id" not in args and state.get("user_id"):
-                        if isinstance(tool_call, dict):
-                            tool_call["args"] = tool_call.get("args", {})
-                            tool_call["args"]["user_id"] = state["user_id"]
-                        else:
-                            if not hasattr(tool_call, "args"):
-                                tool_call.args = {}
-                            tool_call.args["user_id"] = state["user_id"]
+                    # Only inject page_number if not explicitly provided by LLM
+                    # (LLM might specify a different page number, like page 30)
+                    if "page_number" not in args or args.get("page_number") is None:
+                        if input.get("current_page"):
+                            args["page_number"] = input["current_page"]
+                
+                # Inject state values for get_course_material_summary tool
+                elif tool_name == "get_course_material_summary":
+                    if "course_material_id" not in args or not args.get("course_material_id"):
+                        if input.get("material_id"):
+                            args["course_material_id"] = input["material_id"]
+                    if "user_id" not in args or not args.get("user_id"):
+                        if input.get("user_id"):
+                            args["user_id"] = input["user_id"]
+                
+                # Create modified tool call
+                modified_tool_calls.append({
+                    "id": tool_id,
+                    "name": tool_name,
+                    "args": args
+                })
+            
+            # Create a new message with modified tool calls
+            from langchain_core.messages import AIMessage
+            modified_message = AIMessage(
+                content=last_message.content if hasattr(last_message, "content") else "",
+                tool_calls=modified_tool_calls
+            )
+            
+            # Replace the last message in the state
+            modified_messages = messages[:-1] + [modified_message]
+            modified_state = {**input, "messages": modified_messages}
+            
+            # Call parent implementation with modified state
+            return super().invoke(modified_state, config)
         
-        # Call parent implementation to execute tools
-        return super().__call__(state)
+        # No tool calls, call parent implementation as-is
+        return super().invoke(input, config)
+    
+    async def ainvoke(self, input: TutorState, config: Optional[Any] = None) -> TutorState:
+        """
+        Execute tools asynchronously with automatic state injection.
+        
+        Args:
+            input: Current agent state
+            config: Optional configuration
+            
+        Returns:
+            Updated state with tool results
+        """
+        messages = input.get("messages", [])
+        if not messages:
+            return input
+        
+        last_message = messages[-1]
+        
+        # Check if last message has tool calls
+        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            # Create a modified copy of tool calls with injected state values
+            modified_tool_calls = []
+            for tool_call in last_message.tool_calls:
+                # Get tool call information
+                if isinstance(tool_call, dict):
+                    tool_name = tool_call.get("name", "")
+                    tool_id = tool_call.get("id", "")
+                    args = dict(tool_call.get("args", {}) or {})
+                else:
+                    tool_name = getattr(tool_call, "name", "")
+                    tool_id = getattr(tool_call, "id", "")
+                    args = dict(getattr(tool_call, "args", {}) or {})
+                
+                # Inject state values for get_page_analysis tool
+                if tool_name == "get_page_analysis":
+                    # Always inject course_material_id from state if missing
+                    if "course_material_id" not in args or not args.get("course_material_id"):
+                        if input.get("material_id"):
+                            args["course_material_id"] = input["material_id"]
+                    
+                    # Inject user_id from state if missing
+                    if "user_id" not in args or not args.get("user_id"):
+                        if input.get("user_id"):
+                            args["user_id"] = input["user_id"]
+                    
+                    # Only inject page_number if not explicitly provided by LLM
+                    # (LLM might specify a different page number, like page 30)
+                    if "page_number" not in args or args.get("page_number") is None:
+                        if input.get("current_page"):
+                            args["page_number"] = input["current_page"]
+                
+                # Inject state values for get_course_material_summary tool
+                elif tool_name == "get_course_material_summary":
+                    if "course_material_id" not in args or not args.get("course_material_id"):
+                        if input.get("material_id"):
+                            args["course_material_id"] = input["material_id"]
+                    if "user_id" not in args or not args.get("user_id"):
+                        if input.get("user_id"):
+                            args["user_id"] = input["user_id"]
+                
+                # Create modified tool call
+                modified_tool_calls.append({
+                    "id": tool_id,
+                    "name": tool_name,
+                    "args": args
+                })
+            
+            # Create a new message with modified tool calls
+            from langchain_core.messages import AIMessage
+            modified_message = AIMessage(
+                content=last_message.content if hasattr(last_message, "content") else "",
+                tool_calls=modified_tool_calls
+            )
+            
+            # Replace the last message in the state
+            modified_messages = messages[:-1] + [modified_message]
+            modified_state = {**input, "messages": modified_messages}
+            
+            # Call parent implementation with modified state
+            return await super().ainvoke(modified_state, config)
+        
+        # No tool calls, call parent implementation as-is
+        return await super().ainvoke(input, config)
 
 
 class TutorAgent(BaseAgent):
