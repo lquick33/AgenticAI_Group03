@@ -57,8 +57,8 @@ export function StudyReader({
         streamControllerRef.current = null
       }
 
-      // Clear messages for new page (but keep structure for streaming)
-      setMessages([])
+      // Keep existing messages - don't clear chat history
+      // The backend will maintain conversation continuity through the checkpointer
 
       // Initiate chat for new page
       try {
@@ -85,6 +85,11 @@ export function StudyReader({
           } else {
             // Look for messages in nested structure (e.g., chunk.agent.messages)
             for (const key in chunk) {
+              // Ignore tool-node messages in the UI – they contain internal JSON summaries
+              if (key === 'tools') {
+                continue
+              }
+
               if (chunk[key] && chunk[key].messages && Array.isArray(chunk[key].messages)) {
                 messages = chunk[key].messages
                 break
@@ -120,27 +125,53 @@ export function StudyReader({
               if (msg.role === 'assistant' && contentText) {
                 // Update or add assistant message
                 setMessages((prev) => {
-                  // Find the last assistant message (should be the only one for new page)
-                  const lastAssistantIndex = prev.findLastIndex(
-                    (m) => m.role === 'assistant'
+                  // Find the last assistant message that is currently streaming (temporary ID)
+                  // or the last assistant message if we're updating an existing one
+                  const lastStreamingIndex = prev.findLastIndex(
+                    (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
                   )
 
-                  if (lastAssistantIndex >= 0) {
-                    // Update existing message
+                  if (lastStreamingIndex >= 0) {
+                    // Update existing streaming message
                     const updated = [...prev]
-                    updated[lastAssistantIndex] = {
-                      ...updated[lastAssistantIndex],
+                    updated[lastStreamingIndex] = {
+                      ...updated[lastStreamingIndex],
                       content: contentText,
                     }
-                    console.log('[StudyReader] Updated message at index', lastAssistantIndex)
+                    console.log('[StudyReader] Updated streaming message at index', lastStreamingIndex)
                     return updated
                   } else {
-                    // Add new message if none exists
-                    console.log('[StudyReader] Adding new assistant message')
+                    // Check if there's a last assistant message that we should update
+                    const lastAssistantIndex = prev.findLastIndex(
+                      (m) => m.role === 'assistant'
+                    )
+                    
+                    // Only update if the last assistant message is very recent (within last 2 seconds)
+                    // This handles the case where we're continuing a stream
+                    if (lastAssistantIndex >= 0) {
+                      const lastMsg = prev[lastAssistantIndex]
+                      const msgTime = new Date(lastMsg.timestamp).getTime()
+                      const now = Date.now()
+                      const timeDiff = now - msgTime
+                      
+                      // If message is very recent (< 2 seconds), update it (likely continuation)
+                      if (timeDiff < 2000) {
+                        const updated = [...prev]
+                        updated[lastAssistantIndex] = {
+                          ...updated[lastAssistantIndex],
+                          content: contentText,
+                        }
+                        console.log('[StudyReader] Updated recent message at index', lastAssistantIndex)
+                        return updated
+                      }
+                    }
+                    
+                    // Add new message for new page response
+                    console.log('[StudyReader] Adding new assistant message for page', newPage)
                     return [
                       ...prev,
                       {
-                        id: generateMessageId(),
+                        id: `streaming-${generateMessageId()}`,
                         role: 'assistant',
                         content: contentText,
                         timestamp: new Date().toISOString(),
@@ -161,6 +192,16 @@ export function StudyReader({
           console.log('[StudyReader] Chat stream completed')
           setIsLoading(false)
           setIsStreaming(false)
+          
+          // Replace streaming message ID with final ID
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id.startsWith('streaming-')
+                ? { ...msg, id: generateMessageId() }
+                : msg
+            )
+          )
+          
           if (streamControllerRef.current) {
             streamControllerRef.current.close()
             streamControllerRef.current = null

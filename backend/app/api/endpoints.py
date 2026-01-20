@@ -669,21 +669,25 @@ async def initiate_chat(
         thread_id = request.material_id
         
         # Create system message for page change
+        # This message is added to the conversation context but not shown to the user
+        # It helps the agent understand that the user has navigated to a new page
         system_message = (
-            f"SYSTEM EVENT: User navigated to Page {request.page_number}. "
+            f"The user has navigated to Page {request.page_number}. "
             f"Summary of Page {request.page_number}: {summary}. "
-            f"Please greet the user and explain the content of the slide."
+            f"Continue the conversation naturally and help them understand this slide. "
+            f"Reference previous conversation if relevant, but focus on the current page content."
         )
         
-        # Create initial message
-        initial_message = f"Please help me understand this slide (Page {request.page_number})."
+        # Create a subtle message that triggers the agent to respond about the new page
+        # This feels like a natural continuation rather than starting a new conversation
+        initial_message = f"Let's continue with page {request.page_number}."
         
         # Stream response
         async def event_generator() -> AsyncGenerator[str, None]:
             # First, inject system message and initial message
             config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
             
-            # Check if thread exists
+            # Check if thread exists and load existing messages
             snapshot = agent.graph.get_state(config)
             is_new_thread = snapshot is None or not snapshot.values or not snapshot.values.get("messages")
             
@@ -701,9 +705,14 @@ async def initiate_chat(
                     "user_id": request.user_id
                 }
             else:
-                # Existing thread: add page change message and update state
+                # Existing thread: load existing messages and add page change notification
+                existing_messages = snapshot.values.get("messages", [])
+                
+                # Add system message about page change (as a subtle notification)
+                # and a human message to trigger agent response
+                # This feels like a natural continuation of the conversation
                 initial_state = {
-                    "messages": [
+                    "messages": existing_messages + [
                         SystemMessage(content=system_message),
                         HumanMessage(content=initial_message)
                     ],

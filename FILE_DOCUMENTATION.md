@@ -1900,3 +1900,60 @@ const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default:
 - `frontend/app/(dashboard)/dashboard/courses/[id]/page.tsx` - Course detail page (navigation source)
 
 ---
+
+## Test Scripts
+
+### `backend/test_tutor_agent.py`
+
+**Purpose**: Interactive test script for testing the TutorAgent with continuous conversation support, independent of the frontend.
+
+**Key Components**:
+- **Initialization**: Sets up LLM (via `get_gemini_model()`), MemorySaver checkpointer, and TutorAgent with German language configuration
+- **Interactive REPL Loop**: Continuous conversation interface with command support
+- **State Management**: Manages and displays `material_id`, `user_id`, `current_page`, and `thread_id` for testing
+- **Command Interface**: Special commands for testing:
+  - `!page <number>` - Set current page number
+  - `!material <id>` - Set material ID
+  - `!user <id>` - Set user ID
+  - `!history` - Show full conversation history with message types
+  - `!clear` - Clear conversation and start new thread
+  - `!help` - Show help message
+  - `!quit` - Exit script
+- **State Injection**: Properly passes `TutorState` fields (`current_page`, `material_id`, `user_id`) to agent graph for tool calls
+- **Error Handling**: Comprehensive error handling with helpful messages for API key, database, and general errors
+- **Output Formatting**: User-friendly output with state information, formatted agent responses, and conversation history display
+
+**Key Functions**:
+- `print_banner()`: Displays welcome message and available commands
+- `print_state_info()`: Shows current state values (material_id, user_id, current_page, thread_id)
+- `show_history()`: Displays conversation history with message type indicators
+- `run_agent()`: Executes agent with proper state injection, handles new vs existing threads, extracts AI response from result
+- `main()`: Main interactive loop with command parsing and error handling
+
+**Usage**:
+```bash
+cd backend
+python test_tutor_agent.py
+# Or with debug mode:
+python test_tutor_agent.py --debug
+```
+
+**Dependencies**:
+- `app.agents.tutor.TutorAgent`
+- `app.services.analyzer.get_gemini_model`
+- `langgraph.checkpoint.memory.MemorySaver`
+- `langchain_core.messages` (HumanMessage, SystemMessage, AIMessage, ToolMessage)
+
+**Testing Scenarios**:
+1. Simple conversation: User asks questions, agent responds
+2. Tool usage: Agent calls `get_page_analysis` tool with automatic state injection
+3. State updates: Change page/material/user during conversation
+4. Conversation persistence: Agent remembers previous messages via thread_id
+5. Error handling: Test with invalid API keys, database errors, etc.
+
+**Related Files**:
+- `backend/app/agents/tutor/tutor_agent.py` - The agent being tested
+- `backend/app/tools/page_analysis_tool.py` - Tool used by agent
+- `backend/app/services/analyzer.py` - LLM initialization
+
+---
