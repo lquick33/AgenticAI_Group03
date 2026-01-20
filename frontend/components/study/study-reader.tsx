@@ -68,7 +68,17 @@ export function StudyReader({
   }, [])
 
   // Start typewriter animation for assistant message
-  const startTypewriter = useCallback((fullText: string, messageId: string, speed: number = 20) => {
+  const startTypewriter = useCallback((fullText: string, messageId: string, speed: number = 40) => {
+    // If typewriter is already running for this message, just update the fullText
+    if (typewriterRef.current.messageId === messageId && typewriterRef.current.intervalId) {
+      // Extend the fullText if new content is longer
+      if (fullText.length > typewriterRef.current.fullText.length) {
+        typewriterRef.current.fullText = fullText
+        console.log('[StudyReader] Extended typewriter text, new length:', fullText.length)
+      }
+      return
+    }
+
     // Stop any existing typewriter
     stopTypewriter()
 
@@ -77,18 +87,21 @@ export function StudyReader({
     typewriterRef.current.currentIndex = 0
     typewriterRef.current.messageId = messageId
 
+    console.log('[StudyReader] Starting typewriter animation, text length:', fullText.length, 'speed:', speed, 'ms per char')
+
     // Start animation
     typewriterRef.current.intervalId = setInterval(() => {
       const { fullText, currentIndex, messageId: msgId } = typewriterRef.current
 
       if (currentIndex >= fullText.length) {
         // Animation complete
+        console.log('[StudyReader] Typewriter animation complete')
         stopTypewriter()
         return
       }
 
-      // Increment index (show 1-3 characters at a time for smoother effect)
-      const charsPerStep = Math.min(2, fullText.length - currentIndex)
+      // Increment index (show 1 character at a time for smoother, more visible effect)
+      const charsPerStep = 1
       typewriterRef.current.currentIndex += charsPerStep
 
       // Update message content
@@ -287,16 +300,10 @@ export function StudyReader({
                     streamingMessageId = prev[lastStreamingIndex].id
                     const existingMessage = prev[lastStreamingIndex]
                     
-                    // Always update typewriter with the latest full text
-                    if (typewriterRef.current.messageId === streamingMessageId) {
-                      // Update the full text - typewriter will continue animating
-                      typewriterRef.current.fullText = contentText
-                      console.log('[StudyReader] Updated typewriter fullText, length:', contentText.length)
-                    } else {
-                      // Start typewriter if not running for this message
-                      console.log('[StudyReader] Starting typewriter for existing message, length:', contentText.length)
-                      startTypewriter(contentText, streamingMessageId, 20)
-                    }
+                    // Always update/start typewriter with the latest text
+                    // This ensures we start animating immediately, even if text is incomplete
+                    console.log('[StudyReader] Updating/starting typewriter, length:', contentText.length)
+                    startTypewriter(contentText, streamingMessageId, 40)
                     
                     return prev
                   } else {
@@ -313,8 +320,8 @@ export function StudyReader({
                         timestamp: new Date().toISOString(),
                       },
                     ]
-                    // Start typewriter with the full text
-                    startTypewriter(contentText, newId, 20)
+                    // Start typewriter immediately with whatever text we have
+                    startTypewriter(contentText, newId, 40)
                     return updated
                   }
                 })
@@ -361,40 +368,40 @@ export function StudyReader({
           setIsLoading(false)
           setIsStreaming(false)
           
-          // Ensure typewriter completes and finalize message ID
-          // First, get the last received content from the typewriter ref
-          const lastFullText = typewriterRef.current.fullText
+          // Get full text before finalizing
+          const fullText = typewriterRef.current.fullText
           
           setMessages((prev) => {
             return prev.map((msg) => {
               if (msg.id.startsWith('streaming-')) {
-                // Stop typewriter and ensure full content is displayed
-                stopTypewriter()
+                // If typewriter is running for this message, update its messageId to the new ID
+                const newId = generateMessageId()
+                if (typewriterRef.current.messageId === msg.id) {
+                  // Update typewriter to use new ID so it can continue updating
+                  typewriterRef.current.messageId = newId
+                  console.log('[StudyReader] Updated typewriter messageId to:', newId)
+                }
                 
-                // Use fullText from typewriter if available, otherwise use current content
-                // If neither is available, something went wrong - but we should have content
-                const finalContent = lastFullText || typewriterRef.current.fullText || msg.content || ''
+                // Set full content immediately so user sees it, even if typewriter is still running
+                const finalContent = fullText || typewriterRef.current.fullText || msg.content || ''
                 
                 console.log('[StudyReader] Finalizing message:', {
-                  messageId: msg.id,
-                  typewriterMessageId: typewriterRef.current.messageId,
-                  lastFullTextLength: lastFullText?.length || 0,
-                  currentContentLength: msg.content?.length || 0,
+                  oldId: msg.id,
+                  newId,
+                  typewriterRunning: !!typewriterRef.current.intervalId,
+                  fullTextLength: fullText?.length || 0,
                   finalContentLength: finalContent.length
                 })
                 
                 return {
                   ...msg,
-                  id: generateMessageId(),
-                  content: finalContent, // Always use the full text
+                  id: newId,
+                  content: finalContent, // Set full content immediately
                 }
               }
               return msg
             })
           })
-          
-          // Stop any remaining typewriter
-          stopTypewriter()
           
           if (streamControllerRef.current) {
             streamControllerRef.current.close()
@@ -597,16 +604,10 @@ export function StudyReader({
                       streamingMessageId = prev[lastStreamingIndex].id
                       const existingMessage = prev[lastStreamingIndex]
                       
-                      // Always update typewriter with the latest full text
-                      if (typewriterRef.current.messageId === streamingMessageId) {
-                        // Update the full text - typewriter will continue animating
-                        typewriterRef.current.fullText = contentText
-                        console.log('[StudyReader] Updated typewriter fullText (sendMessage), length:', contentText.length)
-                      } else {
-                        // Start typewriter if not running for this message
-                        console.log('[StudyReader] Starting typewriter for existing message (sendMessage), length:', contentText.length)
-                        startTypewriter(contentText, streamingMessageId, 20)
-                      }
+                      // Always update/start typewriter with the latest text
+                      // This ensures we start animating immediately, even if text is incomplete
+                      console.log('[StudyReader] Updating/starting typewriter (sendMessage), length:', contentText.length)
+                      startTypewriter(contentText, streamingMessageId, 40)
                       
                       return prev
                     } else {
@@ -623,8 +624,8 @@ export function StudyReader({
                           timestamp: new Date().toISOString(),
                         },
                       ]
-                      // Start typewriter with the full text
-                      startTypewriter(contentText, newId, 20)
+                      // Start typewriter immediately with whatever text we have
+                      startTypewriter(contentText, newId, 40)
                       return updated
                     }
                   })
@@ -671,39 +672,40 @@ export function StudyReader({
             setIsLoading(false)
             setIsStreaming(false)
             
-            // Ensure typewriter completes and finalize message ID
-            // First, get the last received content from the typewriter ref
-            const lastFullText = typewriterRef.current.fullText
+            // Get full text before finalizing
+            const fullText = typewriterRef.current.fullText
             
             setMessages((prev) => {
               return prev.map((msg) => {
                 if (msg.id.startsWith('streaming-')) {
-                  // Stop typewriter and ensure full content is displayed
-                  stopTypewriter()
+                  // If typewriter is running for this message, update its messageId to the new ID
+                  const newId = generateMessageId()
+                  if (typewriterRef.current.messageId === msg.id) {
+                    // Update typewriter to use new ID so it can continue updating
+                    typewriterRef.current.messageId = newId
+                    console.log('[StudyReader] Updated typewriter messageId to (sendMessage):', newId)
+                  }
                   
-                  // Use fullText from typewriter if available, otherwise use current content
-                  const finalContent = lastFullText || typewriterRef.current.fullText || msg.content || ''
+                  // Set full content immediately so user sees it, even if typewriter is still running
+                  const finalContent = fullText || typewriterRef.current.fullText || msg.content || ''
                   
                   console.log('[StudyReader] Finalizing message (sendMessage):', {
-                    messageId: msg.id,
-                    typewriterMessageId: typewriterRef.current.messageId,
-                    lastFullTextLength: lastFullText?.length || 0,
-                    currentContentLength: msg.content?.length || 0,
+                    oldId: msg.id,
+                    newId,
+                    typewriterRunning: !!typewriterRef.current.intervalId,
+                    fullTextLength: fullText?.length || 0,
                     finalContentLength: finalContent.length
                   })
                   
                   return {
                     ...msg,
-                    id: generateMessageId(),
-                    content: finalContent, // Always use the full text
+                    id: newId,
+                    content: finalContent, // Set full content immediately
                   }
                 }
                 return msg
               })
             })
-            
-            // Stop any remaining typewriter
-            stopTypewriter()
           }
         )
       } catch (error) {

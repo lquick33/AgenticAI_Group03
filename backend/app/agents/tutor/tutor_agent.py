@@ -17,6 +17,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from app.agents.base import BaseAgent, State
 from app.tools.page_analysis_tool import GetPageAnalysisTool
+from app.tools.course_material_tool import GetCourseMaterialSummaryTool
 
 
 class TutorState(State):
@@ -122,15 +123,19 @@ class TutorAgent(BaseAgent):
         self.language = language
         self.personality_config = personality_config or {}
         
-        # Initialize tool
+        # Initialize tools
         self.page_analysis_tool = GetPageAnalysisTool()
-        self.langchain_tool = self.page_analysis_tool.to_langchain_tool()
+        self.course_material_tool = GetCourseMaterialSummaryTool()
+        self.langchain_tools = [
+            self.page_analysis_tool.to_langchain_tool(),
+            self.course_material_tool.to_langchain_tool()
+        ]
         
-        # Bind tool to LLM
-        llm_with_tools = llm.bind_tools([self.langchain_tool])
+        # Bind tools to LLM
+        llm_with_tools = llm.bind_tools(self.langchain_tools)
         
         # Create state-aware tool node
-        self.tool_node = StateAwareToolNode([self.langchain_tool])
+        self.tool_node = StateAwareToolNode(self.langchain_tools)
         
         # Build system prompt
         if system_prompt is None:
@@ -242,6 +247,8 @@ class TutorAgent(BaseAgent):
                 "TOOL-NUTZUNG:\n"
                 "- Du kennst immer, welche Folie der Student gerade betrachtet (aus dem Kontext)\n"
                 "- Verwende das get_page_analysis Tool, um Folieninhalte abzurufen, wenn nötig\n"
+                "- Verwende das get_course_material_summary Tool, um eine Gesamtübersicht der Vorlesung zu erhalten, "
+                "besonders beim ersten Kontakt mit einem Studenten oder wenn du Kontext über die gesamte Vorlesung brauchst\n"
                 "- Die Argumente course_material_id, page_number und user_id werden automatisch aus dem Kontext gefüllt\n"
                 "- Wenn ein Tool einen Fehler zurückgibt, erkenne dies an und arbeite mit dem, was du weißt\n\n"
             )
@@ -256,6 +263,8 @@ class TutorAgent(BaseAgent):
                 "TOOL USAGE:\n"
                 "- You always know which slide the student is viewing (from context)\n"
                 "- Use the get_page_analysis tool to retrieve slide content when needed\n"
+                "- Use the get_course_material_summary tool to get an overview of the entire lecture, "
+                "especially when first greeting a student or when you need context about the overall lecture content\n"
                 "- The arguments course_material_id, page_number, and user_id are automatically filled from context\n"
                 "- If a tool returns an error, acknowledge it and work with what you know\n\n"
             )

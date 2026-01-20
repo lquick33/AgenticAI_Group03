@@ -1582,9 +1582,45 @@ agent = TutorAgent(
 
 ---
 
+### `backend/app/tools/course_material_tool.py`
+
+**Purpose**: LangChain tool for retrieving the overall summary of a course material from the `course_materials` table. This tool allows the Tutor Agent to access a JSON-encoded overview of the lecture topics, concepts, and key themes for the entire course material, which is especially useful when greeting a student for the first time.
+
+**Key Components**:
+- `GetCourseMaterialSummaryInput(BaseModel)`: Pydantic input schema with `course_material_id`, `user_id`
+- `GetCourseMaterialSummaryTool`: Tool class with:
+  - `_run()`: Synchronous execution method that calls `get_course_material_summary()` service function
+  - `_arun()`: Async wrapper for `_run()`
+  - `to_langchain_tool()`: Converts to LangChain StructuredTool for agent integration
+
+**Key Features**:
+- Retrieves the `summary` field from `course_materials` table
+- Parses JSON-encoded summary data (falls back to plain text if not valid JSON)
+- Returns structured data with error handling
+- Used by TutorAgent when greeting students for the first time to provide context about lecture content
+- Automatically injects `course_material_id` and `user_id` from agent state via `StateAwareToolNode`
+
+**Tool Description**:
+- Clear description for LLM: "Retrieves the overall summary of a course material..."
+- Helps LLM understand when to use this tool (especially for first-time greetings)
+
+**Dependencies**: 
+- `app.services.storage` - `get_course_material_summary()` service function
+- `langchain_core.tools` - StructuredTool
+- `pydantic` - Input validation
+
+**Usage**: Converted to LangChain tool and bound to LLM in TutorAgent. The agent is instructed to use this tool when greeting a student for the first time (no chat history) to get context about the lecture topics.
+
+**Related Files**: 
+- `backend/app/services/storage.py` - `get_course_material_summary()` service function implementation
+- `backend/app/agents/tutor/tutor_agent.py` - TutorAgent that uses this tool
+- `backend/app/api/endpoints.py` - Chat initiation endpoint that instructs agent to use this tool for first-time greetings
+
+---
+
 ### `backend/app/services/storage.py` (Updated)
 
-**New Functions**: `get_page_analysis()` and `get_page_analysis_id()`
+**New Functions**: `get_page_analysis()`, `get_page_analysis_id()`, and `get_course_material_summary()`
 
 **`get_page_analysis()`**:
 
@@ -1637,9 +1673,31 @@ analysis = get_page_analysis(course_material_id, page_number, user_id)
 page_analysis_id = get_page_analysis_id(course_material_id, page_number, user_id)
 ```
 
+**`get_course_material_summary()`**:
+
+**Purpose**: Retrieves the overall summary of a course material from the `course_materials` table. The summary contains a JSON-encoded overview of the lecture topics, concepts, and key themes for the entire course material.
+
+**Function Signature**:
+```python
+def get_course_material_summary(
+    course_material_id: str,
+    user_id: str
+) -> Optional[dict]
+```
+
+**Key Features**:
+- Query Supabase `course_materials` table with filters
+- Retrieves the `summary` TEXT field
+- Attempts to parse as JSON (returns parsed dict if valid JSON)
+- Falls back to plain text format if not valid JSON
+- Returns `None` if summary not found or empty
+- User authorization via RLS (Row Level Security)
+- Used by `GetCourseMaterialSummaryTool` to provide lecture overview context
+
 **Related Files**: 
 - `backend/app/tools/page_analysis_tool.py` - Tool that uses `get_page_analysis()`
-- `backend/app/api/endpoints.py` - API endpoints that use both functions for message persistence
+- `backend/app/tools/course_material_tool.py` - Tool that uses `get_course_material_summary()`
+- `backend/app/api/endpoints.py` - API endpoints that use these functions for message persistence
 
 ---
 
