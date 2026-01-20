@@ -286,22 +286,38 @@ export function StudyReader({
                 (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
               )
 
+              let streamingMessageId: string
+              let newContent: string
+
               if (lastStreamingIndex >= 0) {
                 // Append delta to existing streaming message
+                streamingMessageId = prev[lastStreamingIndex].id
+                newContent = (prev[lastStreamingIndex].content || '') + chunk.delta
+                
+                // Update/start typewriter with the accumulated text
+                // This ensures animation starts immediately with first delta
+                startTypewriter(newContent, streamingMessageId, 40)
+                
                 const updated = [...prev]
                 updated[lastStreamingIndex] = {
                   ...updated[lastStreamingIndex],
-                  content: (updated[lastStreamingIndex].content || '') + chunk.delta,
+                  content: newContent,
                 }
                 return updated
               } else {
                 // Create new streaming message if none exists
+                streamingMessageId = `streaming-${generateMessageId()}`
+                newContent = chunk.delta
+                
+                // Start typewriter immediately with first delta
+                startTypewriter(newContent, streamingMessageId, 40)
+                
                 return [
                   ...prev,
                   {
-                    id: `streaming-${generateMessageId()}`,
+                    id: streamingMessageId,
                     role: 'assistant',
-                    content: chunk.delta,
+                    content: newContent,
                     timestamp: new Date().toISOString(),
                   },
                 ]
@@ -371,12 +387,14 @@ export function StudyReader({
                     
                     // Always update/start typewriter with the latest text
                     // This ensures we start animating immediately, even if text is incomplete
+                    // Don't update content directly - let typewriter animation control it
                     console.log('[StudyReader] Updating/starting typewriter, length:', contentText.length)
                     startTypewriter(contentText, streamingMessageId, 40)
                     
                     return prev
                   } else {
-                    // Create new streaming message
+                    // Create new streaming message with empty content
+                    // The typewriter animation will fill it progressively
                     console.log('[StudyReader] Adding new assistant message for page', page, 'length:', contentText.length)
                     const newId = `streaming-${generateMessageId()}`
                     streamingMessageId = newId
@@ -385,7 +403,7 @@ export function StudyReader({
                       {
                         id: newId,
                         role: 'assistant' as const,
-                        content: '',
+                        content: '', // Start with empty content - typewriter will fill it
                         timestamp: new Date().toISOString(),
                       },
                     ]
@@ -733,53 +751,38 @@ export function StudyReader({
                   (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
                 )
 
+                let streamingMessageId: string
+                let newContent: string
+
                 if (lastStreamingIndex >= 0) {
                   // Append delta to existing streaming message
+                  streamingMessageId = prev[lastStreamingIndex].id
+                  newContent = (prev[lastStreamingIndex].content || '') + chunk.delta
+                  
+                  // Update/start typewriter with the accumulated text
+                  // This ensures animation starts immediately with first delta
+                  startTypewriter(newContent, streamingMessageId, 40)
+                  
                   const updated = [...prev]
                   updated[lastStreamingIndex] = {
                     ...updated[lastStreamingIndex],
-                    content: (updated[lastStreamingIndex].content || '') + chunk.delta,
+                    content: newContent,
                   }
                   return updated
                 } else {
                   // Create new streaming message if none exists
+                  streamingMessageId = `streaming-${generateMessageId()}`
+                  newContent = chunk.delta
+                  
+                  // Start typewriter immediately with first delta
+                  startTypewriter(newContent, streamingMessageId, 40)
+                  
                   return [
                     ...prev,
                     {
-                      id: `streaming-${generateMessageId()}`,
+                      id: streamingMessageId,
                       role: 'assistant',
-                      content: chunk.delta,
-                      timestamp: new Date().toISOString(),
-                    },
-                  ]
-                }
-              })
-              return
-            }
-
-            // Handle delta events for ghostwriter effect
-            if (chunk.type === 'delta' && chunk.role === 'assistant' && chunk.delta) {
-              setMessages((prev) => {
-                const lastStreamingIndex = prev.findLastIndex(
-                  (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
-                )
-
-                if (lastStreamingIndex >= 0) {
-                  // Append delta to existing streaming message
-                  const updated = [...prev]
-                  updated[lastStreamingIndex] = {
-                    ...updated[lastStreamingIndex],
-                    content: (updated[lastStreamingIndex].content || '') + chunk.delta,
-                  }
-                  return updated
-                } else {
-                  // Create new streaming message if none exists
-                  return [
-                    ...prev,
-                    {
-                      id: `streaming-${generateMessageId()}`,
-                      role: 'assistant',
-                      content: chunk.delta,
+                      content: newContent,
                       timestamp: new Date().toISOString(),
                     },
                   ]
