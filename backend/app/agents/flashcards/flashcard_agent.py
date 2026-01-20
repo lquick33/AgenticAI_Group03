@@ -4,18 +4,20 @@ Flashcard Generator Agent
 Generates Anki-compatible flashcards from lecture page analyses and conversation history.
 """
 
-import json
+import logging
 from typing import List, Dict, Any, Optional
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 
-from app.models.schemas import PageSkipDecision, FlashcardGenerationResult, Flashcard
+from app.models.schemas import PageSkipDecision, FlashcardGenerationResult
 from app.services.storage import (
     get_all_page_analyses_for_material,
     get_messages_for_page,
 )
 from app.services.analyzer import get_gemini_model
+
+logger = logging.getLogger(__name__)
 
 
 class FlashcardGeneratorAgent:
@@ -94,6 +96,7 @@ Respond with JSON: {{"skip": true/false, "reason": "Brief reason"}}"""
             decision = self.skip_decision_llm.invoke([message])
             return decision.skip, decision.reason
         except Exception as e:
+            logger.warning(f"Error in skip decision for page: {str(e)}")
             # On error, don't skip (safer to include than exclude)
             return False, f"Error in skip decision: {str(e)}"
     
@@ -202,8 +205,8 @@ Respond with JSON: {{"cards": [{{"front": "...", "back": "...", "tags": ["tag1",
             
             return cards
         except Exception as e:
+            logger.error(f"Error generating cards for page {page_number}: {str(e)}", exc_info=True)
             # On error, return empty list
-            print(f"Error generating cards for page {page_number}: {str(e)}")
             return []
     
     def generate_flashcards(
@@ -227,6 +230,7 @@ Respond with JSON: {{"cards": [{{"front": "...", "back": "...", "tags": ["tag1",
         """
         # Get all page analyses
         page_analyses = get_all_page_analyses_for_material(course_material_id, user_id)
+        logger.info(f"Generating flashcards for {len(page_analyses) if page_analyses else 0} pages")
         
         if not page_analyses:
             return []
@@ -234,14 +238,15 @@ Respond with JSON: {{"cards": [{{"front": "...", "back": "...", "tags": ["tag1",
         all_cards = []
         
         # Process each page
-        for page_analysis in page_analyses:
+        for idx, page_analysis in enumerate(page_analyses):
             page_number = page_analysis.get("page_number", 0)
             page_id = page_analysis.get("id")
             
             # Check if page should be skipped
             should_skip, reason = self._should_skip_page(page_analysis)
+            
             if should_skip:
-                print(f"Skipping page {page_number}: {reason}")
+                logger.debug(f"Skipping page {page_number}: {reason}")
                 continue
             
             # Get messages for this page
@@ -266,6 +271,6 @@ Respond with JSON: {{"cards": [{{"front": "...", "back": "...", "tags": ["tag1",
             try:
                 save_flashcards(all_cards, user_id, course_id)
             except Exception as e:
-                print(f"Warning: Failed to save flashcards to database: {str(e)}")
+                logger.warning(f"Failed to save flashcards to database: {str(e)}")
         
         return all_cards

@@ -145,3 +145,26 @@ class FlashcardGenerationResult(BaseModel):
     """Result model for flashcard generation for a single page."""
     
     cards: list[Flashcard] = Field(..., description="List of flashcards generated for this page")
+
+
+class FlashcardTaskResponse(BaseModel):
+    """Response model for flashcard generation task creation."""
+    
+    task_id: str = Field(..., description="Task ID for tracking progress")
+    status: str = Field(..., description="Current task status")
+    message: str = Field(..., description="Human-readable status message")
+
+
+class FlashcardTaskStatusResponse(BaseModel):
+    """Response model for flashcard generation task status."""
+    
+    task_id: str
+    status: str  # "pending", "running", "completed", "failed", "cancelled"
+    progress: float = Field(..., ge=0.0, le=1.0, description="Progress from 0.0 to 1.0")
+    total_pages: int
+    processed_pages: int
+    cards_generated: int
+    error_message: Optional[str] = None
+    filename: Optional[str] = None
+    created_at: float
+    completed_at: Optional[float] = None
