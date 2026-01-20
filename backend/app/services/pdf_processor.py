@@ -66,8 +66,14 @@ async def process_single_page(
             # Convert PIL Image to bytes
             image_bytes = pil_image_to_bytes(image)
             
-            # Analyze page (async)
-            analysis = await analyze_pdf_page(image_bytes)
+            # Analyze page (async) with Langfuse tracking parameters
+            analysis = await analyze_pdf_page(
+                image_bytes,
+                api_key=None,  # Uses settings if None
+                material_id=material_id,
+                user_id=user_id,
+                page_number=page_number
+            )
             
             # Save to database
             save_page_analysis(
@@ -197,7 +203,12 @@ async def process_pdf_background(
                     user_id=user_id,
                 )
                 if page_data:
-                    summary_json = await generate_material_summary(page_data)
+                    summary_json = await generate_material_summary(
+                        page_data,
+                        api_key=None,  # Uses settings if None
+                        material_id=material_id,
+                        user_id=user_id
+                    )
                     update_course_material_summary(material_id, summary_json)
                     logger.info(f"Successfully stored global summary for material {material_id}")
                 else:

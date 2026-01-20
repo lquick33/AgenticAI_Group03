@@ -16,6 +16,10 @@ from langchain_core.messages import HumanMessage
 
 from app.core.config import settings
 from app.models.schemas import SlideAnalysis
+from app.services.observability import create_callback_handler
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def get_gemini_model(api_key: Optional[str] = None) -> ChatGoogleGenerativeAI:
@@ -105,7 +109,13 @@ def image_bytes_to_base64(image_bytes: bytes, format: str = "jpeg") -> str:
         raise ValueError(f"Failed to process image bytes: {str(e)}")
 
 
-async def analyze_pdf_page(image_bytes: bytes, api_key: Optional[str] = None) -> SlideAnalysis:
+async def analyze_pdf_page(
+    image_bytes: bytes, 
+    api_key: Optional[str] = None,
+    material_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    page_number: Optional[int] = None
+) -> SlideAnalysis:
     """
     Analyze a PDF page image using Google Gemini vision model (async).
     
@@ -116,6 +126,9 @@ async def analyze_pdf_page(image_bytes: bytes, api_key: Optional[str] = None) ->
     Args:
         image_bytes: Image bytes (typically from PIL Image converted to bytes)
         api_key: Optional Google API key (uses settings if None)
+        material_id: Course material ID for Langfuse tracking (optional)
+        user_id: User ID for Langfuse tracking (optional)
+        page_number: Page number for Langfuse tracking (optional)
         
     Returns:
         SlideAnalysis Pydantic model with structured analysis results
@@ -136,7 +149,7 @@ async def analyze_pdf_page(image_bytes: bytes, api_key: Optional[str] = None) ->
     
     # Initialize LLM with structured output
     llm = get_gemini_model(api_key)
-    structured_llm = llm.with_structured_output(SlideAnalysis)
+    structured_llm = llm.with_structured_output(SlideAnalysis).with_config({"run_name": "page_analysis"})
     
     # Create prompt for analysis
     analysis_prompt = """Analysiere diese Vorlesungsfolie gründlich und extrahiere strukturierte Informationen.
@@ -154,11 +167,36 @@ schreibe 'Kein Diagramm' für diagram_description."""
         ]
     )
     
+    # Create Langfuse callback handler für automatisches Tracking
+    callback_handler = create_callback_handler()
+    
+    # Prepare config with callbacks and metadata
+    config = {}
+    if callback_handler:
+        metadata = {
+            "langfuse_user_id": user_id,
+            "langfuse_session_id": material_id,  # Use material_id as session
+            "material_id": material_id,
+            "page_number": page_number,
+            "agent_name": "PDFAnalyzer",
+            "operation": "page_analysis"
+        }
+        config["callbacks"] = [callback_handler]
+        config["metadata"] = metadata
+        logger.debug(f"🟡 Langfuse: Sending page_analysis LLM call with metadata: user_id={user_id}, material_id={material_id}, page={page_number}")
+    
     # Invoke LLM and get structured output (run in thread pool since LangChain is sync)
     try:
         # Run synchronous invoke in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, lambda: structured_llm.invoke([message]))
+        result = await loop.run_in_executor(
+            None, 
+            lambda: structured_llm.invoke([message], config=config if config else None)
+        )
+        
+        if callback_handler:
+            logger.debug("🟢 Langfuse: Page analysis LLM call completed - data tracked by CallbackHandler")
+        
         return result
     except Exception as e:
         raise ValueError(f"Failed to analyze slide: {str(e)}")
@@ -166,7 +204,9 @@ schreibe 'Kein Diagramm' für diagram_description."""
 
 async def generate_material_summary(
     page_data: Sequence[dict],
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    material_id: Optional[str] = None,
+    user_id: Optional[str] = None
 ) -> str:
     """
     Generate a global topics summary for a lecture from per-page analyses.
@@ -284,9 +324,32 @@ pages = {pages_json}
 
     message = HumanMessage(content=[{"type": "text", "text": system_instructions + "\n\n" + user_prompt}])
 
+    # Create Langfuse callback handler für automatisches Tracking
+    callback_handler = create_callback_handler()
+    
+    # Prepare config with callbacks and metadata
+    config = {}
+    if callback_handler:
+        metadata = {
+            "langfuse_user_id": user_id,
+            "langfuse_session_id": material_id,  # Use material_id as session
+            "material_id": material_id,
+            "agent_name": "PDFAnalyzer",
+            "operation": "material_summary"
+        }
+        config["callbacks"] = [callback_handler]
+        config["metadata"] = metadata
+        logger.debug(f"🟡 Langfuse: Sending material_summary LLM call with metadata: user_id={user_id}, material_id={material_id}")
+    
     try:
         loop = asyncio.get_event_loop()
-        raw_response = await loop.run_in_executor(None, lambda: llm.invoke([message]))
+        raw_response = await loop.run_in_executor(
+            None, 
+            lambda: llm.invoke([message], config=config if config else None)
+        )
+        
+        if callback_handler:
+            logger.debug("🟢 Langfuse: Material summary LLM call completed - data tracked by CallbackHandler")
 
         text = getattr(raw_response, "content", None)
         if not isinstance(text, str):

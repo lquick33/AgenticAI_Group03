@@ -112,6 +112,40 @@ async def upload_pdf(
     Raises:
         HTTPException: If validation fails or course doesn't exist
     """
+    # Langfuse Tracing Setup für Upload-Endpoint
+    langfuse = None
+    trace_ctx = None
+    if settings.LANGFUSE_ENABLED:
+        try:
+            # Set environment variables if needed
+            if settings.LANGFUSE_PUBLIC_KEY and "LANGFUSE_PUBLIC_KEY" not in os.environ:
+                os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
+            if settings.LANGFUSE_SECRET_KEY and "LANGFUSE_SECRET_KEY" not in os.environ:
+                os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
+            if settings.LANGFUSE_BASE_URL and "LANGFUSE_HOST" not in os.environ:
+                os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_BASE_URL
+            
+            langfuse = get_client()
+            if langfuse:
+                trace_input = {
+                    "filename": file.filename,
+                    "user_id": user_id,
+                    "course_id": course_id
+                }
+                logger.info(f"🟡 Langfuse: Starting trace 'pdf-upload' with input: {trace_input}")
+                trace_ctx = langfuse.start_as_current_observation(
+                    name="pdf-upload",
+                    input=trace_input,
+                    metadata={
+                        "user_id": user_id,
+                        "course_id": course_id,
+                        "endpoint": "/upload"
+                    }
+                )
+                logger.info("🟢 Langfuse: Trace 'pdf-upload' started successfully")
+        except Exception as e:
+            logger.warning(f"🔴 Langfuse: Failed to start trace: {e}")
+    
     # Validate file type
     if not file.filename or not file.filename.lower().endswith('.pdf'):
         raise HTTPException(
@@ -254,8 +288,26 @@ async def upload_pdf(
             max_concurrent=5  # Process 5 pages in parallel
         )
         
+        # Update Langfuse trace with success
+        if trace_ctx and langfuse:
+            try:
+                trace_ctx.update(
+                    output={
+                        "status": "queued",
+                        "material_id": material_id,
+                        "page_count": page_count
+                    },
+                    metadata={
+                        "material_id": material_id,
+                        "page_count": page_count
+                    }
+                )
+                logger.info("🟢 Langfuse: Trace 'pdf-upload' updated with success")
+            except Exception as e:
+                logger.warning(f"🔴 Langfuse: Failed to update trace: {e}")
+        
         # Return immediately with queued status
-        return UploadResponse(
+        response = UploadResponse(
             message="PDF upload successful. Processing started in background.",
             course_material_id=material_id,
             page_count=page_count,
@@ -263,13 +315,50 @@ async def upload_pdf(
             status="queued",
             error_message=None
         )
+        
+        # Close Langfuse trace
+        if trace_ctx:
+            try:
+                trace_ctx.__exit__(None, None, None)
+                logger.info("🟢 Langfuse: Trace 'pdf-upload' closed - data sent to Langfuse")
+            except Exception as e:
+                logger.warning(f"🔴 Langfuse: Error closing trace: {e}")
+        
+        return response
     
     except HTTPException:
+        # Update Langfuse trace with error before raising
+        if trace_ctx and langfuse:
+            try:
+                trace_ctx.update(
+                    output={"error": "HTTPException raised"},
+                    level="ERROR"
+                )
+            except Exception:
+                pass
         raise
     except Exception as e:
         # Log the full error with traceback
         logger.error(f"Unexpected error during PDF processing: {str(e)}", exc_info=True)
         logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Update Langfuse trace with error
+        if trace_ctx and langfuse:
+            try:
+                trace_ctx.update(
+                    output={"error": str(e)},
+                    level="ERROR"
+                )
+                logger.warning("🔴 Langfuse: Trace 'pdf-upload' marked as ERROR")
+            except Exception as trace_error:
+                logger.warning(f"🔴 Langfuse: Error updating trace: {trace_error}")
+        
+        # Close Langfuse trace
+        if trace_ctx:
+            try:
+                trace_ctx.__exit__(type(e), e, None)
+            except Exception:
+                pass
         
         # Handle unexpected errors
         raise HTTPException(
@@ -814,27 +903,6 @@ async def initiate_chat(
                     if not messages:
                         return messages
                     
-                    # #region agent log
-                    import json
-                    log_path = r"c:\App\AAI\AgenticAI_Group03\.cursor\debug.log"
-                    try:
-                        with open(log_path, "a", encoding="utf-8") as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "pre-fix",
-                                "hypothesisId": "H1",
-                                "location": "endpoints.py:fix_incomplete_tool_calls(entry)",
-                                "message": "Starting message validation",
-                                "data": {
-                                    "messageCount": len(messages),
-                                    "messageTypes": [type(msg).__name__ for msg in messages]
-                                },
-                                "timestamp": int(__import__("time").time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion agent log
-                    
                     fixed_messages = []
                     i = 0
                     
@@ -869,47 +937,8 @@ async def initiate_chat(
                                 fixed_messages.append(msg)
                                 fixed_messages.extend(found_tool_messages)
                                 i = j  # Skip past the ToolMessages
-                                
-                                # #region agent log
-                                try:
-                                    with open(log_path, "a", encoding="utf-8") as f:
-                                        f.write(json.dumps({
-                                            "sessionId": "debug-session",
-                                            "runId": "pre-fix",
-                                            "hypothesisId": "H1",
-                                            "location": "endpoints.py:fix_incomplete_tool_calls(complete_pair)",
-                                            "message": "Found complete tool call pair",
-                                            "data": {
-                                                "toolCallCount": len(tool_call_ids),
-                                                "toolMessageCount": len(found_tool_messages)
-                                            },
-                                            "timestamp": int(__import__("time").time() * 1000)
-                                        }) + "\n")
-                                except Exception:
-                                    pass
-                                # #endregion agent log
                             else:
                                 # Incomplete tool call pair - remove the AIMessage
-                                # #region agent log
-                                try:
-                                    with open(log_path, "a", encoding="utf-8") as f:
-                                        f.write(json.dumps({
-                                            "sessionId": "debug-session",
-                                            "runId": "pre-fix",
-                                            "hypothesisId": "H1",
-                                            "location": "endpoints.py:fix_incomplete_tool_calls(incomplete_pair)",
-                                            "message": "Removing incomplete tool call pair",
-                                            "data": {
-                                                "expectedToolCalls": len(tool_call_ids),
-                                                "foundToolMessages": len(found_tool_messages),
-                                                "missingToolCallIds": list(tool_call_ids - found_tool_call_ids)
-                                            },
-                                            "timestamp": int(__import__("time").time() * 1000)
-                                        }) + "\n")
-                                except Exception:
-                                    pass
-                                # #endregion agent log
-                                
                                 logger.warning(
                                     f"Incomplete tool call pair detected at index {i}: AIMessage has {len(tool_call_ids)} tool_calls, "
                                     f"but only {len(found_tool_messages)} ToolMessages found. Removing incomplete AIMessage to prevent API error."
@@ -918,50 +947,12 @@ async def initiate_chat(
                         elif isinstance(msg, ToolMessage):
                             # Orphaned ToolMessage (no preceding AIMessage with tool_calls)
                             # Remove it to prevent API errors
-                            # #region agent log
-                            try:
-                                with open(log_path, "a", encoding="utf-8") as f:
-                                    f.write(json.dumps({
-                                        "sessionId": "debug-session",
-                                        "runId": "pre-fix",
-                                        "hypothesisId": "H1",
-                                        "location": "endpoints.py:fix_incomplete_tool_calls(orphaned_tool)",
-                                        "message": "Removing orphaned ToolMessage",
-                                        "data": {
-                                            "toolCallId": getattr(msg, "tool_call_id", None)
-                                        },
-                                        "timestamp": int(__import__("time").time() * 1000)
-                                    }) + "\n")
-                            except Exception:
-                                pass
-                            # #endregion agent log
-                            
                             logger.warning(f"Orphaned ToolMessage detected at index {i}, removing to prevent API error.")
                             i += 1
                         else:
                             # Regular message (HumanMessage, AIMessage without tool_calls, SystemMessage)
                             fixed_messages.append(msg)
                             i += 1
-                    
-                    # #region agent log
-                    try:
-                        with open(log_path, "a", encoding="utf-8") as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "pre-fix",
-                                "hypothesisId": "H1",
-                                "location": "endpoints.py:fix_incomplete_tool_calls(exit)",
-                                "message": "Message validation complete",
-                                "data": {
-                                    "originalCount": len(messages),
-                                    "fixedCount": len(fixed_messages),
-                                    "removedCount": len(messages) - len(fixed_messages)
-                                },
-                                "timestamp": int(__import__("time").time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion agent log
                     
                     return fixed_messages
 
@@ -1126,25 +1117,6 @@ async def initiate_chat(
                     # This ensures message ordering is valid before adding new HumanMessage
                     base_messages = fix_incomplete_tool_calls(base_messages)
                     
-                    # #region agent log
-                    try:
-                        with open(log_path, "a", encoding="utf-8") as f:
-                            f.write(json.dumps({
-                                "sessionId": "debug-session",
-                                "runId": "pre-fix",
-                                "hypothesisId": "H5",
-                                "location": "endpoints.py:initiate_chat(is_initial_open_validation)",
-                                "message": "Validating base_messages before adding new HumanMessage",
-                                "data": {
-                                    "baseMessageCount": len(base_messages),
-                                    "lastMessageType": type(base_messages[-1]).__name__ if base_messages else None
-                                },
-                                "timestamp": int(__import__("time").time() * 1000)
-                            }) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion agent log
-                    
                     # Use bootstrapped messages if available, otherwise start fresh
                     initial_state = {
                     "messages": base_messages
@@ -1163,25 +1135,6 @@ async def initiate_chat(
                         # LangGraph state is empty, but we might have bootstrapped messages
                         # Fix incomplete tool call pairs in base_messages before adding new messages
                         base_messages = fix_incomplete_tool_calls(base_messages)
-                        
-                        # #region agent log
-                        try:
-                            with open(log_path, "a", encoding="utf-8") as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "pre-fix",
-                                    "hypothesisId": "H5",
-                                    "location": "endpoints.py:initiate_chat(is_new_thread_validation)",
-                                    "message": "Validating base_messages for new thread before adding new HumanMessage",
-                                    "data": {
-                                        "baseMessageCount": len(base_messages),
-                                        "lastMessageType": type(base_messages[-1]).__name__ if base_messages else None
-                                    },
-                                    "timestamp": int(__import__("time").time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion agent log
                         
                         initial_state = {
                             "messages": base_messages
@@ -1223,28 +1176,6 @@ async def initiate_chat(
                         # Validate that adding HumanMessage won't break message ordering
                         # If last message is AIMessage with tool_calls, we need ToolMessages first
                         validated_messages = fix_incomplete_tool_calls(existing_messages)
-                        
-                        # #region agent log
-                        import json
-                        log_path = r"c:\App\AAI\AgenticAI_Group03\.cursor\debug.log"
-                        try:
-                            with open(log_path, "a", encoding="utf-8") as f:
-                                f.write(json.dumps({
-                                    "sessionId": "debug-session",
-                                    "runId": "pre-fix",
-                                    "hypothesisId": "H4",
-                                    "location": "endpoints.py:initiate_chat(existing_thread_validation)",
-                                    "message": "Validating existing messages before adding new HumanMessage",
-                                    "data": {
-                                        "originalCount": len(existing_messages),
-                                        "validatedCount": len(validated_messages),
-                                        "lastMessageType": type(validated_messages[-1]).__name__ if validated_messages else None
-                                    },
-                                    "timestamp": int(__import__("time").time() * 1000)
-                                }) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion agent log
                         
                         initial_state = {
                             "messages": validated_messages
@@ -1416,6 +1347,7 @@ async def initiate_chat(
                         logger.info("🟡 Langfuse: Updating trace 'tutor-agent-initiate' with completion status...")
                         trace.update(output={"status": "completed"})
                         logger.info("🟢 Langfuse: Trace 'tutor-agent-initiate' updated with completion status")
+                    
                     yield "data: [DONE]\n\n"
                 except Exception as e:
                     logger.error(f"Error in agent stream: {str(e)}", exc_info=True)
@@ -1938,6 +1870,39 @@ async def generate_flashcards(
     Raises:
         HTTPException: If validation fails
     """
+    # Langfuse Tracing Setup für Flashcard-Endpoint
+    langfuse = None
+    trace_ctx = None
+    if settings.LANGFUSE_ENABLED:
+        try:
+            # Set environment variables if needed
+            if settings.LANGFUSE_PUBLIC_KEY and "LANGFUSE_PUBLIC_KEY" not in os.environ:
+                os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
+            if settings.LANGFUSE_SECRET_KEY and "LANGFUSE_SECRET_KEY" not in os.environ:
+                os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
+            if settings.LANGFUSE_BASE_URL and "LANGFUSE_HOST" not in os.environ:
+                os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_BASE_URL
+            
+            langfuse = get_client()
+            if langfuse:
+                trace_input = {
+                    "course_material_id": course_material_id,
+                    "user_id": user_id
+                }
+                logger.info(f"🟡 Langfuse: Starting trace 'flashcard-generation' with input: {trace_input}")
+                trace_ctx = langfuse.start_as_current_observation(
+                    name="flashcard-generation",
+                    input=trace_input,
+                    metadata={
+                        "user_id": user_id,
+                        "course_material_id": course_material_id,
+                        "endpoint": "/flashcards/generate"
+                    }
+                )
+                logger.info("🟢 Langfuse: Trace 'flashcard-generation' started successfully")
+        except Exception as e:
+            logger.warning(f"🔴 Langfuse: Failed to start trace: {e}")
+    
     try:
         # Validate user exists
         if not validate_user_exists(user_id):
@@ -1977,16 +1942,72 @@ async def generate_flashcards(
         
         logger.info(f"Created flashcard generation task {task_id} for material {course_material_id}")
         
-        return FlashcardTaskResponse(
+        # Update Langfuse trace with success
+        if trace_ctx and langfuse:
+            try:
+                trace_ctx.update(
+                    output={
+                        "status": "pending",
+                        "task_id": task_id,
+                        "course_id": course_id
+                    },
+                    metadata={
+                        "task_id": task_id,
+                        "course_id": course_id
+                    }
+                )
+                logger.info("🟢 Langfuse: Trace 'flashcard-generation' updated with success")
+            except Exception as e:
+                logger.warning(f"🔴 Langfuse: Failed to update trace: {e}")
+        
+        response = FlashcardTaskResponse(
             task_id=task_id,
             status="pending",
             message="Flashcard generation started. Use the task_id to check progress."
         )
         
+        # Close Langfuse trace
+        if trace_ctx:
+            try:
+                trace_ctx.__exit__(None, None, None)
+                logger.info("🟢 Langfuse: Trace 'flashcard-generation' closed - data sent to Langfuse")
+            except Exception as e:
+                logger.warning(f"🔴 Langfuse: Error closing trace: {e}")
+        
+        return response
+        
     except HTTPException:
+        # Update Langfuse trace with error before raising
+        if trace_ctx and langfuse:
+            try:
+                trace_ctx.update(
+                    output={"error": "HTTPException raised"},
+                    level="ERROR"
+                )
+            except Exception:
+                pass
         raise
     except Exception as e:
         logger.error(f"Error creating flashcard generation task: {str(e)}", exc_info=True)
+        
+        # Update Langfuse trace with error
+        if trace_ctx and langfuse:
+            try:
+                trace_ctx.update(
+                    output={"error": str(e)},
+                    level="ERROR"
+                )
+                logger.warning("🔴 Langfuse: Trace 'flashcard-generation' marked as ERROR")
+            except Exception as trace_error:
+                logger.warning(f"🔴 Langfuse: Error updating trace: {trace_error}")
+        
+        # Close Langfuse trace
+        if trace_ctx:
+            try:
+                trace_ctx.__exit__(type(e), e, None)
+            except Exception:
+                pass
+        
         raise HTTPException(
             status_code=500,
             detail=f"Failed to start flashcard generation: {str(e)}",

@@ -152,7 +152,7 @@ export function CongratulationsScreen({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-      <Card className="w-full max-w-2xl mx-4">
+      <Card className="w-full max-w-2xl mx-4 bg-white/85">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-4">
             <CheckCircle2 className="h-16 w-16 text-green-500" />

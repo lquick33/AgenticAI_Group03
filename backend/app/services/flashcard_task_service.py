@@ -288,7 +288,11 @@ class FlashcardTaskService:
                 should_skip, reason = await asyncio.wait_for(
                     asyncio.to_thread(
                         agent._should_skip_page,
-                        page_analysis
+                        page_analysis,
+                        task.user_id,
+                        task.course_material_id,
+                        task.course_id,
+                        page_number
                     ),
                     timeout=30.0  # 30 second timeout per skip decision
                 )
@@ -321,6 +325,7 @@ class FlashcardTaskService:
                         course_id,
                         course_material_id,
                         page_number,
+                        task.user_id,
                     ),
                     timeout=60.0  # 60 second timeout per card generation
                 )
