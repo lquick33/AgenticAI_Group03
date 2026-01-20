@@ -26,8 +26,8 @@ def build_anki_csv(cards: List[Dict[str, Any]]) -> bytes:
     """
     output = io.StringIO()
     
-    # Create CSV writer
-    writer = csv.writer(output, quoting=csv.QUOTE_MINIMAL, escapechar='\\')
+    # Create CSV writer with pipe delimiter
+    writer = csv.writer(output, delimiter='|', quoting=csv.QUOTE_MINIMAL, escapechar='\\')
     
     # Write header (Anki doesn't require headers, but it's helpful for debugging)
     # Note: Anki will ignore the header row if present

@@ -2606,17 +2606,26 @@ from app.services.session_storage import (
   - Uses LLM with structured output (Pydantic models) for page filtering and card generation
   - Skips intro/title/table of contents pages automatically
   - Generates 1-4 cards per page based on content complexity and conversation issues
+  - **Langfuse Prompt Management**: Loads prompts dynamically from Langfuse with fallback to hardcoded versions
 - **Methods**:
+  - `_get_skip_decision_prompt()`: Loads skip-decision prompt from Langfuse or uses fallback
+  - `_get_card_generation_prompt()`: Loads card-generation prompt from Langfuse or uses fallback
   - `_should_skip_page()`: Determines if a page should be skipped using LLM decision
   - `_generate_cards_for_page()`: Generates flashcards for a single page with conversation context
   - `generate_flashcards()`: Main entry point that processes all pages and returns card list
 - **LLM Integration**: Uses Gemini model with structured output for consistent JSON responses
 - **Conversation Context**: Analyzes user questions and assistant responses to identify understanding problems
+- **Prompt Management**: 
+  - Prompts are managed in Langfuse under `flashcard-agent/skip-decision` and `flashcard-agent/card-generation`
+  - Prompts use variables ({{summary}}, {{key_terms}}, etc.) that are compiled at runtime
+  - Automatic fallback to hardcoded prompts if Langfuse is unavailable or prompts cannot be loaded
+  - Prompts can be updated in Langfuse UI without code changes
 
 **Dependencies**: 
 - `app.models.schemas` - PageSkipDecision, FlashcardGenerationResult, Flashcard models
 - `app.services.storage` - get_all_page_analyses_for_material, get_messages_for_page
 - `app.services.analyzer` - get_gemini_model
+- `app.services.observability` - get_langfuse_client (for prompt management)
 
 **Usage**: 
 ```python
@@ -2645,7 +2654,7 @@ cards = agent.generate_flashcards(
 **Key Components**:
 - **build_anki_csv()**: 
   - Converts flashcard list to Anki-compatible CSV format
-  - Format: 3 columns (front, back, tags)
+  - Format: 3 columns (front, back, tags) separated by pipe (`|`) delimiter
   - Tags are space-separated strings
   - UTF-8 encoding with BOM for Excel compatibility
   - Proper CSV escaping for special characters and newlines
