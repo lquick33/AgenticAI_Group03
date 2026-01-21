@@ -3014,3 +3014,142 @@ const blob = await exportFlashcards(materialId, userId)
 - `frontend/components/study/congratulations-screen.tsx` - The modal component
 
 ---
+
+### `backend/flashcard_prompt_test_dataset_langfuse.json`
+
+**Purpose**: Dataset für Langfuse Prompt Testing des Flashcard Agents mit komplexen mathematischen Ausdrücken.
+
+**Key Components**:
+- **Dataset-Format**: Langfuse-kompatibles JSON-Format mit `input`-Objekten für jedes Dataset-Item
+- **10 Testfälle**: Verschiedene mathematische Themen mit komplexen Formeln:
+  - Lineare Algebra (Eigenwerte, Diagonalisierung)
+  - Analysis (Gradient, Hesse-Matrix)
+  - Differentialgleichungen (Matrixexponentialfunktion)
+  - Funktionalanalysis (Banach-Räume, L^p-Normen)
+  - Numerik (Newton-Verfahren, iterative Methoden)
+  - Wahrscheinlichkeitstheorie (mehrdimensionale Verteilungen)
+  - Topologie (metrische Räume)
+  - Fourier-Analyse (Fourier-Transformation)
+  - Optimierung (Lagrange-Multiplikatoren)
+  - Komplexe Analysis (Residuensatz)
+- **Input-Variablen**: Jedes Item enthält alle erforderlichen Variablen für den Flashcard Agent:
+  - `summary`: Zusammenfassung mit mathematischen Formeln
+  - `key_terms`: Liste von Fachbegriffen mit Notationen
+  - `exam_questions`: Liste von Prüfungsfragen mit Berechnungen
+  - `diagram_description`: Beschreibung mathematischer Visualisierungen
+  - `conversation_context`: Beispielkonversationen mit Formeln
+  - `course_id`, `material_id`, `page_number`: Metadaten
+- **Metadata**: Jedes Item enthält zusätzliche Metadaten (Topic, Difficulty)
+
+**Dependencies**: Wird vom Upload-Script `upload_langfuse_dataset.py` verwendet
+
+**Usage**: 
+```bash
+# Dataset wird automatisch von upload_langfuse_dataset.py geladen
+python backend/upload_langfuse_dataset.py
+```
+
+**Related Files**: 
+- `backend/upload_langfuse_dataset.py` - Script zum Hochladen des Datasets
+- `backend/app/agents/flashcards/flashcard_agent.py` - Verwendet die Variablen für Prompt-Generierung
+
+---
+
+### `backend/upload_langfuse_dataset.py`
+
+**Purpose**: Python-Script zum Hochladen des Flashcard Agent Test-Datasets in Langfuse für Prompt Testing.
+
+**Key Components**:
+- **Dataset-Loading**: Lädt das JSON-Dataset aus `flashcard_prompt_test_dataset_langfuse.json`
+- **Langfuse Integration**: 
+  - Erstellt ein neues Dataset in Langfuse (oder verwendet existierendes)
+  - Lädt alle Dataset-Items mit `input`-Objekten hoch
+  - Validiert, dass jedes Item die erforderlichen Variablen enthält
+- **Error Handling**: 
+  - Prüft Langfuse Credentials (LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY)
+  - Validiert Dataset-Struktur
+  - Zeigt Fortschritt beim Upload an
+- **Unicode-Support**: Verwendet ASCII-kompatible Ausgaben für Windows-Kompatibilität
+
+**Dependencies**: 
+- `langfuse` - Langfuse Python SDK
+- `python-dotenv` - Für .env Datei-Laden
+- `flashcard_prompt_test_dataset_langfuse.json` - Das zu ladende Dataset
+
+**Usage**: 
+```bash
+# Voraussetzungen: LANGFUSE_PUBLIC_KEY und LANGFUSE_SECRET_KEY in .env gesetzt
+python backend/upload_langfuse_dataset.py
+```
+
+**Output**:
+- Erstellt Dataset `flashcard-agent-math-expressions` in Langfuse
+- Lädt 10 Testfälle mit komplexen mathematischen Ausdrücken hoch
+- Gibt Anweisungen für nächste Schritte (Prompt Experiment erstellen)
+
+**Wichtig für Langfuse Prompt Template**:
+Das Prompt Template muss die folgenden Variablen verwenden:
+- `{{summary}}`
+- `{{key_terms}}` (wird als Liste übergeben, Code konvertiert zu String)
+- `{{exam_questions}}` (wird als Liste übergeben, Code konvertiert zu String)
+- `{{diagram_description}}`
+- `{{conversation_context}}`
+- `{{course_id}}`
+- `{{material_id}}`
+- `{{page_number}}` (wird als Integer übergeben, Code konvertiert zu String)
+
+**Related Files**: 
+- `backend/flashcard_prompt_test_dataset_langfuse.json` - Das hochgeladene Dataset
+- `backend/app/agents/flashcards/flashcard_agent.py` - Verwendet die Variablen für Prompt-Generierung
+
+---
+
+### `backend/langfuse_to_anki_csv.py`
+
+**Purpose**: Script zum direkten Konvertieren von Langfuse Trace-Exports in Anki-kompatible CSV-Dateien.
+
+**Key Components**:
+- **JSON-Parsing**: 
+  - Liest Langfuse Trace-Export JSON-Dateien
+  - Extrahiert JSON aus Markdown-Code-Blöcken (```json ... ```)
+  - Unterstützt verschiedene Output-Formate (String, Dict, List)
+- **Card-Extraktion**:
+  - Findet alle Flashcard-Objekte in den Trace-Outputs
+  - Validiert Cards (müssen 'front' und 'back' haben)
+  - Normalisiert Tags (konvertiert zu Listen)
+- **Anki CSV-Format**:
+  - Verwendet Pipe-Delimiter (|) wie von Anki erwartet
+  - UTF-8 mit BOM für Excel-Kompatibilität
+  - Format: `front|back|tags`
+
+**Dependencies**: 
+- Standard Python-Bibliotheken: `json`, `csv`, `re`, `argparse`
+- Keine externen Dependencies
+
+**Usage**: 
+```bash
+# Basis-Verwendung
+python backend/langfuse_to_anki_csv.py --input langfuse_export.json --output flashcards.csv
+
+# Mit detaillierter Ausgabe
+python backend/langfuse_to_anki_csv.py --input langfuse_export.json --output flashcards.csv --verbose
+```
+
+**Anki Import**:
+1. Öffne Anki
+2. File → Import
+3. Wähle die CSV-Datei
+4. **Wichtig**: Stelle sicher, dass "Fields separated by: Pipe (|)" ausgewählt ist
+5. Klicke Import
+
+**Output-Format**:
+- CSV mit 3 Spalten: `front`, `back`, `tags`
+- Tags sind space-separated
+- Unterstützt mehrzeilige Inhalte
+- UTF-8 Encoding mit BOM
+
+**Related Files**: 
+- `backend/app/services/flashcard_service.py` - Ähnliche CSV-Export-Funktionalität
+- `backend/flashcard_prompt_test_dataset_langfuse.json` - Test-Dataset
+
+---

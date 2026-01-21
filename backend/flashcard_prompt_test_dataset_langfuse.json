@@ -1,0 +1,247 @@
+{
+  "description": "Dataset für Langfuse Prompt Testing des Flashcard Agents mit komplexen mathematischen Ausdrücken",
+  "dataset_name": "flashcard-agent-math-expressions",
+  "items": [
+    {
+      "input": {
+        "summary": "Diese Seite behandelt die Berechnung von Eigenwerten und Eigenvektoren einer Matrix. Für eine Matrix A ∈ ℝⁿˣⁿ sind Eigenwerte λ die Lösungen der charakteristischen Gleichung det(A - λI) = 0. Die Eigenvektoren v erfüllen die Gleichung Av = λv. Die Diagonalisierung einer Matrix erfolgt durch A = PDP⁻¹, wobei P die Matrix der Eigenvektoren und D die Diagonalmatrix der Eigenwerte ist. Die Spur einer Matrix ist gleich der Summe ihrer Eigenwerte: tr(A) = ∑ᵢ₌₁ⁿ λᵢ.",
+        "key_terms": [
+          "Eigenwert λ",
+          "Eigenvektor v",
+          "charakteristische Gleichung det(A - λI) = 0",
+          "Diagonalisierung A = PDP⁻¹",
+          "Spur tr(A) = ∑ᵢ₌₁ⁿ λᵢ"
+        ],
+        "exam_questions": [
+          "Berechnen Sie die Eigenwerte der Matrix A = [[3, 1], [0, 2]] und geben Sie die charakteristische Gleichung det(A - λI) = 0 an.",
+          "Bestimmen Sie die Eigenvektoren zu den Eigenwerten λ₁ = 3 und λ₂ = 2 der Matrix A = [[3, 1], [0, 2]] und zeigen Sie, dass Av = λv gilt."
+        ],
+        "diagram_description": "Diagramm zeigt eine 2x2 Matrix A mit Pfeilen zu den Eigenvektoren v₁ und v₂. Die Eigenwerte λ₁ und λ₂ sind als Skalierungsfaktoren dargestellt. Die Transformation Av = λv ist visuell dargestellt.",
+        "conversation_context": "User: Wie berechne ich die Eigenwerte einer Matrix? Assistant: Die Eigenwerte λ erfüllen die charakteristische Gleichung det(A - λI) = 0. Für eine 2x2 Matrix [[a, b], [c, d]] ist dies (a-λ)(d-λ) - bc = 0.",
+        "course_id": "math-linear-algebra-001",
+        "material_id": "linear-algebra-lecture-05",
+        "page_number": 12
+      },
+      "metadata": {
+        "topic": "Lineare Algebra - Eigenwerte und Eigenvektoren",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "input": {
+        "summary": "Die partielle Ableitung einer Funktion f: ℝⁿ → ℝ nach xᵢ wird definiert als ∂f/∂xᵢ = limₕ→₀ (f(x₁, ..., xᵢ + h, ..., xₙ) - f(x₁, ..., xᵢ, ..., xₙ))/h. Der Gradient einer Funktion ist ∇f = (∂f/∂x₁, ∂f/∂x₂, ..., ∂f/∂xₙ)ᵀ. Die Hesse-Matrix H(f) hat die Einträge Hᵢⱼ = ∂²f/∂xᵢ∂xⱼ. Für eine Funktion f(x,y) = x²y + sin(xy) ist der Gradient ∇f = (2xy + y·cos(xy), x² + x·cos(xy))ᵀ.",
+        "key_terms": [
+          "Partielle Ableitung ∂f/∂xᵢ",
+          "Gradient ∇f = (∂f/∂x₁, ..., ∂f/∂xₙ)ᵀ",
+          "Hesse-Matrix Hᵢⱼ = ∂²f/∂xᵢ∂xⱼ",
+          "Kettenregel ∂(f∘g)/∂x = ∑ᵢ (∂f/∂gᵢ)(∂gᵢ/∂x)"
+        ],
+        "exam_questions": [
+          "Berechnen Sie den Gradienten der Funktion f(x,y,z) = x²yz + e^(xy) + ln(z) an der Stelle (1, 2, 3).",
+          "Bestimmen Sie die Hesse-Matrix der Funktion f(x,y) = x³y² - 2xy + y⁴ und prüfen Sie, ob die Funktion an (0,0) ein lokales Extremum hat."
+        ],
+        "diagram_description": "3D-Diagramm zeigt eine Funktion f(x,y) mit Höhenlinien. Der Gradient ∇f ist als Pfeil in Richtung des steilsten Anstiegs dargestellt. Die Hesse-Matrix wird durch die Krümmung der Oberfläche visualisiert.",
+        "conversation_context": "User: Was ist der Unterschied zwischen Gradient und partieller Ableitung? Assistant: Die partielle Ableitung ∂f/∂xᵢ ist eine skalare Größe, während der Gradient ∇f ein Vektor ist, der alle partiellen Ableitungen enthält: ∇f = (∂f/∂x₁, ..., ∂f/∂xₙ)ᵀ.",
+        "course_id": "math-analysis-001",
+        "material_id": "analysis-lecture-08",
+        "page_number": 15
+      },
+      "metadata": {
+        "topic": "Analysis - Mehrdimensionale Differentiation",
+        "difficulty": "hard"
+      }
+    },
+    {
+      "input": {
+        "summary": "Ein lineares Differentialgleichungssystem erster Ordnung hat die Form ẋ = Ax + b, wobei A ∈ ℝⁿˣⁿ, x: ℝ → ℝⁿ und b: ℝ → ℝⁿ. Die allgemeine Lösung ist x(t) = e^(At)x₀ + ∫₀ᵗ e^(A(t-s))b(s)ds. Für homogene Systeme (b = 0) ist die Lösung x(t) = e^(At)x₀, wobei e^(At) = ∑ₖ₌₀^∞ (At)ᵏ/k! die Matrixexponentialfunktion ist. Für ein 2x2 System mit A = [[a, b], [c, d]] können die Eigenwerte λ₁, λ₂ verwendet werden, um die Lösung zu schreiben: x(t) = c₁e^(λ₁t)v₁ + c₂e^(λ₂t)v₂.",
+        "key_terms": [
+          "Lineares DGL-System ẋ = Ax + b",
+          "Matrixexponentialfunktion e^(At) = ∑ₖ₌₀^∞ (At)ᵏ/k!",
+          "Fundamentallösung Φ(t) = e^(At)",
+          "Variation der Konstanten x(t) = e^(At)x₀ + ∫₀ᵗ e^(A(t-s))b(s)ds"
+        ],
+        "exam_questions": [
+          "Lösen Sie das lineare DGL-System ẋ₁ = 2x₁ + x₂, ẋ₂ = x₁ + 2x₂ mit den Anfangsbedingungen x₁(0) = 1, x₂(0) = 0.",
+          "Bestimmen Sie die Matrixexponentialfunktion e^(At) für A = [[0, 1], [-1, 0]] und geben Sie die allgemeine Lösung des Systems ẋ = Ax an."
+        ],
+        "diagram_description": "Phasenportrait zeigt Trajektorien des DGL-Systems im (x₁, x₂)-Raum. Die Eigenvektoren sind als Richtungen dargestellt, entlang derer die Lösungen exponentiell wachsen oder schrumpfen. Stabile und instabile Knoten sind markiert.",
+        "conversation_context": "User: Wie löse ich ein lineares DGL-System? Assistant: Für ẋ = Ax ist die Lösung x(t) = e^(At)x₀. Die Matrixexponentialfunktion kann über die Eigenwerte berechnet werden: e^(At) = Pe^(Dt)P⁻¹, wobei D die Diagonalmatrix der Eigenwerte ist.",
+        "course_id": "math-differential-equations-001",
+        "material_id": "dgl-lecture-06",
+        "page_number": 8
+      },
+      "metadata": {
+        "topic": "Differentialgleichungen - Lineare DGL Systeme",
+        "difficulty": "hard"
+      }
+    },
+    {
+      "input": {
+        "summary": "Ein Banach-Raum ist ein vollständiger normierter Vektorraum (X, ||·||). Die Norm erfüllt ||x|| ≥ 0, ||αx|| = |α|·||x||, ||x+y|| ≤ ||x|| + ||y|| und ||x|| = 0 ⟺ x = 0. Der Raum L^p(Ω) mit 1 ≤ p < ∞ besteht aus allen messbaren Funktionen f: Ω → ℝ mit ||f||_p = (∫_Ω |f(x)|^p dx)^(1/p) < ∞. Für p = ∞ ist ||f||_∞ = ess sup_{x∈Ω} |f(x)|. Der Dualraum X* eines Banach-Raums X besteht aus allen stetigen linearen Funktionalen φ: X → ℝ mit ||φ|| = sup_{||x||≤1} |φ(x)|.",
+        "key_terms": [
+          "Banach-Raum (X, ||·||)",
+          "L^p-Norm ||f||_p = (∫_Ω |f(x)|^p dx)^(1/p)",
+          "Dualraum X* mit ||φ|| = sup_{||x||≤1} |φ(x)|",
+          "Hahn-Banach Satz"
+        ],
+        "exam_questions": [
+          "Zeigen Sie, dass der Raum C[0,1] mit der Supremumsnorm ||f||_∞ = max_{x∈[0,1]} |f(x)| ein Banach-Raum ist.",
+          "Berechnen Sie die L²-Norm der Funktion f(x) = x² auf [0,1], d.h. ||f||_2 = (∫₀¹ |x²|² dx)^(1/2)."
+        ],
+        "diagram_description": "Diagramm zeigt verschiedene Funktionen in L^p-Räumen mit ihren Normen. Die Einheitskugel B₁(0) = {x ∈ X: ||x|| ≤ 1} ist für verschiedene Normen dargestellt. Der Dualraum wird als Hyperebenen visualisiert.",
+        "conversation_context": "User: Was ist der Unterschied zwischen L² und L^∞? Assistant: L² besteht aus Funktionen mit endlichem ||f||_2 = (∫ |f|²)^(1/2), während L^∞ aus beschränkten Funktionen mit ||f||_∞ = ess sup |f| besteht.",
+        "course_id": "math-functional-analysis-001",
+        "material_id": "functional-analysis-lecture-03",
+        "page_number": 5
+      },
+      "metadata": {
+        "topic": "Funktionalanalysis - Banach-Räume",
+        "difficulty": "hard"
+      }
+    },
+    {
+      "input": {
+        "summary": "Das Newton-Verfahren zur Lösung von f(x) = 0 verwendet die Iteration x_{n+1} = x_n - f(x_n)/f'(x_n). Die Konvergenzordnung ist quadratisch: |x_{n+1} - α| ≤ C|x_n - α|², wobei α die exakte Lösung ist. Für Systeme F(x) = 0 mit F: ℝⁿ → ℝⁿ ist die Newton-Iteration x_{k+1} = x_k - J_F(x_k)⁻¹F(x_k), wobei J_F die Jacobi-Matrix mit Einträgen (J_F)ᵢⱼ = ∂Fᵢ/∂xⱼ ist. Das Gauß-Seidel-Verfahren für Ax = b iteriert xᵢ^(k+1) = (bᵢ - ∑_{j<i} aᵢⱼxⱼ^(k+1) - ∑_{j>i} aᵢⱼxⱼ^(k))/aᵢᵢ.",
+        "key_terms": [
+          "Newton-Verfahren x_{n+1} = x_n - f(x_n)/f'(x_n)",
+          "Jacobi-Matrix (J_F)ᵢⱼ = ∂Fᵢ/∂xⱼ",
+          "Gauß-Seidel xᵢ^(k+1) = (bᵢ - ∑_{j<i} aᵢⱼxⱼ^(k+1) - ∑_{j>i} aᵢⱼxⱼ^(k))/aᵢᵢ",
+          "Konvergenzordnung |x_{n+1} - α| ≤ C|x_n - α|^p"
+        ],
+        "exam_questions": [
+          "Führen Sie drei Iterationen des Newton-Verfahrens für f(x) = x³ - 2x - 5 = 0 mit Startwert x₀ = 2 durch und berechnen Sie x₁, x₂, x₃.",
+          "Bestimmen Sie die Jacobi-Matrix des nichtlinearen Systems F₁(x,y) = x² + y² - 1 = 0, F₂(x,y) = x² - y = 0 und geben Sie die Newton-Iteration an."
+        ],
+        "diagram_description": "Diagramm zeigt die Konvergenz des Newton-Verfahrens. Die Tangente an f(x_n) schneidet die x-Achse bei x_{n+1}. Mehrere Iterationen zeigen die quadratische Konvergenz. Ein Phasenportrait zeigt die Konvergenz für Systeme.",
+        "conversation_context": "User: Warum konvergiert das Newton-Verfahren schneller als die Bisektion? Assistant: Das Newton-Verfahren hat quadratische Konvergenz (|x_{n+1} - α| ≤ C|x_n - α|²), während die Bisektion nur lineare Konvergenz (|x_{n+1} - α| ≤ 0.5|x_n - α|) hat.",
+        "course_id": "math-numerical-methods-001",
+        "material_id": "numerik-lecture-04",
+        "page_number": 11
+      },
+      "metadata": {
+        "topic": "Numerik - Iterative Verfahren",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "input": {
+        "summary": "Die gemeinsame Wahrscheinlichkeitsdichte zweier Zufallsvariablen X, Y ist f_{X,Y}(x,y) mit ∫∫ f_{X,Y}(x,y) dx dy = 1. Die Randverteilung von X ist f_X(x) = ∫_{-∞}^∞ f_{X,Y}(x,y) dy. Die bedingte Verteilung ist f_{Y|X}(y|x) = f_{X,Y}(x,y)/f_X(x). Die Kovarianz ist Cov(X,Y) = E[(X - E[X])(Y - E[Y])] = E[XY] - E[X]E[Y]. Der Korrelationskoeffizient ist ρ_{X,Y} = Cov(X,Y)/(σ_X·σ_Y) mit -1 ≤ ρ ≤ 1. Für unabhängige Zufallsvariablen gilt f_{X,Y}(x,y) = f_X(x)·f_Y(y) und Cov(X,Y) = 0.",
+        "key_terms": [
+          "Gemeinsame Dichte f_{X,Y}(x,y)",
+          "Randverteilung f_X(x) = ∫_{-∞}^∞ f_{X,Y}(x,y) dy",
+          "Kovarianz Cov(X,Y) = E[XY] - E[X]E[Y]",
+          "Korrelation ρ_{X,Y} = Cov(X,Y)/(σ_X·σ_Y)"
+        ],
+        "exam_questions": [
+          "Gegeben sei die gemeinsame Dichte f_{X,Y}(x,y) = 6xy für 0 ≤ x ≤ 1, 0 ≤ y ≤ 1, sonst 0. Berechnen Sie die Randverteilungen f_X(x) und f_Y(y) und prüfen Sie, ob X und Y unabhängig sind.",
+          "Berechnen Sie die Kovarianz Cov(X,Y) für die gemeinsame Verteilung f_{X,Y}(x,y) = x + y auf [0,1]×[0,1]."
+        ],
+        "diagram_description": "3D-Diagramm zeigt die gemeinsame Wahrscheinlichkeitsdichte f_{X,Y}(x,y) als Oberfläche. Die Randverteilungen f_X(x) und f_Y(y) sind als Projektionen auf die Seitenflächen dargestellt. Konturlinien zeigen Bereiche gleicher Wahrscheinlichkeit.",
+        "conversation_context": "User: Was bedeutet Unabhängigkeit von Zufallsvariablen? Assistant: X und Y sind unabhängig, wenn f_{X,Y}(x,y) = f_X(x)·f_Y(y) für alle x,y gilt. Dies impliziert Cov(X,Y) = 0, aber die Umkehrung gilt nicht immer.",
+        "course_id": "math-probability-001",
+        "material_id": "probability-lecture-07",
+        "page_number": 9
+      },
+      "metadata": {
+        "topic": "Wahrscheinlichkeitstheorie - Mehrdimensionale Verteilungen",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "input": {
+        "summary": "Ein metrischer Raum (X, d) erfüllt d(x,y) ≥ 0, d(x,y) = 0 ⟺ x = y, d(x,y) = d(y,x) und d(x,z) ≤ d(x,y) + d(y,z) (Dreiecksungleichung). Eine offene Kugel ist B_r(x) = {y ∈ X: d(x,y) < r}. Eine Menge U ⊆ X ist offen, wenn für jedes x ∈ U ein r > 0 existiert mit B_r(x) ⊆ U. Der Abschluss einer Menge A ist Ā = {x ∈ X: ∀r > 0, B_r(x) ∩ A ≠ ∅}. Eine Folge (x_n) konvergiert gegen x, wenn lim_{n→∞} d(x_n, x) = 0. Ein metrischer Raum ist vollständig, wenn jede Cauchy-Folge konvergiert.",
+        "key_terms": [
+          "Metrik d(x,y) mit d(x,z) ≤ d(x,y) + d(y,z)",
+          "Offene Kugel B_r(x) = {y: d(x,y) < r}",
+          "Abschluss Ā = {x: ∀r > 0, B_r(x) ∩ A ≠ ∅}",
+          "Cauchy-Folge: ∀ε > 0 ∃N: ∀m,n ≥ N, d(x_m, x_n) < ε"
+        ],
+        "exam_questions": [
+          "Zeigen Sie, dass d(x,y) = |x - y|/(1 + |x - y|) eine Metrik auf ℝ definiert und beweisen Sie die Dreiecksungleichung.",
+          "Bestimmen Sie den Abschluss der Menge A = {1/n: n ∈ ℕ} in (ℝ, |·|) und zeigen Sie, dass 0 ∈ Ā."
+        ],
+        "diagram_description": "Diagramm zeigt einen metrischen Raum mit Punkten und offenen Kugeln B_r(x) verschiedener Radien. Der Abschluss Ā einer Menge A wird durch Grenzpunkte visualisiert. Cauchy-Folgen sind als konvergierende Punktfolgen dargestellt.",
+        "conversation_context": "User: Was ist der Unterschied zwischen offen und abgeschlossen? Assistant: Eine Menge U ist offen, wenn jeder Punkt eine Umgebung hat, die ganz in U liegt. Eine Menge ist abgeschlossen, wenn ihr Komplement offen ist, oder äquivalent, wenn sie alle ihre Grenzpunkte enthält: Ā = A.",
+        "course_id": "math-topology-001",
+        "material_id": "topology-lecture-02",
+        "page_number": 6
+      },
+      "metadata": {
+        "topic": "Topologie - Metrische Räume",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "input": {
+        "summary": "Die Fourier-Transformation einer Funktion f ∈ L¹(ℝ) ist F(ω) = ∫_{-∞}^∞ f(t)e^(-iωt) dt. Die inverse Transformation ist f(t) = (1/2π)∫_{-∞}^∞ F(ω)e^(iωt) dω. Die Parseval-Identität besagt ∫_{-∞}^∞ |f(t)|² dt = (1/2π)∫_{-∞}^∞ |F(ω)|² dω. Für die Faltung (f * g)(t) = ∫_{-∞}^∞ f(τ)g(t-τ) dτ gilt F[f * g] = F[f]·F[g]. Die Fouriertransformierte der Ableitung ist F[f'](ω) = iωF(ω). Für eine periodische Funktion f(t) = ∑_{n=-∞}^∞ c_n e^(inω₀t) sind die Fourier-Koeffizienten c_n = (1/T)∫₀^T f(t)e^(-inω₀t) dt.",
+        "key_terms": [
+          "Fourier-Transformation F(ω) = ∫_{-∞}^∞ f(t)e^(-iωt) dt",
+          "Parseval-Identität ∫ |f(t)|² dt = (1/2π)∫ |F(ω)|² dω",
+          "Faltung (f * g)(t) = ∫ f(τ)g(t-τ) dτ",
+          "Fourier-Koeffizienten c_n = (1/T)∫₀^T f(t)e^(-inω₀t) dt"
+        ],
+        "exam_questions": [
+          "Berechnen Sie die Fourier-Transformation der Funktion f(t) = e^(-a|t|) mit a > 0 und geben Sie F(ω) an.",
+          "Bestimmen Sie die Fourier-Koeffizienten c_n der periodischen Funktion f(t) = t² auf [-π, π] mit Periode 2π."
+        ],
+        "diagram_description": "Diagramm zeigt eine Funktion f(t) im Zeitbereich und ihre Fourier-Transformierte F(ω) im Frequenzbereich. Die Parseval-Identität wird durch die Flächen unter |f(t)|² und |F(ω)|² visualisiert. Faltung wird als Verschiebung und Multiplikation dargestellt.",
+        "conversation_context": "User: Was macht die Fourier-Transformation? Assistant: Die Fourier-Transformation zerlegt eine Funktion in ihre Frequenzkomponenten. F(ω) gibt an, wie viel von der Frequenz ω in f(t) enthalten ist. Die inverse Transformation rekonstruiert f(t) aus F(ω).",
+        "course_id": "math-fourier-analysis-001",
+        "material_id": "fourier-lecture-05",
+        "page_number": 13
+      },
+      "metadata": {
+        "topic": "Fourier-Analyse - Fourier-Transformation",
+        "difficulty": "hard"
+      }
+    },
+    {
+      "input": {
+        "summary": "Für die Optimierung von f(x) unter der Nebenbedingung g(x) = 0 verwendet man die Lagrange-Funktion L(x,λ) = f(x) - λg(x). Die notwendigen Bedingungen für ein Extremum sind ∇_x L = 0 und ∇_λ L = 0, also ∇f(x*) = λ∇g(x*) und g(x*) = 0. Für mehrere Nebenbedingungen g_i(x) = 0, i = 1,...,m ist L(x,λ) = f(x) - ∑_{i=1}^m λ_i g_i(x). Die hinreichende Bedingung zweiter Ordnung verwendet die Hesse-Matrix der Lagrange-Funktion. Für f(x,y) = x² + y² unter x + y = 1 ist die Lösung x* = y* = 1/2 mit λ = 1.",
+        "key_terms": [
+          "Lagrange-Funktion L(x,λ) = f(x) - λg(x)",
+          "Notwendige Bedingung ∇f(x*) = λ∇g(x*)",
+          "Mehrere Nebenbedingungen L(x,λ) = f(x) - ∑_{i=1}^m λ_i g_i(x)",
+          "Hesse-Matrix der Lagrange-Funktion"
+        ],
+        "exam_questions": [
+          "Finden Sie das Maximum von f(x,y,z) = xyz unter der Nebenbedingung x + y + z = 1 mit x,y,z > 0 mit der Methode der Lagrange-Multiplikatoren.",
+          "Bestimmen Sie die Extremwerte von f(x,y) = x² + 2y² auf der Ellipse x²/4 + y²/9 = 1."
+        ],
+        "diagram_description": "3D-Diagramm zeigt die Funktion f(x,y) mit Höhenlinien. Die Nebenbedingung g(x,y) = 0 ist als Kurve eingezeichnet. Der optimale Punkt liegt dort, wo der Gradient von f parallel zum Gradienten von g ist. Die Lagrange-Funktion wird visualisiert.",
+        "conversation_context": "User: Wie funktioniert die Methode der Lagrange-Multiplikatoren? Assistant: Man bildet L(x,λ) = f(x) - λg(x) und löst ∇L = 0. Dies gibt ∇f = λ∇g (die Gradienten sind parallel) und g(x) = 0 (Nebenbedingung erfüllt). Der Multiplikator λ gibt die Sensitivität an.",
+        "course_id": "math-optimization-001",
+        "material_id": "optimization-lecture-03",
+        "page_number": 7
+      },
+      "metadata": {
+        "topic": "Optimierung - Lagrange-Multiplikatoren",
+        "difficulty": "medium"
+      }
+    },
+    {
+      "input": {
+        "summary": "Der Residuensatz besagt: ∫_γ f(z) dz = 2πi ∑_{k=1}^n Res(f, z_k), wobei γ eine geschlossene Kurve ist und z_k die isolierten Singularitäten von f innerhalb von γ sind. Das Residuum einer Funktion f an einer isolierten Singularität z₀ ist Res(f, z₀) = (1/2πi) ∫_{|z-z₀|=r} f(z) dz. Für einen Pol der Ordnung m ist Res(f, z₀) = (1/(m-1)!) lim_{z→z₀} d^{m-1}/dz^{m-1} [(z-z₀)^m f(z)]. Für einen einfachen Pol gilt Res(f, z₀) = lim_{z→z₀} (z-z₀)f(z). Die Laurent-Reihe um z₀ ist f(z) = ∑_{n=-∞}^∞ a_n (z-z₀)^n mit a_{-1} = Res(f, z₀).",
+        "key_terms": [
+          "Residuensatz ∫_γ f(z) dz = 2πi ∑ Res(f, z_k)",
+          "Residuum Res(f, z₀) = (1/2πi) ∫_{|z-z₀|=r} f(z) dz",
+          "Pol der Ordnung m: Res(f, z₀) = (1/(m-1)!) lim_{z→z₀} d^{m-1}/dz^{m-1} [(z-z₀)^m f(z)]",
+          "Laurent-Reihe f(z) = ∑_{n=-∞}^∞ a_n (z-z₀)^n"
+        ],
+        "exam_questions": [
+          "Berechnen Sie das Residuum von f(z) = 1/(z²(z-1)) an den Singularitäten z = 0 und z = 1 und verwenden Sie den Residuensatz, um ∫_{|z|=2} f(z) dz zu berechnen.",
+          "Bestimmen Sie die Laurent-Reihe von f(z) = 1/(z(z-1)) um z = 0 und geben Sie das Residuum an."
+        ],
+        "diagram_description": "Komplexe Ebene zeigt eine geschlossene Kurve γ mit Singularitäten z₁, z₂, z₃ im Inneren. Die Residuen werden als Vektoren dargestellt. Die Integration entlang γ wird durch Pfeile visualisiert. Polstellen sind als spezielle Punkte markiert.",
+        "conversation_context": "User: Wie berechne ich ein Residuum? Assistant: Für einen einfachen Pol bei z₀ ist Res(f, z₀) = lim_{z→z₀} (z-z₀)f(z). Für einen Pol der Ordnung m verwendet man Res(f, z₀) = (1/(m-1)!) lim_{z→z₀} d^{m-1}/dz^{m-1} [(z-z₀)^m f(z)].",
+        "course_id": "math-complex-analysis-001",
+        "material_id": "complex-analysis-lecture-06",
+        "page_number": 10
+      },
+      "metadata": {
+        "topic": "Komplexe Analysis - Residuensatz",
+        "difficulty": "hard"
+      }
+    }
+  ]
+}
