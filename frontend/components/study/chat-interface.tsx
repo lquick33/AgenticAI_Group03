@@ -1,6 +1,7 @@
 "use client"
 
 import { useRef, useEffect } from 'react'
+import { MathJaxContext } from 'better-react-mathjax'
 import { ConversationEmptyState } from '@/components/ai/conversation'
 import { Loader } from '@/components/ui/loader'
 import { Switch } from '@/components/ui/switch'
@@ -8,6 +9,17 @@ import { Label } from '@/components/ui/label'
 import { ChatMessage } from './chat-message'
 import { TutorPromptInput } from './tutor-prompt-input'
 import type { ChatMessage as ChatMessageType } from '@/types'
+
+// MathJax configuration
+const mathJaxConfig = {
+  tex: {
+    inlineMath: [["\\(", "\\)"]],
+    displayMath: [["\\[", "\\]"]],
+  },
+  options: {
+    skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"],
+  },
+}
 
 interface ChatInterfaceProps {
   messages: ChatMessageType[]
@@ -110,7 +122,8 @@ export function ChatInterface({
   }, [])
 
   return (
-    <div className="flex flex-col h-full w-full min-h-0 bg-[#f6f4f1]">
+    <MathJaxContext config={mathJaxConfig} hideUntilTypeset="first">
+      <div className="flex flex-col h-full w-full min-h-0 bg-[#f6f4f1]">
       {/* Tool Toggle Switch - Dezente Position oben rechts */}
       {onToggleTools && (
         <div className="flex items-center justify-end gap-2 px-4 pt-3 pb-2 flex-shrink-0">
@@ -201,5 +214,6 @@ export function ChatInterface({
         />
       </div>
     </div>
+    </MathJaxContext>
   )
 }

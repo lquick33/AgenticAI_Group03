@@ -32,6 +32,7 @@
     "@supabase/supabase-js": "^2.90.1",
     "@tanstack/react-table": "^8.21.3",
     "ai": "^6.0.29",
+    "better-react-mathjax": "^2.4.0-beta-1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
