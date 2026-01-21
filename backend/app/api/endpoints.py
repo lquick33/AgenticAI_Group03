@@ -47,6 +47,7 @@ from app.services.storage import (
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_csv
 from app.services.flashcard_task_service import get_flashcard_task_service
+from app.services.observability import get_langfuse_client
 from app.services.session_storage import (
     get_or_create_study_conversation,
     update_conversation_progress,
@@ -60,6 +61,37 @@ import os
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def get_tutor_prompt(prompt_name: str, **variables) -> str:
+    """
+    Load a tutor agent prompt from Langfuse and compile it with variables.
+    
+    Args:
+        prompt_name: Name of the prompt (e.g., "tutor-agent/welcome-back")
+        **variables: Variables to compile into the prompt
+        
+    Returns:
+        Compiled prompt string
+        
+    Raises:
+        RuntimeError: If Langfuse client is not available or prompt cannot be loaded
+    """
+    langfuse_client = get_langfuse_client()
+    if not langfuse_client:
+        raise RuntimeError(f"Langfuse client is not available. Cannot load prompt '{prompt_name}'.")
+    
+    try:
+        langfuse_prompt = langfuse_client.get_prompt(
+            prompt_name,
+            label="production"
+        )
+        compiled_prompt = langfuse_prompt.compile(**variables)
+        logger.debug(f"✅ Using Langfuse prompt for {prompt_name}")
+        return compiled_prompt
+    except Exception as e:
+        logger.error(f"Failed to load Langfuse prompt '{prompt_name}': {e}")
+        raise RuntimeError(f"Cannot load prompt '{prompt_name}' from Langfuse: {e}") from e
 
 
 def pil_image_to_bytes(image: Image.Image, format: str = "JPEG") -> bytes:
@@ -1041,16 +1073,10 @@ async def initiate_chat(
 
                         if last_message_is_welcome_back:
                             # Last message was already a Welcome Back message, send a normal greeting instead
-                            initial_human_content = (
-                                "The student has reopened the study reader, but you already sent them a welcome back message recently.\n\n"
-                                f"- Current page: {request.page_number}\n"
-                                f"- Page summary: {summary}\n\n"
-                                "GREETING INSTRUCTIONS (German):\n"
-                                "Begrüße den Studenten kurz und freundlich, aber NICHT mit einer erneuten 'Welcome Back' Nachricht.\n"
-                                "Formuliere eine normale, kurze Nachricht zur aktuellen Folie, etwa so:\n"
-                                f"\"Du bist gerade auf Folie {request.page_number}. [KURZE BESCHREIBUNG DER FOLIE BASIEREND AUF DER ZUSAMMENFASSUNG]. "
-                                "Gibt es etwas Spezielles, das du über diese Folie wissen möchtest?\"\n"
-                                "Halte die Nachricht kurz (1-2 Sätze) und fokussiere dich auf die aktuelle Folie."
+                            initial_human_content = get_tutor_prompt(
+                                "tutor-agent/normal-greeting-after-welcome-back",
+                                page_number=request.page_number,
+                                summary=summary
                             )
                         else:
                             # No recent Welcome Back message, send one now
@@ -1073,46 +1099,21 @@ async def initiate_chat(
                                 "  \"imaginäre und komplexe Zahlen\").\n"
                             )
 
-                            initial_human_content = (
-                                "The student is returning to this study session after closing and reopening the study reader.\n\n"
-                                f"- They have already worked through approximately {completed_pages} "
-                                f"of {total_pages_safe} pages in this material.\n"
-                                "- You have access to the previous chat history in the messages above.\n"
-                                f"{topics_instructions}\n\n"
-                                "GREETING INSTRUCTIONS (German):\n"
-                                "Begrüße den Studenten freundlich als Rückkehrer mit einer persönlichen Nachricht.\n"
-                                "Formuliere etwa so (sinngemäß, nicht wortwörtlich, aber sehr ähnlich):\n"
-                                f"\"Hi! Schön, dass du wieder da bist. Wir haben jetzt {completed_pages} von {total_pages_safe} "
-                                "Seiten abgearbeitet und dabei folgende Themen behandelt: [NENNE HIER DIE 2–5 WICHTIGSTEN THEMEN "
-                                "AUS DEM CHAT-VERLAUF, DIE WIRKLICH BEREITS BESPROCHEN WURDEN]. "
-                                "Kannst du dich an alles erinnern oder soll ich dir nochmal eine kurze Zusammenfassung geben?\"\n"
-                                "WICHTIG: Nutze wirklich nur den Chat-Verlauf als Grundlage für die Themenliste –\n"
-                                "Themen, die lediglich als zukünftige Inhalte angekündigt wurden, sollen NICHT erwähnt werden.\n"
-                                "Halte die Nachricht persönlich, freundlich und kurz (2-3 Sätze)."
+                            initial_human_content = get_tutor_prompt(
+                                "tutor-agent/welcome-back",
+                                completed_pages=completed_pages,
+                                total_pages=total_pages_safe,
+                                topics_instructions=topics_instructions
                             )
                     else:
                         # First visit for this material (no previous chat history)
                         total_pages_safe = total_pages or "unbekannt"
-                        initial_human_content = (
-                        "This is the student's first visit to this study session for this lecture material.\n\n"
-                        "IMPORTANT: Before greeting the student, use the get_course_material_summary tool to retrieve "
-                        "the overall summary of this lecture material. This will give you context about the main topics "
-                        "and concepts covered in this lecture.\n\n"
-                        "Use the following information:\n"
-                        f"- Current page: {request.page_number}\n"
-                        f"- Total pages (if known): {total_pages_safe}\n"
-                        f"- Page summary: {summary}\n\n"
-                        "GREETING INSTRUCTIONS (German):\n"
-                        "1. First, call the get_course_material_summary tool to get the overall lecture summary.\n"
-                        "2. Then, begrüße den Studenten mit einer freundlichen, motivierenden ersten Nachricht.\n"
-                        "3. Formuliere etwa so (sinngemäß, nicht wortwörtlich):\n"
-                        "\"Hallo! Heute schauen wir uns diese Vorlesung bzw. diesen Foliensatz an. "
-                        "Die Kernthemen sind: [NUTZE DIE ZUSAMMENFASSUNG AUS DEM TOOL, um die wichtigsten Themen "
-                        "in 1–2 Sätzen zu benennen]. Wenn du bereit bist zu starten, blättere gerne eine Seite weiter "
-                        "oder stell mir direkt eine Frage zu dieser Einführungsfolie.\"\n"
-                        "Halte die Antwort kurz, freundlich und einladend. Nutze die Informationen aus dem Tool, "
-                        "um eine informierte Begrüßung zu geben."
-                    )
+                        initial_human_content = get_tutor_prompt(
+                            "tutor-agent/first-visit",
+                            page_number=request.page_number,
+                            total_pages=total_pages_safe,
+                            summary=summary
+                        )
 
                     # Fix incomplete tool call pairs in base_messages before adding new messages
                     # This ensures message ordering is valid before adding new HumanMessage
@@ -1142,12 +1143,10 @@ async def initiate_chat(
                             + [
                                 SystemMessage(content=system_message),
                                 HumanMessage(
-                                    content=(
-                                        "The student has navigated to a new slide.\n"
-                                        f"- Current page: {request.page_number}\n"
-                                        f"- Page summary: {summary}\n\n"
-                                        "Continue the conversation naturally auf Deutsch, knüpfe locker an das "
-                                        "bisher Gesagte an und erkläre die neue Folie im Kontext der bisherigen Themen."
+                                    content=get_tutor_prompt(
+                                        "tutor-agent/page-change-new-thread",
+                                        page_number=request.page_number,
+                                        summary=summary
                                     )
                                 ),
                             ],
@@ -1165,12 +1164,10 @@ async def initiate_chat(
 
                         # For simple page changes within an ongoing conversation, we use a lighter hint
                         page_change_human = HumanMessage(
-                            content=(
-                                "The student has navigated to a new slide.\n"
-                                f"- Current page: {request.page_number}\n"
-                                f"- Page summary: {summary}\n\n"
-                                "Continue the ongoing conversation natürlich auf Deutsch, knüpfe locker an das "
-                                "bisher Gesagte an und erkläre die neue Folie im Kontext der bisherigen Themen."
+                            content=get_tutor_prompt(
+                                "tutor-agent/page-change-existing-thread",
+                                page_number=request.page_number,
+                                summary=summary
                             )
                         )
 

@@ -1517,6 +1517,7 @@ import type { Course, CourseMaterial, CourseWithStats } from '@/types'
   - Graph structure: `agent` → `tools` → `agent` (loop until no tool calls)
   - Conditional routing based on tool calls
   - Personalized system prompts with language and personality config
+  - **Langfuse Prompt Management**: Loads system prompts dynamically from Langfuse with fallback to hardcoded versions
 
 **Graph Structure**:
 1. `agent` node: Calls LLM with tools bound, injects state context into system prompt
@@ -1533,6 +1534,11 @@ import type { Course, CourseMaterial, CourseWithStats } from '@/types'
   - `encouragement`: "reserved" | "moderate" | "enthusiastic" (default: "moderate")
 - **Context Awareness**: Automatically receives current page number, material ID, and user ID from state
 - **Tool Instructions**: Clear guidance on using `get_page_analysis` tool with automatic argument injection
+- **Prompt Management**: 
+  - System prompts are managed in Langfuse under `tutor-agent/system-prompt-de` and `tutor-agent/system-prompt-en`
+  - Prompts use variables ({{formality_text}}, {{humor_text}}, {{encouragement_text}}) that are compiled at runtime
+  - Automatic fallback to hardcoded prompts if Langfuse is unavailable or prompts cannot be loaded
+  - Prompts can be updated in Langfuse UI without code changes
 
 **Key Features**:
 - **State Injection**: State information (`current_page`, `material_id`, `user_id`) automatically injected into LLM context via enhanced system prompt
@@ -1552,13 +1558,16 @@ import type { Course, CourseMaterial, CourseWithStats } from '@/types'
 - `personality_config`: Optional[Dict[str, str]] - Personality traits dict
 
 **Methods**:
-- `_build_system_prompt(language, personality_config)`: Builds personalized system prompt based on language and personality config
+- `_build_system_prompt(language, personality_config)`: Loads system prompt from Langfuse or uses fallback, compiles with personality variables
+- `_get_personality_texts(language, formality, humor, encouragement)`: Returns personality trait texts based on language and config
+- `_build_system_prompt_fallback(language, formality, humor, encouragement)`: Builds hardcoded system prompt (fallback)
 - `call_model(state)`: Calls LLM with state context injected into system message
 - `_build_graph()`: Builds LangGraph workflow with StateAwareToolNode
 
 **Dependencies**: 
 - `app.agents.base` - BaseAgent class
 - `app.tools.page_analysis_tool` - GetPageAnalysisTool
+- `app.services.observability` - get_langfuse_client (for prompt management)
 - `langgraph.prebuilt` - ToolNode base class
 - `langgraph.checkpoint.memory` - MemorySaver for persistence
 
@@ -1746,6 +1755,14 @@ def get_course_material_summary(
 - Uses `get_page_analysis()` service function
 
 **`POST /api/chat/initiate`**:
+- **Langfuse Prompt Management**: Loads special prompts dynamically from Langfuse:
+  - `tutor-agent/welcome-back`: For returning students with chat history
+  - `tutor-agent/normal-greeting-after-welcome-back`: When welcome back was already sent
+  - `tutor-agent/first-visit`: For first-time visitors
+  - `tutor-agent/page-change-new-thread`: When navigating to new page without existing thread
+  - `tutor-agent/page-change-existing-thread`: When navigating to new page with existing thread
+- Prompts are compiled with variables (page_number, summary, completed_pages, total_pages, etc.)
+- Helper function `get_tutor_prompt()` loads and compiles prompts from Langfuse
 - Body: `ChatInitiateRequest` with `material_id`, `page_number`, `user_id`
 - Returns: `StreamingResponse` with SSE events
 - **Key Feature**: Injects system message for page change context

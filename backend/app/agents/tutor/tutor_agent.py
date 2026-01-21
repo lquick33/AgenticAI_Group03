@@ -18,7 +18,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from app.agents.base import BaseAgent, State
 from app.tools.page_analysis_tool import GetPageAnalysisTool
 from app.tools.course_material_tool import GetCourseMaterialSummaryTool
-from app.services.observability import create_callback_handler
+from app.services.observability import create_callback_handler, get_langfuse_client
 from app.core.config import settings
 import logging
 
@@ -244,6 +244,9 @@ class TutorAgent(BaseAgent):
         self.language = language
         self.personality_config = personality_config or {}
         
+        # Langfuse client for prompt management
+        self.langfuse_client = get_langfuse_client()
+        
         # Initialize tools
         self.page_analysis_tool = GetPageAnalysisTool()
         self.course_material_tool = GetCourseMaterialSummaryTool()
@@ -276,6 +279,7 @@ class TutorAgent(BaseAgent):
     ) -> str:
         """
         Build a personalized system prompt based on language and personality config.
+        Loads prompt from Langfuse.
         
         Args:
             language: Language code (e.g., "de", "en")
@@ -286,151 +290,104 @@ class TutorAgent(BaseAgent):
         
         Returns:
             Personalized system prompt string
+            
+        Raises:
+            RuntimeError: If Langfuse client is not available or prompt cannot be loaded
         """
         config = personality_config or {}
         formality = config.get("formality", "balanced")
         humor = config.get("humor", "light")
         encouragement = config.get("encouragement", "moderate")
         
-        # Language-specific base role
-        if language == "de":
-            role_base = (
-                "Du bist ein persönlicher Professor für Universitätsstudenten. "
-                "Du erklärst komplexe Konzepte auf studentennahem und verständlichem Niveau, "
-                "als wärst du ein hilfreicher Tutor, der sich Zeit für jeden Studenten nimmt."
-            )
-            teaching_style = (
-                "DEINE LEHRMETHODE (Sokratische Methode):\n"
-                "- Stelle Fragen BEVOR du erklärst (prüfe das Verständnis zuerst)\n"
-                "- Verwende Analogien und Beispiele aus dem Alltag\n"
-                "- Zerlege komplexe Konzepte in kleinere Schritte\n"
-                "- Ermutige aktives Denken: 'Was denkst du passiert, wenn...?'\n"
-                "- Passe die Erklärungstiefe an die Antworten des Studenten an\n"
-                "- Vermeide Monologe - halte Erklärungen kurz (2-3 Sätze)\n"
-            )
-        else:  # Default to English
-            role_base = (
-                "You are a personal professor for university students. "
-                "You explain complex concepts at a student-friendly and understandable level, "
-                "like a helpful tutor who takes time for each student."
-            )
-            teaching_style = (
-                "YOUR TEACHING METHOD (Socratic Method):\n"
-                "- Ask questions BEFORE explaining (check understanding first)\n"
-                "- Use analogies and examples from everyday life\n"
-                "- Break complex concepts into smaller steps\n"
-                "- Encourage active thinking: 'What do you think happens if...?'\n"
-                "- Adapt your explanation depth to the student's responses\n"
-                "- Avoid monologues - keep explanations concise (2-3 sentences)\n"
-            )
+        if not self.langfuse_client:
+            raise RuntimeError("Langfuse client is not available. Cannot load system prompt.")
         
-        # Personality traits
+        try:
+            prompt_name = f"tutor-agent/system-prompt-{language}"
+            langfuse_prompt = self.langfuse_client.get_prompt(
+                prompt_name,
+                label="production",
+                type="chat"
+            )
+            
+            # Get personality trait texts
+            formality_text, humor_text, encouragement_text = self._get_personality_texts(
+                language, formality, humor, encouragement
+            )
+            
+            # Compile prompt with variables
+            compiled_prompt = langfuse_prompt.compile(
+                formality_text=formality_text,
+                humor_text=humor_text,
+                encouragement_text=encouragement_text
+            )
+            
+            # Extract system message content from compiled chat prompt
+            if compiled_prompt and isinstance(compiled_prompt, list) and len(compiled_prompt) > 0:
+                system_message = compiled_prompt[0]
+                if isinstance(system_message, dict) and system_message.get("role") == "system":
+                    logger.debug(f"✅ Using Langfuse prompt for tutor-agent/system-prompt-{language}")
+                    return system_message.get("content", "")
+                elif hasattr(system_message, "content"):
+                    logger.debug(f"✅ Using Langfuse prompt for tutor-agent/system-prompt-{language}")
+                    return system_message.content
+            
+            raise RuntimeError(f"Invalid prompt structure returned from Langfuse for {prompt_name}")
+        except Exception as e:
+            logger.error(f"Failed to load Langfuse prompt for tutor-agent: {e}")
+            raise RuntimeError(f"Cannot load system prompt from Langfuse: {e}") from e
+    
+    def _get_personality_texts(
+        self,
+        language: str,
+        formality: str,
+        humor: str,
+        encouragement: str
+    ) -> tuple[str, str, str]:
+        """
+        Get personality trait texts based on language and config.
+        
+        Returns:
+            Tuple of (formality_text, humor_text, encouragement_text)
+        """
         if language == "de":
             formality_text = {
                 "formal": "Du verwendest eine formelle, akademische Sprache mit korrekten Fachbegriffen.",
                 "informal": "Du verwendest eine lockere, freundliche Sprache, als würdest du mit einem Kommilitonen sprechen.",
                 "balanced": "Du verwendest eine ausgewogene Mischung aus formeller und freundlicher Sprache."
-            }.get(formality, "")
+            }.get(formality, "Du verwendest eine ausgewogene Mischung aus formeller und freundlicher Sprache.")
             
             humor_text = {
                 "none": "Du verzichtest auf Humor und bleibst sachlich.",
                 "light": "Du verwendest gelegentlich leichten, passenden Humor, um die Atmosphäre aufzulockern.",
                 "moderate": "Du verwendest regelmäßig passenden Humor und Analogien, um komplexe Themen zugänglicher zu machen."
-            }.get(humor, "")
+            }.get(humor, "Du verwendest gelegentlich leichten, passenden Humor, um die Atmosphäre aufzulockern.")
             
             encouragement_text = {
                 "reserved": "Du bist zurückhaltend mit Lob, aber anerkennend bei guten Antworten.",
                 "moderate": "Du ermutigst den Studenten regelmäßig und bestätigst Fortschritte.",
                 "enthusiastic": "Du bist sehr ermutigend und enthusiastisch, feierst kleine Erfolge und motivierst aktiv."
-            }.get(encouragement, "")
+            }.get(encouragement, "Du ermutigst den Studenten regelmäßig und bestätigst Fortschritte.")
         else:
             formality_text = {
                 "formal": "You use formal, academic language with correct technical terms.",
                 "informal": "You use a relaxed, friendly language, as if talking to a fellow student.",
                 "balanced": "You use a balanced mix of formal and friendly language."
-            }.get(formality, "")
+            }.get(formality, "You use a balanced mix of formal and friendly language.")
             
             humor_text = {
                 "none": "You avoid humor and stay factual.",
                 "light": "You occasionally use light, appropriate humor to lighten the atmosphere.",
                 "moderate": "You regularly use appropriate humor and analogies to make complex topics more accessible."
-            }.get(humor, "")
+            }.get(humor, "You occasionally use light, appropriate humor to lighten the atmosphere.")
             
             encouragement_text = {
                 "reserved": "You are reserved with praise, but acknowledge good answers.",
                 "moderate": "You regularly encourage the student and confirm progress.",
                 "enthusiastic": "You are very encouraging and enthusiastic, celebrate small successes and actively motivate."
-            }.get(encouragement, "")
+            }.get(encouragement, "You regularly encourage the student and confirm progress.")
         
-        # Tool usage instructions
-        if language == "de":
-            tool_instructions = (
-                "TOOL-NUTZUNG:\n"
-                "- Du kennst immer, welche Folie der Student gerade betrachtet (aus dem Kontext)\n"
-                "- Verwende das get_page_analysis Tool, um Folieninhalte abzurufen, wenn nötig\n"
-                "- Verwende das get_course_material_summary Tool, um eine Gesamtübersicht der Vorlesung zu erhalten, "
-                "besonders beim ersten Kontakt mit einem Studenten oder wenn du Kontext über die gesamte Vorlesung brauchst\n"
-                "- Die Argumente course_material_id, page_number und user_id werden automatisch aus dem Kontext gefüllt\n"
-                "- Wenn ein Tool einen Fehler zurückgibt, erkenne dies an und arbeite mit dem, was du weißt\n\n"
-            )
-            context_awareness = (
-                "KONTEXT-BEWUSSTSEIN:\n"
-                "- Du erhältst automatisch Informationen über die aktuelle Folie (Seitennummer)\n"
-                "- Du kennst die Material-ID und User-ID aus dem Kontext\n"
-                "- Wenn ein Student zu einer neuen Folie navigiert, begrüße ihn und biete an, den Inhalt zu erklären\n\n"
-            )
-        else:
-            tool_instructions = (
-                "TOOL USAGE:\n"
-                "- You always know which slide the student is viewing (from context)\n"
-                "- Use the get_page_analysis tool to retrieve slide content when needed\n"
-                "- Use the get_course_material_summary tool to get an overview of the entire lecture, "
-                "especially when first greeting a student or when you need context about the overall lecture content\n"
-                "- The arguments course_material_id, page_number, and user_id are automatically filled from context\n"
-                "- If a tool returns an error, acknowledge it and work with what you know\n\n"
-            )
-            context_awareness = (
-                "CONTEXT AWARENESS:\n"
-                "- You automatically receive information about the current slide (page number)\n"
-                "- You know the material ID and user ID from context\n"
-                "- When a student navigates to a new slide, greet them and offer to explain the content\n\n"
-            )
-        
-        # Communication style
-        if language == "de":
-            communication_style = (
-                "KOMMUNIKATIONSSTIL:\n"
-                "- Professionell aber freundlich (wie ein hilfreicher Tutor)\n"
-                "- Verwende Fachbegriffe, aber erkläre sie beim ersten Mal\n"
-                "- Halte Antworten prägnant (2-3 Sätze für Erklärungen, 1-2 für Fragen)\n"
-                "- Verwende Emojis sparsam (nur zur Ermutigung: ✅, 💡, 🤔)\n\n"
-            )
-        else:
-            communication_style = (
-                "COMMUNICATION STYLE:\n"
-                "- Professional but friendly (like a helpful TA)\n"
-                "- Use technical terms but explain them when first introduced\n"
-                "- Keep responses concise (2-3 sentences for explanations, 1-2 for questions)\n"
-                "- Use emojis sparingly (only for encouragement: ✅, 💡, 🤔)\n\n"
-            )
-        
-        # Combine all parts
-        prompt_parts = [
-            role_base,
-            "",
-            teaching_style,
-            "",
-            "CHARAKTEREIGENSCHAFTEN:",
-            formality_text,
-            humor_text,
-            encouragement_text,
-            "",
-            context_awareness,
-            tool_instructions,
-            communication_style
-        ]
-        
-        return "\n".join(filter(None, prompt_parts))
+        return formality_text, humor_text, encouragement_text
     
     def _build_graph(self) -> None:
         """Build the LangGraph workflow for the tutor agent."""

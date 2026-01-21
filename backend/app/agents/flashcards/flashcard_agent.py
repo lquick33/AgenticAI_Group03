@@ -53,7 +53,7 @@ class FlashcardGeneratorAgent:
     
     def _get_skip_decision_prompt(self, summary: str, key_terms: List[str]) -> str:
         """
-        Get skip decision prompt from Langfuse or fallback to hardcoded version.
+        Get skip decision prompt from Langfuse.
         
         Args:
             summary: Page summary
@@ -61,52 +61,29 @@ class FlashcardGeneratorAgent:
             
         Returns:
             Compiled prompt string
+            
+        Raises:
+            RuntimeError: If Langfuse client is not available or prompt cannot be loaded
         """
-        # Try to load prompt from Langfuse
-        if self.langfuse_client:
-            try:
-                langfuse_prompt = self.langfuse_client.get_prompt(
-                    "flashcard-agent/skip-decision",
-                    label="production"
-                )
-                # Compile prompt with variables
-                key_terms_str = ', '.join(key_terms[:10]) if key_terms else 'Keine'
-                compiled_prompt = langfuse_prompt.compile(
-                    summary=summary,
-                    key_terms=key_terms_str
-                )
-                logger.debug("✅ Using Langfuse prompt for skip-decision")
-                return compiled_prompt
-            except Exception as e:
-                logger.warning(f"Failed to load Langfuse prompt for skip-decision, using fallback: {e}")
+        if not self.langfuse_client:
+            raise RuntimeError("Langfuse client is not available. Cannot load skip-decision prompt.")
         
-        # Fallback to hardcoded prompt
-        if self.language == "de":
-            return f"""Analysiere diese Vorlesungsseite und entscheide, ob sie übersprungen werden sollte.
-
-Seitenzusammenfassung: {summary}
-Wichtige Begriffe: {', '.join(key_terms[:10]) if key_terms else 'Keine'}
-
-Überspringe die Seite, wenn sie:
-- Eine Titelseite ist
-- Ein Inhaltsverzeichnis ist
-- Eine Einleitungsseite mit nur allgemeinen Informationen ist
-- Keine fachlichen Inhalte enthält
-
-Antworte mit JSON: {{"skip": true/false, "reason": "Kurze Begründung"}}"""
-        else:
-            return f"""Analyze this lecture page and decide if it should be skipped.
-
-Page summary: {summary}
-Key terms: {', '.join(key_terms[:10]) if key_terms else 'None'}
-
-Skip the page if it is:
-- A title page
-- A table of contents
-- An introduction page with only general information
-- Contains no academic content
-
-Respond with JSON: {{"skip": true/false, "reason": "Brief reason"}}"""
+        try:
+            langfuse_prompt = self.langfuse_client.get_prompt(
+                "flashcard-agent/skip-decision",
+                label="production"
+            )
+            # Compile prompt with variables
+            key_terms_str = ', '.join(key_terms[:10]) if key_terms else 'Keine'
+            compiled_prompt = langfuse_prompt.compile(
+                summary=summary,
+                key_terms=key_terms_str
+            )
+            logger.debug("✅ Using Langfuse prompt for skip-decision")
+            return compiled_prompt
+        except Exception as e:
+            logger.error(f"Failed to load Langfuse prompt for skip-decision: {e}")
+            raise RuntimeError(f"Cannot load skip-decision prompt from Langfuse: {e}") from e
     
     def _should_skip_page(
         self, 
@@ -135,7 +112,7 @@ Respond with JSON: {{"skip": true/false, "reason": "Brief reason"}}"""
         if not summary:
             return False, "No summary available"
         
-        # Get prompt (from Langfuse or fallback)
+        # Get prompt from Langfuse
         prompt = self._get_skip_decision_prompt(summary, key_terms)
         
         # Create Langfuse callback handler für automatisches Tracking
@@ -182,7 +159,7 @@ Respond with JSON: {{"skip": true/false, "reason": "Brief reason"}}"""
         page_number: int
     ) -> str:
         """
-        Get card generation prompt from Langfuse or fallback to hardcoded version.
+        Get card generation prompt from Langfuse.
         
         Args:
             summary: Page summary
@@ -196,79 +173,40 @@ Respond with JSON: {{"skip": true/false, "reason": "Brief reason"}}"""
             
         Returns:
             Compiled prompt string
+            
+        Raises:
+            RuntimeError: If Langfuse client is not available or prompt cannot be loaded
         """
-        # Try to load prompt from Langfuse
-        if self.langfuse_client:
-            try:
-                langfuse_prompt = self.langfuse_client.get_prompt(
-                    "flashcard-agent/card-generation",
-                    label="production"
-                )
-                # Prepare variables for compilation
-                key_terms_str = ', '.join(key_terms) if key_terms else 'Keine'
-                exam_questions_str = ', '.join(exam_questions) if exam_questions else 'Keine'
-                diagram_desc_str = diagram_description if diagram_description else 'Kein Diagramm'
-                conv_context_str = conversation_context if conversation_context else 'Keine relevanten Konversationen'
-                
-                # Compile prompt with variables
-                compiled_prompt = langfuse_prompt.compile(
-                    summary=summary,
-                    key_terms=key_terms_str,
-                    exam_questions=exam_questions_str,
-                    diagram_description=diagram_desc_str,
-                    conversation_context=conv_context_str,
-                    course_id=course_id,
-                    material_id=material_id,
-                    page_number=str(page_number)
-                )
-                logger.debug("✅ Using Langfuse prompt for card-generation")
-                return compiled_prompt
-            except Exception as e:
-                logger.warning(f"Failed to load Langfuse prompt for card-generation, using fallback: {e}")
+        if not self.langfuse_client:
+            raise RuntimeError("Langfuse client is not available. Cannot load card-generation prompt.")
         
-        # Fallback to hardcoded prompt
-        if self.language == "de":
-            return f"""Erstelle Lernkarteikarten für diese Vorlesungsseite.
-
-SEITENINHALT:
-Zusammenfassung: {summary}
-Wichtige Begriffe: {', '.join(key_terms) if key_terms else 'Keine'}
-Prüfungsfragen: {', '.join(exam_questions) if exam_questions else 'Keine'}
-Diagrammbeschreibung: {diagram_description if diagram_description else 'Kein Diagramm'}
-
-KONVERSATION ZU DIESER SEITE:
-{conversation_context if conversation_context else 'Keine relevanten Konversationen'}
-
-AUFGABE:
-Erstelle mindestens 1, idealerweise 2-4 Lernkarteikarten für diese Seite.
-- Wenn der Student spezifische Verständnisprobleme in der Konversation hatte, erstelle eine Karte, die genau dieses Problem behandelt.
-- Erstelle Karten für wichtige Konzepte, Definitionen, Formeln oder Zusammenhänge.
-- Die Vorderseite sollte eine Frage oder einen Begriff enthalten.
-- Die Rückseite sollte eine klare, prägnante Antwort oder Definition enthalten.
-- Verwende Tags: course:{course_id}, material:{material_id}, page:{page_number}, und zusätzliche thematische Tags.
-
-Antworte mit JSON: {{"cards": [{{"front": "...", "back": "...", "tags": ["tag1", "tag2", ...]}}, ...]}}"""
-        else:
-            return f"""Create flashcards for this lecture page.
-
-PAGE CONTENT:
-Summary: {summary}
-Key terms: {', '.join(key_terms) if key_terms else 'None'}
-Exam questions: {', '.join(exam_questions) if exam_questions else 'None'}
-Diagram description: {diagram_description if diagram_description else 'No diagram'}
-
-CONVERSATION FOR THIS PAGE:
-{conversation_context if conversation_context else 'No relevant conversations'}
-
-TASK:
-Create at least 1, ideally 2-4 flashcards for this page.
-- If the student had specific understanding problems in the conversation, create a card that addresses exactly this problem.
-- Create cards for important concepts, definitions, formulas, or relationships.
-- The front side should contain a question or term.
-- The back side should contain a clear, concise answer or definition.
-- Use tags: course:{course_id}, material:{material_id}, page:{page_number}, and additional thematic tags.
-
-Respond with JSON: {{"cards": [{{"front": "...", "back": "...", "tags": ["tag1", "tag2", ...]}}, ...]}}"""
+        try:
+            langfuse_prompt = self.langfuse_client.get_prompt(
+                "flashcard-agent/card-generation",
+                label="production"
+            )
+            # Prepare variables for compilation
+            key_terms_str = ', '.join(key_terms) if key_terms else 'Keine'
+            exam_questions_str = ', '.join(exam_questions) if exam_questions else 'Keine'
+            diagram_desc_str = diagram_description if diagram_description else 'Kein Diagramm'
+            conv_context_str = conversation_context if conversation_context else 'Keine relevanten Konversationen'
+            
+            # Compile prompt with variables
+            compiled_prompt = langfuse_prompt.compile(
+                summary=summary,
+                key_terms=key_terms_str,
+                exam_questions=exam_questions_str,
+                diagram_description=diagram_desc_str,
+                conversation_context=conv_context_str,
+                course_id=course_id,
+                material_id=material_id,
+                page_number=str(page_number)
+            )
+            logger.debug("✅ Using Langfuse prompt for card-generation")
+            return compiled_prompt
+        except Exception as e:
+            logger.error(f"Failed to load Langfuse prompt for card-generation: {e}")
+            raise RuntimeError(f"Cannot load card-generation prompt from Langfuse: {e}") from e
     
     def _generate_cards_for_page(
         self,
@@ -315,7 +253,7 @@ Respond with JSON: {{"cards": [{{"front": "...", "back": "...", "tags": ["tag1",
             if relevant_messages:
                 conversation_context = "\n".join(relevant_messages[-6:])  # Last 3 Q&A pairs
         
-        # Get prompt (from Langfuse or fallback)
+        # Get prompt from Langfuse
         prompt = self._get_card_generation_prompt(
             summary=summary,
             key_terms=key_terms,
