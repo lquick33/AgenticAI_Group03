@@ -101,3 +101,38 @@
     color: hsl(var(--foreground));
   }
 }
+
+/* MathJax Styling */
+@layer components {
+  .math-expression {
+    /* Ensure MathJax expressions inherit text color */
+    color: inherit;
+  }
+  
+  /* Inline math should flow naturally with text */
+  .math-expression[data-inline="true"] {
+    display: inline;
+    vertical-align: baseline;
+  }
+  
+  /* Display math should be centered and have spacing */
+  .math-expression[data-inline="false"] {
+    display: block;
+    text-align: center;
+    margin: 1rem 0;
+  }
+  
+  /* MathJax rendered output styling */
+  .MathJax {
+    color: inherit !important;
+  }
+  
+  .MathJax_SVG {
+    color: inherit !important;
+  }
+  
+  /* Ensure proper spacing for display equations */
+  .MathJax_Display {
+    margin: 1em 0 !important;
+  }
+}

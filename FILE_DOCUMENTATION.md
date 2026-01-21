@@ -3153,3 +3153,150 @@ python backend/langfuse_to_anki_csv.py --input langfuse_export.json --output fla
 - `backend/flashcard_prompt_test_dataset_langfuse.json` - Test-Dataset
 
 ---
+
+## Frontend Math Rendering Files
+
+### `frontend/lib/math-parser.ts`
+
+**Purpose**: Utility function to parse text content and extract mathematical expressions in the format used by the Tutor Agent. Handles both inline math `(formel)` and display math `[formel]` patterns.
+
+**Key Components**:
+- **parseMathExpressions()**: Main parsing function that:
+  - Scans text for `(formel)` and `[formel]` patterns
+  - Handles nested parentheses and brackets correctly
+  - Returns an array of segments with type (`text` | `inline-math` | `display-math`) and content
+- **findNextMatch()**: Helper function that finds matching bracket/parenthesis pairs while handling nesting
+- **MathSegment Interface**: TypeScript interface defining the structure of parsed segments
+
+**Dependencies**: 
+- TypeScript
+- No external dependencies
+
+**Usage**:
+```typescript
+import { parseMathExpressions } from '@/lib/math-parser'
+
+const segments = parseMathExpressions("Das ist (x^2 + y^2) eine Formel")
+// Returns: [
+//   { type: 'text', content: 'Das ist ' },
+//   { type: 'inline-math', content: 'x^2 + y^2' },
+//   { type: 'text', content: ' eine Formel' }
+// ]
+```
+
+**Related Files**: 
+- `frontend/components/ui/math-renderer.tsx` - Renders the parsed math expressions
+- `frontend/components/study/chat-message.tsx` - Uses the parser to display math in chat messages
+
+---
+
+### `frontend/components/ui/math-renderer.tsx`
+
+**Purpose**: React component that renders mathematical expressions using MathJax. Supports both inline and display math modes with proper styling integration.
+
+**Key Components**:
+- **MathRenderer Component**: 
+  - Wraps formulas in appropriate MathJax delimiters (`\(` `\)` for inline, `\[` `\]` for display)
+  - Uses `better-react-mathjax` library for React integration
+  - Supports `inline` prop to control rendering mode
+  - Uses `hideUntilTypeset="first"` to prevent flickering during rendering
+  - Supports dynamic updates for streaming content
+
+**Props**:
+- `formula`: The LaTeX formula string to render
+- `inline`: Boolean indicating inline (true) or display (false) mode (default: true)
+- `className`: Additional CSS classes for styling
+
+**Dependencies**: 
+- `better-react-mathjax` - React wrapper for MathJax v3
+- `@/lib/utils` - For `cn` utility function
+
+**Usage**:
+```tsx
+import { MathRenderer } from '@/components/ui/math-renderer'
+
+// Inline math
+<MathRenderer formula="x^2 + y^2" inline={true} />
+
+// Display math
+<MathRenderer formula="\\int_0^1 f(x) dx" inline={false} />
+```
+
+**Related Files**: 
+- `frontend/lib/math-parser.ts` - Parses text to extract math expressions
+- `frontend/components/study/chat-message.tsx` - Uses MathRenderer to display math in messages
+- `frontend/components/study/chat-interface.tsx` - Provides MathJaxContext
+
+---
+
+### `frontend/components/study/chat-interface.tsx` (MathJax Integration)
+
+**Purpose**: Chat interface component that wraps the conversation area with MathJaxContext to enable MathJax rendering throughout the chat.
+
+**Key Changes**:
+- **MathJaxContext Integration**: 
+  - Wraps the entire chat interface with `MathJaxContext`
+  - Configures MathJax with custom delimiters matching the Tutor Agent format:
+    - Inline: `\(` and `\)`
+    - Display: `\[` and `\]`
+  - Uses `hideUntilTypeset="first"` to prevent content flickering
+- **Configuration**: 
+  - Skips HTML tags (script, noscript, style, textarea, pre, code) to avoid conflicts
+  - Ensures MathJax only processes mathematical expressions, not code blocks
+
+**Dependencies**: 
+- `better-react-mathjax` - For MathJaxContext component
+
+**Related Files**: 
+- `frontend/components/study/chat-message.tsx` - Renders messages with math expressions
+- `frontend/components/ui/math-renderer.tsx` - Individual math rendering component
+
+---
+
+### `frontend/components/study/chat-message.tsx` (MathJax Integration)
+
+**Purpose**: Chat message component that displays user and assistant messages. Enhanced to parse and render mathematical expressions using MathJax.
+
+**Key Changes**:
+- **Math Parsing**: 
+  - Uses `parseMathExpressions()` to split content into text and math segments
+  - Processes segments separately: text with ReactMarkdown, math with MathRenderer
+- **Rendering Logic**:
+  - Text segments: Rendered with ReactMarkdown (preserves all markdown features)
+  - Inline math: Rendered with `MathRenderer` inline mode, wrapped in `<span>`
+  - Display math: Rendered with `MathRenderer` display mode, wrapped in centered `<div>`
+- **Fallback**: If no math expressions are found, falls back to standard ReactMarkdown rendering
+- **Styling**: Math expressions inherit text color from the message role (assistant/user)
+
+**Dependencies**: 
+- `@/lib/math-parser` - For parsing math expressions
+- `@/components/ui/math-renderer` - For rendering math
+- `react-markdown` - For rendering text segments
+- `better-react-mathjax` - Provided by parent MathJaxContext
+
+**Related Files**: 
+- `frontend/lib/math-parser.ts` - Parsing logic
+- `frontend/components/ui/math-renderer.tsx` - Math rendering component
+- `frontend/components/study/chat-interface.tsx` - Provides MathJaxContext
+
+---
+
+### `frontend/app/globals.css` (MathJax Styling)
+
+**Purpose**: Global CSS file that includes styling rules for MathJax-rendered mathematical expressions to ensure proper integration with the chat interface design.
+
+**Key Components**:
+- **Math Expression Styling**:
+  - Ensures MathJax expressions inherit text color from parent
+  - Inline math: Flows naturally with text, baseline-aligned
+  - Display math: Centered, with proper vertical spacing (1rem margin)
+- **MathJax Output Styling**:
+  - Forces MathJax SVG/HTML output to inherit color
+  - Ensures display equations have proper spacing (1em margin)
+
+**Dependencies**: None (pure CSS)
+
+**Related Files**: 
+- All components using MathJax rendering benefit from these styles
+
+---
