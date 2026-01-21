@@ -9,6 +9,8 @@ This agent helps students understand lecture materials by:
 """
 
 from typing import Optional, Dict, Any
+import json
+import logging
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
@@ -20,7 +22,6 @@ from app.tools.page_analysis_tool import GetPageAnalysisTool
 from app.tools.course_material_tool import GetCourseMaterialSummaryTool
 from app.services.observability import create_callback_handler, get_langfuse_client
 from app.core.config import settings
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class TutorState(State):
     current_page: Optional[int] = None
     material_id: Optional[str] = None
     user_id: Optional[str] = None
+    course_material_summary: Optional[dict] = None
 
 
 class StateAwareToolNode(ToolNode):
@@ -492,6 +494,20 @@ class TutorAgent(BaseAgent):
             else:
                 context_parts.append(f"Material ID: {state['material_id']}")
         
+        # Add course material summary to context if available
+        if state.get("course_material_summary"):
+            summary = state["course_material_summary"]
+            # Format summary nicely
+            if isinstance(summary, dict):
+                summary_text = json.dumps(summary, ensure_ascii=False, indent=2)
+            else:
+                summary_text = str(summary)
+            
+            if self.language == "de":
+                context_parts.append(f"\n\nVORLESUNGSÜBERSICHT:\n{summary_text}")
+            else:
+                context_parts.append(f"\n\nCOURSE OVERVIEW:\n{summary_text}")
+        
         context_str = "\n".join(context_parts) if context_parts else ""
         
         # Ensure system message is present
@@ -499,7 +515,6 @@ class TutorAgent(BaseAgent):
         messages_for_llm = self.add_system_message(messages_for_truncation)
         
         # #region agent log
-        import json
         log_path = r"c:\App\AAI\AgenticAI_Group03\.cursor\debug.log"
         try:
             message_structure = []

@@ -43,6 +43,7 @@ from app.services.storage import (
     get_page_analysis,
     get_page_analysis_id,
     get_flashcards_for_material,
+    get_course_material_summary,
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_csv
@@ -797,6 +798,16 @@ async def initiate_chat(
             # Page analysis not found, use default
             summary = "Content is being analyzed"
         
+        # Get course material summary for persistent context
+        course_summary = None
+        try:
+            course_summary = get_course_material_summary(
+                course_material_id=course_material_id,
+                user_id=request.user_id
+            )
+        except Exception as summary_error:
+            logger.warning(f"Failed to load course material summary: {summary_error}")
+        
         # Initialize LLM and agent
         llm = get_gemini_model()
         agent = TutorAgent(llm=llm, checkpointer=_checkpointer)
@@ -1129,6 +1140,7 @@ async def initiate_chat(
                         "current_page": request.page_number,
                         "material_id": request.material_id,
                         "user_id": request.user_id,
+                        "course_material_summary": course_summary,
                     }
                 else:
                     # This is just a page change within an ongoing session
@@ -1153,6 +1165,7 @@ async def initiate_chat(
                             "current_page": request.page_number,
                             "material_id": request.material_id,
                             "user_id": request.user_id,
+                            "course_material_summary": course_summary,
                         }
                     else:
                         # Existing thread in this backend process: load existing messages from snapshot
@@ -1175,6 +1188,21 @@ async def initiate_chat(
                         # If last message is AIMessage with tool_calls, we need ToolMessages first
                         validated_messages = fix_incomplete_tool_calls(existing_messages)
                         
+                        # Ensure course_material_summary is in state (for old conversations)
+                        existing_summary = snapshot.values.get("course_material_summary")
+                        if not existing_summary and course_summary:
+                            # Summary not in state yet, use the one we loaded
+                            existing_summary = course_summary
+                        elif not existing_summary:
+                            # Try to load it if we haven't already
+                            try:
+                                existing_summary = get_course_material_summary(
+                                    course_material_id=course_material_id,
+                                    user_id=request.user_id
+                                )
+                            except Exception:
+                                pass  # Non-critical
+                        
                         initial_state = {
                             "messages": validated_messages
                             + [
@@ -1184,6 +1212,7 @@ async def initiate_chat(
                             "current_page": request.page_number,
                             "material_id": request.material_id,
                             "user_id": request.user_id,
+                            "course_material_summary": existing_summary,
                         }
                 
                 # Prepare buffer for assistant response text for persistence
@@ -1532,6 +1561,21 @@ async def send_chat_message(
                     metadata = conversation.get("metadata") or {}
                     current_page = metadata.get("last_page_number")
                 
+                # Ensure course_material_summary is in state (for old conversations)
+                course_summary = None
+                if snapshot and snapshot.values:
+                    course_summary = snapshot.values.get("course_material_summary")
+                
+                if not course_summary:
+                    # Try to load it if not in state
+                    try:
+                        course_summary = get_course_material_summary(
+                            course_material_id=course_material_id,
+                            user_id=request.user_id
+                        )
+                    except Exception:
+                        pass  # Non-critical
+                
                 # Add user message to existing thread and preserve state
                 initial_state = {
                     "messages": [HumanMessage(content=request.message)],
@@ -1542,6 +1586,10 @@ async def send_chat_message(
                 # Only add current_page if it exists in previous state or metadata
                 if current_page is not None:
                     initial_state["current_page"] = current_page
+                
+                # Add course_material_summary if available
+                if course_summary:
+                    initial_state["course_material_summary"] = course_summary
 
                 # Prepare buffer for assistant response text for persistence
                 assistant_response_chunks: list[str] = []
