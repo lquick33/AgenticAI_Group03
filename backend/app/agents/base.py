@@ -272,7 +272,7 @@ class BaseAgent(ABC):
         if not has_system_message:
             # Ensure system prompt is not None or empty
             if self.system_prompt:
-                return [SystemMessage(content=self.system_prompt.format())] + messages
+                return [SystemMessage(content=self.system_prompt)] + messages
         return messages
     
     def __str__(self) -> str:
