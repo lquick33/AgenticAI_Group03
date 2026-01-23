@@ -53,11 +53,6 @@
   * {
     border-color: hsl(var(--border));
   }
-  html,
-  body {
-    height: 100%;
-    overflow: hidden;
-  }
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
@@ -101,11 +96,6 @@
   * {
     border-color: hsl(var(--border));
   }
-  html,
-  body {
-    height: 100%;
-    overflow: hidden;
-  }
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
@@ -123,4 +113,11 @@
   .katex-display {
     margin: 1em 0;
   }
+}
+
+/* StudyReader specific styles - prevent page scrolling */
+/* Apply this class to body element on StudyReader page only */
+/* Prevents body from scrolling, but allows internal containers to scroll */
+body.no-page-scroll {
+  overflow: hidden;
 }

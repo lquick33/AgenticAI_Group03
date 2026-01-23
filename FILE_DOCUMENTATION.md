@@ -2313,6 +2313,36 @@ const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default:
 **Related Files**: 
 - `frontend/components/study/study-reader.tsx` - Main study component
 - `frontend/app/(dashboard)/dashboard/courses/[id]/page.tsx` - Course detail page (navigation source)
+- `frontend/components/study/no-page-scroll.tsx` - Prevents page scrolling on StudyReader page
+
+---
+
+### `frontend/components/study/no-page-scroll.tsx`
+
+**Purpose**: Client component that prevents page-level scrolling by adding a CSS class to html/body elements. Used only on the StudyReader page to prevent unwanted page scrolling while allowing internal component scrolling.
+
+**Key Features**:
+- Adds `no-page-scroll` class to `document.documentElement` (html) and `document.body` on mount
+- Removes the class on unmount to restore normal scrolling behavior
+- Uses `useEffect` hook for lifecycle management
+- Returns `null` (no visual output)
+
+**How it works**:
+1. On component mount, adds `no-page-scroll` class to html and body
+2. CSS rule `html.no-page-scroll, body.no-page-scroll` applies `height: 100%` and `overflow: hidden`
+3. On component unmount, removes the class to restore normal scrolling
+
+**Usage**: 
+- Import and use as a component on pages where page-level scrolling should be disabled
+- Currently used only on the StudyReader page (`/dashboard/courses/[id]/study/[materialId]`)
+
+**Dependencies**: 
+- React hooks (`useEffect`)
+- CSS class defined in `globals.css`
+
+**Related Files**: 
+- `frontend/app/(dashboard)/dashboard/courses/[id]/study/[materialId]/page.tsx` - Uses this component
+- `frontend/app/globals.css` - Defines `.no-page-scroll` CSS class
 
 ---
 
