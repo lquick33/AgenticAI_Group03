@@ -3108,10 +3108,8 @@ Gib dem Studenten konstruktives Feedback:
                     last_message = feedback_messages[-1]
                     if hasattr(last_message, "content"):
                         tutor_feedback = last_message.content
-                        # Add feedback to result
-                        result_dict = result.model_dump()
-                        result_dict["tutor_feedback"] = tutor_feedback
-                        result = QuizResult(**result_dict)
+                        # Add feedback to result - use model_copy to preserve all fields
+                        result = result.model_copy(update={"tutor_feedback": tutor_feedback})
                         
                         logger.info(f"Tutor feedback generated for quiz {request.quiz_id}")
                 else:

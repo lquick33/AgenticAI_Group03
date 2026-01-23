@@ -26,6 +26,7 @@ export function QuizComponent({
   const [showFeedback, setShowFeedback] = useState(false)
   const [isCorrect, setIsCorrect] = useState(false)
   const [showScore, setShowScore] = useState(false)
+  const [isCompleted, setIsCompleted] = useState(false)
   const [answeredQuestions, setAnsweredQuestions] = useState<Set<number>>(new Set())
 
   const currentQuestion = questions[currentQuestionIndex]
@@ -60,6 +61,8 @@ export function QuizComponent({
   // Auto-submit when last question is answered (for direct submission without score screen)
   const handleLastQuestionSubmit = useCallback(() => {
     setShowFeedback(false)
+    setShowScore(true)
+    setIsCompleted(true)
     onComplete(quizId, answers)
   }, [quizId, answers, onComplete])
 
@@ -88,8 +91,8 @@ export function QuizComponent({
     )
   }
 
-  // Score screen
-  if (showScore) {
+  // Score screen - show after completion or when showScore is true
+  if (showScore || isCompleted) {
     const correctCount = Object.entries(answers).reduce((count, [questionId, answer]) => {
       const question = questions.find((q) => q.id === questionId)
       return question && answer === question.correct_answer ? count + 1 : count
@@ -105,13 +108,15 @@ export function QuizComponent({
             {correctCount} von {questions.length} Fragen richtig
           </p>
         </div>
-        <button
-          onClick={handleSubmit}
-          className="w-full bg-white text-black rounded-lg px-4 py-2 font-medium hover:bg-gray-100 transition-colors"
-          disabled={isSubmitting}
-        >
-          Ergebnisse absenden
-        </button>
+        {!isCompleted && (
+          <button
+            onClick={handleSubmit}
+            className="w-full bg-white text-black rounded-lg px-4 py-2 font-medium hover:bg-gray-100 transition-colors"
+            disabled={isSubmitting}
+          >
+            Ergebnisse absenden
+          </button>
+        )}
       </div>
     )
   }
@@ -252,7 +257,7 @@ export function QuizComponent({
             onClick={handleNextQuestion}
             className="w-full mt-4 bg-white text-black rounded-lg px-4 py-3 font-medium hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
           >
-            <span>{isLastQuestion ? 'Ergebnisse anzeigen' : 'Nächste Frage'}</span>
+            <span>{isLastQuestion ? 'Weiter' : 'Nächste Frage'}</span>
             <ChevronRight className="w-5 h-5" />
           </button>
         </>

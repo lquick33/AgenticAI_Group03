@@ -100,22 +100,16 @@ export function StudyReader({
         })
       })
       
-      // Add result message to chat
-      let resultContent = `Quiz abgeschlossen! Du hast ${result.correct_count} von ${result.total_questions} Fragen richtig beantwortet (${(result.score * 100).toFixed(0)}%).`
-      
-      // Add tutor feedback if available
+      // Add tutor feedback message if available
       if (result.tutor_feedback) {
-        resultContent += `\n\n${result.tutor_feedback}`
+        const feedbackMessage: ChatMessage = {
+          id: generateMessageId(),
+          role: 'assistant',
+          content: result.tutor_feedback,
+          timestamp: new Date().toISOString(),
+        }
+        setMessages((prev) => [...prev, feedbackMessage])
       }
-      
-      const resultMessage: ChatMessage = {
-        id: generateMessageId(),
-        role: 'assistant',
-        content: resultContent,
-        timestamp: new Date().toISOString(),
-      }
-      
-      setMessages((prev) => [...prev, resultMessage])
       
     } catch (error) {
       console.error('Failed to submit quiz:', error)
