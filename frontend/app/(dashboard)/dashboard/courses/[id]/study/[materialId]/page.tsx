@@ -76,7 +76,7 @@ export default async function StudyPage({ params }: StudyPageProps) {
             <h1 className="text-base font-medium">{material.file_name}</h1>
           </div>
         </header>
-        <div className="flex flex-1 flex-col h-[calc(100vh-3rem)] max-h-[calc(100vh-3rem)] min-h-0 overflow-hidden">
+        <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
           <div className="h-full max-h-full min-h-0 overflow-hidden">
             <StudyReader
               materialId={materialId}
