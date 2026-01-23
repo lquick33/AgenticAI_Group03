@@ -1483,10 +1483,18 @@ async def initiate_chat(
                                 for msg in node_data["messages"]:
                                     # Extract tool responses (ToolMessage contains tool results)
                                     if isinstance(msg, ToolMessage):
-                                        tool_call_id = getattr(msg, "tool_call_id", None) or getattr(msg, "name", None) or ""
+                                        # ToolMessage should have tool_call_id attribute
+                                        tool_call_id = getattr(msg, "tool_call_id", None)
+                                        if not tool_call_id:
+                                            # Fallback: try to get from name attribute (shouldn't happen normally)
+                                            tool_call_id = getattr(msg, "name", None)
+                                        
                                         tool_content = getattr(msg, "content", "")
                                         
                                         if tool_call_id and tool_content:
+                                            # Log for debugging
+                                            logger.info(f"🟡 Tool response: tool_call_id={tool_call_id}, content_length={len(tool_content)}, is_create_quiz={'create_quiz' in tool_content[:100]}")
+                                            
                                             # Send tool response event
                                             tool_response_event = {
                                                 "type": "tool_response",
@@ -1495,6 +1503,8 @@ async def initiate_chat(
                                                 "message_id": f"msg-{len(assistant_response_chunks)}"
                                             }
                                             yield f"data: {json.dumps(tool_response_event)}\n\n"
+                                        else:
+                                            logger.warning(f"⚠️ ToolMessage missing tool_call_id or content: tool_call_id={tool_call_id}, has_content={bool(tool_content)}")
                                         continue
 
                                     if hasattr(msg, "content"):
@@ -1521,6 +1531,8 @@ async def initiate_chat(
                                                             "name": tool_name,
                                                             "args": tool_args if isinstance(tool_args, dict) else {}
                                                         })
+                                                        # Log for debugging
+                                                        logger.info(f"🟡 Tool call: id={tool_id}, name={tool_name}, is_create_quiz={tool_name == 'create_quiz'}")
                                                 
                                                 if tool_calls_data:
                                                     # Send tool call event
@@ -1906,10 +1918,18 @@ async def send_chat_message(
                             for msg in node_data["messages"]:
                                 # Extract tool responses (ToolMessage contains tool results)
                                 if isinstance(msg, ToolMessage):
-                                    tool_call_id = getattr(msg, "tool_call_id", None) or getattr(msg, "name", None) or ""
+                                    # ToolMessage should have tool_call_id attribute
+                                    tool_call_id = getattr(msg, "tool_call_id", None)
+                                    if not tool_call_id:
+                                        # Fallback: try to get from name attribute (shouldn't happen normally)
+                                        tool_call_id = getattr(msg, "name", None)
+                                    
                                     tool_content = getattr(msg, "content", "")
                                     
                                     if tool_call_id and tool_content:
+                                        # Log for debugging
+                                        logger.info(f"🟡 Tool response: tool_call_id={tool_call_id}, content_length={len(tool_content)}, is_create_quiz={'create_quiz' in tool_content[:100]}")
+                                        
                                         # Send tool response event
                                         tool_response_event = {
                                             "type": "tool_response",
@@ -1918,6 +1938,8 @@ async def send_chat_message(
                                             "message_id": f"msg-{len(assistant_response_chunks)}"
                                         }
                                         yield f"data: {json.dumps(tool_response_event)}\n\n"
+                                    else:
+                                        logger.warning(f"⚠️ ToolMessage missing tool_call_id or content: tool_call_id={tool_call_id}, has_content={bool(tool_content)}")
                                     continue
 
                                 if hasattr(msg, "content"):

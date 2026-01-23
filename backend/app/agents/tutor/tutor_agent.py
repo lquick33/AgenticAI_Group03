@@ -444,7 +444,7 @@ class TutorAgent(BaseAgent):
         Validate and fix message ordering to comply with Gemini API requirements.
         Gemini API requires strict ordering:
         - User message (HumanMessage)
-        - Assistant with tool_calls (AIMessage with tool_calls)
+        - Assistant with tool_calls (AIMessage with tool_calls) - MUST come immediately after HumanMessage or ToolMessage
         - Tool responses (ToolMessage) - MUST come immediately after AIMessage with tool_calls
         - (Optional) Assistant final response (AIMessage without tool_calls)
         - User message (HumanMessage)
@@ -453,6 +453,7 @@ class TutorAgent(BaseAgent):
         1. Removes any AIMessage with tool_calls that doesn't have corresponding ToolMessages
         2. Ensures ToolMessages come immediately after their AIMessage
         3. Removes orphaned ToolMessages (without preceding AIMessage)
+        4. Ensures AIMessage with tool_calls only comes after HumanMessage or ToolMessage
         
         Args:
             messages: List of messages to check
@@ -469,8 +470,43 @@ class TutorAgent(BaseAgent):
         while i < len(messages):
             msg = messages[i]
             
+            # Skip SystemMessage - it doesn't affect the turn order
+            if isinstance(msg, SystemMessage):
+                fixed_messages.append(msg)
+                i += 1
+                continue
+            
             # Check if this is an AIMessage with tool_calls
             if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+                # CRITICAL: Gemini requires AIMessage with tool_calls to come immediately after
+                # HumanMessage or ToolMessage. Check the previous non-SystemMessage.
+                prev_msg_index = len(fixed_messages) - 1
+                while prev_msg_index >= 0 and isinstance(fixed_messages[prev_msg_index], SystemMessage):
+                    prev_msg_index -= 1
+                
+                # Check if previous message is valid (HumanMessage or ToolMessage)
+                is_valid_previous = False
+                if prev_msg_index >= 0:
+                    prev_msg = fixed_messages[prev_msg_index]
+                    if isinstance(prev_msg, HumanMessage) or isinstance(prev_msg, ToolMessage):
+                        is_valid_previous = True
+                elif i > 0:
+                    # Check original messages list if fixed_messages is empty or only has SystemMessages
+                    for k in range(i - 1, -1, -1):
+                        if not isinstance(messages[k], SystemMessage):
+                            if isinstance(messages[k], HumanMessage) or isinstance(messages[k], ToolMessage):
+                                is_valid_previous = True
+                            break
+                
+                if not is_valid_previous:
+                    # Invalid: AIMessage with tool_calls not after HumanMessage or ToolMessage
+                    logger.warning(
+                        f"Invalid message order at index {i}: AIMessage with tool_calls must come immediately "
+                        f"after HumanMessage or ToolMessage. Removing to prevent API error."
+                    )
+                    i += 1
+                    continue
+                
                 # Collect all tool call IDs from this AIMessage
                 tool_call_ids = set()
                 for tool_call in msg.tool_calls:
@@ -510,7 +546,7 @@ class TutorAgent(BaseAgent):
                 logger.warning(f"Orphaned ToolMessage detected at index {i}, removing to prevent API error.")
                 i += 1
             else:
-                # Regular message (HumanMessage, AIMessage without tool_calls, SystemMessage)
+                # Regular message (HumanMessage, AIMessage without tool_calls)
                 fixed_messages.append(msg)
                 i += 1
         

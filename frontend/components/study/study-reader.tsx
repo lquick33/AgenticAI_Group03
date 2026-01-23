@@ -283,6 +283,8 @@ export function StudyReader({
 
           // Handle tool call events
           if (chunk.type === 'tool_call' && chunk.tool_calls) {
+            console.log('[StudyReader] Tool call received:', chunk.tool_calls.map(tc => ({ id: tc.id, name: tc.name })))
+            
             setMessages((prev) => {
               const lastStreamingIndex = prev.findLastIndex(
                 (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
@@ -319,6 +321,12 @@ export function StudyReader({
 
           // Handle tool response events
           if (chunk.type === 'tool_response' && chunk.tool_call_id && chunk.result) {
+            console.log('[StudyReader] Tool response received:', {
+              tool_call_id: chunk.tool_call_id,
+              result_length: chunk.result?.length,
+              result_preview: chunk.result?.substring(0, 200)
+            })
+            
             setMessages((prev) => {
               const lastStreamingIndex = prev.findLastIndex(
                 (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
@@ -330,7 +338,10 @@ export function StudyReader({
                 
                 // Find the tool call with matching ID and update it with result
                 if (updated[lastStreamingIndex].toolCalls) {
+                  console.log('[StudyReader] Available tool calls:', updated[lastStreamingIndex].toolCalls!.map(tc => ({ id: tc.id, name: tc.name })))
                   const toolCall = updated[lastStreamingIndex].toolCalls!.find(tc => tc.id === chunk.tool_call_id)
+                  
+                  console.log('[StudyReader] Matching tool call found:', toolCall ? { id: toolCall.id, name: toolCall.name } : 'NOT FOUND')
                   
                   // Check if this is a create_quiz tool call
                   if (toolCall && toolCall.name === 'create_quiz' && chunk.result) {
