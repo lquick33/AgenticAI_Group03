@@ -706,6 +706,17 @@ class TutorAgent(BaseAgent):
                             f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
                             f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
                         )
+                        # Add quiz-specific instructions
+                        enhanced_content += (
+                            "\n\nWICHTIG FÜR QUIZ-ERSTELLUNG:\n"
+                            "- Wenn du ein Quiz erstellen möchtest, sende NUR eine kurze Nachricht "
+                            "(z.B. 'Wir haben das Thema XY abgeschlossen, hier ist dein Quiz') "
+                            "und rufe dann das create_quiz Tool auf.\n"
+                            "- Sende KEINE lange Erklärung der aktuellen Folie, wenn du gleichzeitig ein Quiz erstellst.\n"
+                            "- Nach dem create_quiz Tool Call wird der Graph beendet - du sollst danach nicht mehr schreiben.\n"
+                            "- Das Quiz wird im Chat angezeigt und der Student kann es bearbeiten.\n"
+                            "- Erst nachdem der Student das Quiz abgeschlossen hat, kannst du Feedback geben."
+                        )
                     else:
                         enhanced_content += (
                             "\n\nIMPORTANT: When using tools, the following arguments "
@@ -715,6 +726,17 @@ class TutorAgent(BaseAgent):
                             f"- create_quiz: course_material_id, user_id\n"
                             f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
                             f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
+                        )
+                        # Add quiz-specific instructions
+                        enhanced_content += (
+                            "\n\nIMPORTANT FOR QUIZ CREATION:\n"
+                            "- If you want to create a quiz, send ONLY a short message "
+                            "(e.g., 'We have completed topic XY, here is your quiz') "
+                            "and then call the create_quiz tool.\n"
+                            "- Do NOT send a long explanation of the current slide if you are creating a quiz at the same time.\n"
+                            "- After the create_quiz tool call, the graph will end - you should not write anything after that.\n"
+                            "- The quiz will be displayed in the chat and the student can work on it.\n"
+                            "- Only after the student completes the quiz can you provide feedback."
                         )
                     messages_for_llm[i] = SystemMessage(content=enhanced_content)
                     system_message_found = True
@@ -733,6 +755,17 @@ class TutorAgent(BaseAgent):
                         f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
                         f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
                     )
+                    # Add quiz-specific instructions
+                    enhanced_content += (
+                        "\n\nWICHTIG FÜR QUIZ-ERSTELLUNG:\n"
+                        "- Wenn du ein Quiz erstellen möchtest, sende NUR eine kurze Nachricht "
+                        "(z.B. 'Wir haben das Thema XY abgeschlossen, hier ist dein Quiz') "
+                        "und rufe dann das create_quiz Tool auf.\n"
+                        "- Sende KEINE lange Erklärung der aktuellen Folie, wenn du gleichzeitig ein Quiz erstellst.\n"
+                        "- Nach dem create_quiz Tool Call wird der Graph beendet - du sollst danach nicht mehr schreiben.\n"
+                        "- Das Quiz wird im Chat angezeigt und der Student kann es bearbeiten.\n"
+                        "- Erst nachdem der Student das Quiz abgeschlossen hat, kannst du Feedback geben."
+                    )
                 else:
                     enhanced_content += (
                         "\n\nIMPORTANT: When using tools, the following arguments "
@@ -742,6 +775,17 @@ class TutorAgent(BaseAgent):
                         f"- create_quiz: course_material_id, user_id\n"
                         f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
                         f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
+                    )
+                    # Add quiz-specific instructions
+                    enhanced_content += (
+                        "\n\nIMPORTANT FOR QUIZ CREATION:\n"
+                        "- If you want to create a quiz, send ONLY a short message "
+                        "(e.g., 'We have completed topic XY, here is your quiz') "
+                        "and then call the create_quiz tool.\n"
+                        "- Do NOT send a long explanation of the current slide if you are creating a quiz at the same time.\n"
+                        "- After the create_quiz tool call, the graph will end - you should not write anything after that.\n"
+                        "- The quiz will be displayed in the chat and the student can work on it.\n"
+                        "- Only after the student completes the quiz can you provide feedback."
                     )
                 messages_for_llm.insert(0, SystemMessage(content=enhanced_content))
         
@@ -795,6 +839,43 @@ class TutorAgent(BaseAgent):
                         logger.info(f"🟢 Langfuse: Token usage tracked - {usage_meta}")
             except Exception:
                 pass  # Nicht kritisch wenn Token-Usage nicht extrahiert werden kann
+        
+        # Safety check: If response contains create_quiz tool call, ensure content is short
+        # This prevents the agent from sending long explanations when creating a quiz
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            has_create_quiz = any(
+                (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")) == "create_quiz"
+                for tc in response.tool_calls
+            )
+            
+            if has_create_quiz and hasattr(response, 'content') and response.content:
+                content_length = len(response.content)
+                # If content is longer than 200 characters, truncate it to a short message
+                if content_length > 200:
+                    logger.warning(
+                        f"Agent sent long message ({content_length} chars) with create_quiz tool call. "
+                        f"Truncating to prevent confusion. Original: {response.content[:100]}..."
+                    )
+                    # Keep only the first sentence or first 150 characters, whichever is shorter
+                    truncated = response.content[:150]
+                    # Try to end at a sentence boundary
+                    last_period = truncated.rfind('.')
+                    last_exclamation = truncated.rfind('!')
+                    last_question = truncated.rfind('?')
+                    last_sentence_end = max(last_period, last_exclamation, last_question)
+                    if last_sentence_end > 50:  # Only truncate at sentence if we have at least 50 chars
+                        truncated = truncated[:last_sentence_end + 1]
+                    else:
+                        truncated = truncated[:150] + "..."
+                    
+                    # Create new response with truncated content
+                    from langchain_core.messages import AIMessage
+                    response = AIMessage(
+                        content=truncated,
+                        tool_calls=response.tool_calls,
+                        response_metadata=getattr(response, 'response_metadata', {})
+                    )
+                    logger.info(f"Truncated message to: {truncated}")
         
         # Return updated state (MessagesState will automatically add the message)
         return {"messages": [response]}

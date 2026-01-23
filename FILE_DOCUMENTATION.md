@@ -280,43 +280,64 @@ frontend/
 
 ### `frontend/components/dashboard/upload-dialog.tsx`
 
-**Purpose**: Client-side dialog component for uploading course materials (PDF files) to existing or newly created courses.
+**Purpose**: Client-side dialog component for uploading multiple course materials (PDF files) to existing or newly created courses with drag-and-drop sorting and parallel upload support.
 
 **Key Components**:
-- **Dialog UI**: Uses shadcn/ui Dialog component for modal interface
+- **Dialog UI**: Uses shadcn/ui Dialog component for modal interface with tabs
 - **Mode Selection**: Toggle between "Select Existing" course or "Create New" course
 - **Course Selection**: Dropdown to select from existing courses (using Select component)
 - **Course Creation Form**: Form fields for creating new course (title, description, exam_date)
-- **File Upload**: File input for PDF file selection with validation
+- **Multi-File Upload**: File input with `multiple` attribute for selecting multiple PDF files
+- **Drag & Drop Sorting**: Sortable file list using `@dnd-kit` for reordering upload sequence
+- **Upload Status Tracking**: Tabs showing file selection and upload progress
+- **Progress Indicators**: Individual progress bars per file and overall progress
 - **API Integration**: 
   - Creates courses via Supabase client
-  - Uploads PDF files to backend API endpoint (`/api/upload`)
+  - Uploads PDF files sequentially to backend API endpoint (`/api/upload`) in defined order
 - **State Management**: 
   - Form state via React Hook Form
+  - File list state with upload status per file
   - Loading states during upload
-  - Error and success message display
+  - Error and success message display with toast notifications
 
 **Key Features**:
+- **Multi-File Support**: Upload up to 20 PDF files simultaneously
+- **Drag & Drop Sorting**: Reorder files by dragging to control upload sequence
+- **Sequential Uploads**: Files uploaded one-by-one in user-defined order
+- **Individual Progress**: Each file shows its own upload/processing progress
+- **Overall Progress**: Aggregate progress bar showing total completion
+- **Status Tracking**: Real-time status per file (pending, uploading, processing, completed, error)
+- **Error Handling**: Per-file error handling with retry functionality
+- **Toast Notifications**: Success/error notifications using Sonner
+- **File Validation**: 
+  - PDF type validation
+  - File size limit (50MB per file)
+  - Duplicate detection
+  - Max file count (20 files)
 - **Dual Mode**: Switch between selecting existing course or creating new one
-- **Form Validation**: Required fields validation (course selection/creation, PDF file)
-- **File Type Validation**: Only accepts PDF files
-- **Loading States**: Shows loading spinner during upload process
-- **Error Handling**: Displays error messages for failed operations
-- **Success Feedback**: Shows success message before closing dialog
-- **Auto Refresh**: Reloads page after successful upload to show new course/material
+- **Form Validation**: Required fields validation (course selection/creation, at least one PDF file)
+- **Auto Refresh**: Reloads page after all uploads complete
 
 **Key Functions**:
 - `createCourse(data: CourseFormData)`: Creates a new course in Supabase
-- `uploadFile(courseId: string, file: File)`: Uploads PDF to backend API
-- `onSubmit(data: CourseFormData)`: Handles form submission and orchestrates course creation + file upload
+- `uploadSingleFile(fileItem: FileUploadItem, courseId: string)`: Uploads single PDF to backend API with progress tracking
+- `onSubmit(data: CourseFormData)`: Handles form submission, creates course (if new), and uploads all files sequentially
+- `handleFileChange(e)`: Validates and adds multiple files to the upload queue
+- `handleReorderFiles(files)`: Updates file order after drag-and-drop
+- `handleRemoveFile(id)`: Removes file from upload queue
+- `handleRetryUpload(id)`: Retries failed upload
+- `getOverallProgress()`: Calculates aggregate progress percentage
 
 **Dependencies**: 
 - `react-hook-form` - Form state management
-- `@/components/ui/dialog` - Dialog modal component
+- `@dnd-kit/core`, `@dnd-kit/sortable`, `@dnd-kit/utilities` - Drag and drop functionality
+- `@/components/ui/dialog`, `@/components/ui/tabs` - Dialog and tabs UI components
 - `@/components/ui/select` - Course selection dropdown
-- `@/components/ui/button`, `@/components/ui/input`, `@/components/ui/label` - UI components
+- `@/components/ui/button`, `@/components/ui/input`, `@/components/ui/label`, `@/components/ui/progress` - UI components
+- `@/components/courses/multi-file-upload-list` - Sortable file list component
 - `@/lib/supabase/client` - Supabase client for course creation
-- `lucide-react` - Icons (Upload, Loader2, Plus)
+- `sonner` - Toast notifications
+- `lucide-react` - Icons (Upload, Loader2, Plus, Trash2, etc.)
 
 **Environment Variables**:
 - `NEXT_PUBLIC_API_URL` - Backend API URL (defaults to `http://localhost:8000` if not set)
@@ -332,18 +353,21 @@ import { UploadDialog } from '@/components/dashboard/upload-dialog'
 - `courses: Course[]` - Array of existing courses for selection dropdown
 
 **User Flow**:
-1. User clicks "Upload Material" button (triggers dialog)
+1. User clicks "Materialien hochladen" button (triggers dialog)
 2. User chooses to select existing course or create new one
 3. If creating new: Fill in course form (title, description, exam_date)
-4. Select PDF file to upload
-5. Click "Upload" button
-6. System creates course (if new) and uploads PDF to backend
-7. Backend processes PDF in background (multimodal analysis)
-8. Dialog shows success message and closes
-9. Page refreshes to show new course/material
+4. Select multiple PDF files (or drag and drop)
+5. Optionally reorder files by dragging
+6. Click "X Dateien hochladen" button
+7. System creates course (if new) and uploads PDFs sequentially in order
+8. Progress shown per file and overall
+9. Toast notifications for each successful/failed upload
+10. Dialog shows completion status
+11. Page refreshes after all uploads complete
 
 **Related Files**: 
 - `frontend/app/(dashboard)/dashboard/page.tsx` - Dashboard page that uses this component
+- `frontend/components/courses/multi-file-upload-list.tsx` - Sortable file list component
 - `backend/app/api/endpoints.py` - Backend upload endpoint that receives the file
 - `frontend/types/index.ts` - Course type definition
 
@@ -1183,38 +1207,157 @@ import { CoursesTable } from '@/components/courses/courses-table'
 
 ---
 
-### `frontend/components/courses/upload-section.tsx`
+### `frontend/components/courses/multi-file-upload-list.tsx`
 
-**Purpose**: Component for uploading PDF files to a course using the `/api/upload` endpoint.
+**Purpose**: Reusable sortable file list component for multi-file upload interfaces with drag-and-drop reordering, progress tracking, and status indicators.
 
 **Key Components**:
-- File input with drag-and-drop styling
-- PDF file validation
+- **Sortable List**: Uses `@dnd-kit` for drag-and-drop reordering
+- **File Items**: Individual file cards showing:
+  - File name and size
+  - Upload status (pending, uploading, processing, completed, error)
+  - Progress bar (for uploading/processing files)
+  - Status badge with color coding
+  - Status icon (upload, spinner, checkmark, error)
+  - Drag handle for reordering
+  - Remove button
+  - Retry button (for failed uploads)
+- **Progress Tracking**: Individual progress bars per file
+- **Error Display**: Error messages shown per file
+
+**Key Features**:
+- **Drag & Drop Sorting**: Reorder files by dragging the grip handle
+- **Visual Feedback**: Opacity and shadow changes during drag
+- **Status Indicators**: 
+  - Color-coded badges (gray=pending, blue=uploading, yellow=processing, green=completed, red=error)
+  - Icons matching status
+  - Progress bars for active uploads
+- **File Information**: Displays file name (truncated if long) and formatted file size
+- **Error Handling**: Shows error messages and retry button for failed uploads
+- **Accessibility**: Keyboard navigation support via `@dnd-kit` sensors
+- **Responsive**: Handles long file names with truncation
+
+**Key Functions**:
+- `SortableFileItem`: Individual file item component with drag handle
+- `MultiFileUploadList`: Main component managing the sortable list
+- `handleDragEnd`: Updates file order after drag operation
+- `formatFileSize`: Formats bytes to human-readable size (KB, MB, GB)
+- `getStatusBadge`: Returns appropriate badge component for status
+- `getStatusIcon`: Returns appropriate icon for status
+
+**Props**:
+- `files: FileUploadItem[]` - Array of file upload items with status and progress
+- `onReorder: (files: FileUploadItem[]) => void` - Callback when files are reordered
+- `onRemove: (id: string) => void` - Callback to remove a file
+- `onRetry?: (id: string) => void` - Optional callback to retry failed upload
+- `disabled?: boolean` - Disables drag and actions when true
+
+**FileUploadItem Interface**:
+```typescript
+interface FileUploadItem {
+  id: string              // Unique identifier
+  file: File              // File object
+  status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error'
+  progress?: number       // Progress percentage (0-100)
+  errorMessage?: string   // Error message if status is 'error'
+  materialId?: string     // Course material ID after successful upload
+  order: number            // Upload order (1, 2, 3, ...)
+}
+```
+
+**Dependencies**: 
+- `@dnd-kit/core` - Drag and drop context
+- `@dnd-kit/sortable` - Sortable list functionality
+- `@dnd-kit/utilities` - CSS transform utilities
+- `@/components/ui/button` - Action buttons
+- `@/components/ui/progress` - Progress bars
+- `@/components/ui/badge` - Status badges
+- `lucide-react` - Icons (GripVertical, X, AlertCircle, CheckCircle2, Loader2, Upload)
+- `@/lib/utils` - Utility functions (cn for className merging)
+
+**Usage**: 
+```tsx
+import { MultiFileUploadList, type FileUploadItem } from '@/components/courses/multi-file-upload-list'
+
+const [files, setFiles] = useState<FileUploadItem[]>([])
+
+<MultiFileUploadList
+  files={files}
+  onReorder={setFiles}
+  onRemove={(id) => setFiles(files.filter(f => f.id !== id))}
+  onRetry={handleRetry}
+  disabled={isUploading}
+/>
+```
+
+**Related Files**: 
+- `frontend/components/dashboard/upload-dialog.tsx` - Uses this component
+- `frontend/components/courses/upload-section.tsx` - Uses this component
+
+---
+
+### `frontend/components/courses/upload-section.tsx`
+
+**Purpose**: Component for uploading multiple PDF files to a course using the `/api/upload` endpoint with drag-and-drop sorting and parallel upload support.
+
+**Key Components**:
+- File input with drag-and-drop styling and multiple file support
+- PDF file validation (type, size, duplicates)
+- Sortable file list with drag-and-drop reordering
 - Upload button with loading state
-- Error and success message display
+- Individual and overall progress indicators
+- Error and success message display with toast notifications
 - Automatic page refresh after successful upload
 
 **Key Features**:
+- **Multi-File Support**: Upload up to 20 PDF files simultaneously
+- **Drag & Drop Sorting**: Reorder files by dragging to control upload sequence
+- **Sequential Uploads**: Files uploaded one-by-one in user-defined order
+- **Individual Progress**: Each file shows its own upload/processing progress
+- **Overall Progress**: Aggregate progress bar showing total completion
+- **Status Tracking**: Real-time status per file (pending, uploading, processing, completed, error)
+- **Error Handling**: Per-file error handling with retry functionality
+- **Toast Notifications**: Success/error notifications using Sonner
+- **File Validation**: 
+  - PDF type validation
+  - File size limit (50MB per file)
+  - Duplicate detection
+  - Max file count (20 files)
 - Client Component ("use client")
-- File type validation (PDF only)
 - FormData construction for API request
 - Integration with `/api/upload` POST endpoint
 - Loading states during upload
-- Error handling with user-friendly messages
 - Automatic refresh after successful upload
 
 **Upload Flow**:
-1. User selects PDF file
-2. File validation (PDF type check)
-3. FormData created with `file`, `user_id`, `course_id`
-4. POST request to `${NEXT_PUBLIC_API_URL}/api/upload`
-5. Success message displayed
-6. Page refresh to show new material
+1. User selects multiple PDF files (or drags and drops)
+2. Files validated (PDF type, size, duplicates)
+3. User can reorder files by dragging
+4. User clicks "X Dateien hochladen" button
+5. Files uploaded sequentially in defined order
+6. FormData created with `file`, `user_id`, `course_id` for each file
+7. POST requests to `${NEXT_PUBLIC_API_URL}/api/upload` (one per file)
+8. Progress tracked per file and overall
+9. Toast notifications for each successful/failed upload
+10. Page refresh to show new materials
+
+**Key Functions**:
+- `validateFile(file: File)`: Validates PDF type and size
+- `handleFileChange(e)`: Validates and adds multiple files to the upload queue
+- `uploadSingleFile(fileItem: FileUploadItem)`: Uploads single PDF with progress tracking
+- `handleUpload()`: Orchestrates sequential upload of all files
+- `handleReorderFiles(files)`: Updates file order after drag-and-drop
+- `handleRemoveFile(id)`: Removes file from upload queue
+- `handleRetryUpload(id)`: Retries failed upload
+- `getOverallProgress()`: Calculates aggregate progress percentage
 
 **Dependencies**: 
+- `@dnd-kit/core`, `@dnd-kit/sortable`, `@dnd-kit/utilities` - Drag and drop functionality
+- `@/components/courses/multi-file-upload-list` - Sortable file list component
+- `@/components/ui/button`, `@/components/ui/progress`, `@/components/ui/label` - UI components
 - `@/lib/supabase/client` - Supabase client for user authentication
-- `@/components/ui/button` - Upload button
-- `lucide-react` - Icons (Upload, Loader2)
+- `sonner` - Toast notifications
+- `lucide-react` - Icons (Upload, Loader2, Trash2)
 - `next/navigation` - Router for refresh
 - Environment variable: `NEXT_PUBLIC_API_URL`
 
@@ -1222,11 +1365,16 @@ import { CoursesTable } from '@/components/courses/courses-table'
 ```tsx
 import { UploadSection } from '@/components/courses/upload-section'
 
-<UploadSection courseId={courseId} />
+<UploadSection courseId={courseId} userId={userId} />
 ```
+
+**Props**:
+- `courseId: string` - Course ID to upload files to
+- `userId: string` - User ID for authentication
 
 **Related Files**: 
 - `frontend/app/(dashboard)/dashboard/courses/[id]/page.tsx` - Uses this component
+- `frontend/components/courses/multi-file-upload-list.tsx` - Sortable file list component
 - `backend/app/api/endpoints.py` - Upload API endpoint
 
 ---
