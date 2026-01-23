@@ -76,6 +76,13 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
 
   const progress = totalPages > 0 ? Math.round(((analyzedPages || 0) / totalPages) * 100) : 0
 
+  // Fetch courses for sidebar
+  const { data: courses } = await supabase
+    .from('courses')
+    .select('id, title')
+    .eq('user_id', user.id)
+    .order('updated_at', { ascending: false })
+
   // Prepare user data for sidebar
   const userData = {
     name: user.email?.split('@')[0] || 'User',
@@ -95,7 +102,7 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
 
   return (
     <SidebarProvider>
-      <DashboardSidebar variant="inset" user={userData} />
+      <DashboardSidebar variant="inset" user={userData} courses={courses || []} />
       <SidebarInset>
         <header className="group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear z-20 relative">
           <div className="flex w-full items-center gap-1 px-4 lg:gap-2 lg:px-6">

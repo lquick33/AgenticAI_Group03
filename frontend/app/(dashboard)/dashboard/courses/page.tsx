@@ -85,9 +85,15 @@ export default async function CoursesPage() {
     avatar: '',
   }
 
+  // Transform courses for sidebar (only id and title needed)
+  const sidebarCourses = (courses || []).map((course) => ({
+    id: course.id,
+    title: course.title,
+  }))
+
   return (
     <SidebarProvider>
-      <DashboardSidebar variant="inset" user={userData} />
+      <DashboardSidebar variant="inset" user={userData} courses={sidebarCourses} />
       <SidebarInset>
         <header className="group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear z-20 relative">
           <div className="flex w-full items-center justify-between gap-1 px-4 lg:gap-2 lg:px-6">
