@@ -17,6 +17,8 @@ interface ChatInterfaceProps {
   contextInfo?: string
   showTools?: boolean
   onToggleTools?: (enabled: boolean) => void
+  onQuizComplete?: (quizId: string, answers: Record<string, 'A' | 'B' | 'C' | 'D'>) => void
+  submittingQuizId?: string | null
 }
 
 export function ChatInterface({
@@ -27,6 +29,8 @@ export function ChatInterface({
   contextInfo,
   showTools = false,
   onToggleTools,
+  onQuizComplete,
+  submittingQuizId = null,
 }: ChatInterfaceProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const isUserScrollingRef = useRef(false)
@@ -174,6 +178,15 @@ export function ChatInterface({
               const isLastMessage = index === messages.length - 1
               const isStreamingMessage = isLastMessage && isStreaming && message.role === "assistant" && (!message.content || message.content.trim() === "")
               
+              // Check if this message has a quiz and create callback
+              const quiz = message.quiz
+              const isQuizSubmitting = quiz && submittingQuizId === quiz.quiz_id
+              const handleQuizCompleteForMessage = quiz && onQuizComplete
+                ? (quizId: string, answers: Record<string, 'A' | 'B' | 'C' | 'D'>) => {
+                    onQuizComplete(quizId, answers)
+                  }
+                : undefined
+              
               return (
                 <div key={message.id} className={index > 0 ? "mt-6" : ""}>
                   <ChatMessage
@@ -183,6 +196,9 @@ export function ChatInterface({
                     isStreaming={isStreamingMessage}
                     toolCalls={message.toolCalls}
                     showTools={showTools}
+                    quiz={quiz}
+                    onQuizComplete={handleQuizCompleteForMessage}
+                    isQuizSubmitting={isQuizSubmitting}
                   />
                 </div>
               )

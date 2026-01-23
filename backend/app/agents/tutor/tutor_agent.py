@@ -20,6 +20,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from app.agents.base import BaseAgent, State
 from app.tools.page_analysis_tool import GetPageAnalysisTool
 from app.tools.course_material_tool import GetCourseMaterialSummaryTool
+from app.tools.quiz_tool import CreateQuizTool
 from app.services.observability import create_callback_handler, get_langfuse_client
 from app.core.config import settings
 
@@ -102,6 +103,15 @@ class StateAwareToolNode(ToolNode):
                 
                 # Inject state values for get_course_material_summary tool
                 elif tool_name == "get_course_material_summary":
+                    if "course_material_id" not in args or not args.get("course_material_id"):
+                        if input.get("material_id"):
+                            args["course_material_id"] = input["material_id"]
+                    if "user_id" not in args or not args.get("user_id"):
+                        if input.get("user_id"):
+                            args["user_id"] = input["user_id"]
+                
+                # Inject state values for create_quiz tool
+                elif tool_name == "create_quiz":
                     if "course_material_id" not in args or not args.get("course_material_id"):
                         if input.get("material_id"):
                             args["course_material_id"] = input["material_id"]
@@ -192,6 +202,15 @@ class StateAwareToolNode(ToolNode):
                         if input.get("user_id"):
                             args["user_id"] = input["user_id"]
                 
+                # Inject state values for create_quiz tool
+                elif tool_name == "create_quiz":
+                    if "course_material_id" not in args or not args.get("course_material_id"):
+                        if input.get("material_id"):
+                            args["course_material_id"] = input["material_id"]
+                    if "user_id" not in args or not args.get("user_id"):
+                        if input.get("user_id"):
+                            args["user_id"] = input["user_id"]
+                
                 # Create modified tool call
                 modified_tool_calls.append({
                     "id": tool_id,
@@ -252,9 +271,11 @@ class TutorAgent(BaseAgent):
         # Initialize tools
         self.page_analysis_tool = GetPageAnalysisTool()
         self.course_material_tool = GetCourseMaterialSummaryTool()
+        self.quiz_tool = CreateQuizTool()
         self.langchain_tools = [
             self.page_analysis_tool.to_langchain_tool(),
-            self.course_material_tool.to_langchain_tool()
+            self.course_material_tool.to_langchain_tool(),
+            self.quiz_tool.to_langchain_tool()
         ]
         
         # Bind tools to LLM
@@ -418,6 +439,83 @@ class TutorAgent(BaseAgent):
         # Compile graph
         self.compile_graph(workflow)
     
+    def _fix_incomplete_tool_calls(self, messages: list) -> list:
+        """
+        Validate and fix message ordering to comply with Gemini API requirements.
+        Gemini API requires strict ordering:
+        - User message (HumanMessage)
+        - Assistant with tool_calls (AIMessage with tool_calls)
+        - Tool responses (ToolMessage) - MUST come immediately after AIMessage with tool_calls
+        - (Optional) Assistant final response (AIMessage without tool_calls)
+        - User message (HumanMessage)
+        
+        This function:
+        1. Removes any AIMessage with tool_calls that doesn't have corresponding ToolMessages
+        2. Ensures ToolMessages come immediately after their AIMessage
+        3. Removes orphaned ToolMessages (without preceding AIMessage)
+        
+        Args:
+            messages: List of messages to check
+            
+        Returns:
+            Fixed list of messages that comply with Gemini API requirements
+        """
+        if not messages:
+            return messages
+        
+        fixed_messages = []
+        i = 0
+        
+        while i < len(messages):
+            msg = messages[i]
+            
+            # Check if this is an AIMessage with tool_calls
+            if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+                # Collect all tool call IDs from this AIMessage
+                tool_call_ids = set()
+                for tool_call in msg.tool_calls:
+                    tool_call_id = tool_call.get("id") if isinstance(tool_call, dict) else getattr(tool_call, "id", None)
+                    if tool_call_id:
+                        tool_call_ids.add(tool_call_id)
+                
+                # Look ahead to find corresponding ToolMessages
+                # They should come immediately after the AIMessage
+                found_tool_messages = []
+                j = i + 1
+                while j < len(messages) and isinstance(messages[j], ToolMessage):
+                    tool_msg = messages[j]
+                    tool_call_id = getattr(tool_msg, "tool_call_id", None)
+                    if tool_call_id in tool_call_ids:
+                        found_tool_messages.append(tool_msg)
+                    j += 1
+                
+                # Check if all tool calls have corresponding ToolMessages
+                found_tool_call_ids = {getattr(tm, "tool_call_id", None) for tm in found_tool_messages}
+                
+                if found_tool_call_ids == tool_call_ids and len(found_tool_messages) == len(tool_call_ids):
+                    # All tool calls have responses - keep the AIMessage and ToolMessages
+                    fixed_messages.append(msg)
+                    fixed_messages.extend(found_tool_messages)
+                    i = j  # Skip past the ToolMessages
+                else:
+                    # Incomplete tool call pair - remove the AIMessage
+                    logger.warning(
+                        f"Incomplete tool call pair detected at index {i}: AIMessage has {len(tool_call_ids)} tool_calls, "
+                        f"but only {len(found_tool_messages)} ToolMessages found. Removing incomplete AIMessage to prevent API error."
+                    )
+                    i += 1  # Skip the incomplete AIMessage
+            elif isinstance(msg, ToolMessage):
+                # Orphaned ToolMessage (no preceding AIMessage with tool_calls)
+                # Remove it to prevent API errors
+                logger.warning(f"Orphaned ToolMessage detected at index {i}, removing to prevent API error.")
+                i += 1
+            else:
+                # Regular message (HumanMessage, AIMessage without tool_calls, SystemMessage)
+                fixed_messages.append(msg)
+                i += 1
+        
+        return fixed_messages
+    
     def call_model(self, state: TutorState) -> TutorState:
         """
         Call LLM with current messages, injecting state context.
@@ -564,19 +662,23 @@ class TutorAgent(BaseAgent):
                     enhanced_content = f"{msg.content}\n\nCONTEXT:\n{context_str}"
                     if self.language == "de":
                         enhanced_content += (
-                            "\n\nWICHTIG: Wenn du das get_page_analysis Tool verwendest, werden folgende Argumente "
+                            "\n\nWICHTIG: Wenn du Tools verwendest, werden folgende Argumente "
                             "automatisch aus dem Kontext gefüllt:\n"
-                            f"- course_material_id: {state.get('material_id', 'unbekannt')}\n"
-                            f"- page_number: {state.get('current_page', 1)}\n"
-                            f"- user_id: {state.get('user_id', 'unbekannt')}"
+                            f"- get_page_analysis: course_material_id, page_number, user_id\n"
+                            f"- get_course_material_summary: course_material_id, user_id\n"
+                            f"- create_quiz: course_material_id, user_id\n"
+                            f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
+                            f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
                         )
                     else:
                         enhanced_content += (
-                            "\n\nIMPORTANT: When using the get_page_analysis tool, the following arguments "
+                            "\n\nIMPORTANT: When using tools, the following arguments "
                             "are automatically filled from context:\n"
-                            f"- course_material_id: {state.get('material_id', 'unknown')}\n"
-                            f"- page_number: {state.get('current_page', 1)}\n"
-                            f"- user_id: {state.get('user_id', 'unknown')}"
+                            f"- get_page_analysis: course_material_id, page_number, user_id\n"
+                            f"- get_course_material_summary: course_material_id, user_id\n"
+                            f"- create_quiz: course_material_id, user_id\n"
+                            f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
+                            f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
                         )
                     messages_for_llm[i] = SystemMessage(content=enhanced_content)
                     system_message_found = True
@@ -587,19 +689,23 @@ class TutorAgent(BaseAgent):
                 enhanced_content = f"{self.system_prompt}\n\nCONTEXT:\n{context_str}"
                 if self.language == "de":
                     enhanced_content += (
-                        "\n\nWICHTIG: Wenn du das get_page_analysis Tool verwendest, werden folgende Argumente "
+                        "\n\nWICHTIG: Wenn du Tools verwendest, werden folgende Argumente "
                         "automatisch aus dem Kontext gefüllt:\n"
-                        f"- course_material_id: {state.get('material_id', 'unbekannt')}\n"
-                        f"- page_number: {state.get('current_page', 1)}\n"
-                        f"- user_id: {state.get('user_id', 'unbekannt')}"
+                        f"- get_page_analysis: course_material_id, page_number, user_id\n"
+                        f"- get_course_material_summary: course_material_id, user_id\n"
+                        f"- create_quiz: course_material_id, user_id\n"
+                        f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
+                        f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
                     )
                 else:
                     enhanced_content += (
-                        "\n\nIMPORTANT: When using the get_page_analysis tool, the following arguments "
+                        "\n\nIMPORTANT: When using tools, the following arguments "
                         "are automatically filled from context:\n"
-                        f"- course_material_id: {state.get('material_id', 'unknown')}\n"
-                        f"- page_number: {state.get('current_page', 1)}\n"
-                        f"- user_id: {state.get('user_id', 'unknown')}"
+                        f"- get_page_analysis: course_material_id, page_number, user_id\n"
+                        f"- get_course_material_summary: course_material_id, user_id\n"
+                        f"- create_quiz: course_material_id, user_id\n"
+                        f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
+                        f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
                     )
                 messages_for_llm.insert(0, SystemMessage(content=enhanced_content))
         
@@ -629,36 +735,9 @@ class TutorAgent(BaseAgent):
             logger.info(f"🟡 Langfuse: Sending LLM call with metadata: user_id={metadata.get('langfuse_user_id')}, session_id={metadata.get('langfuse_session_id')}, material_id={metadata.get('material_id')}, page={metadata.get('current_page')}")
         
         # Validate message ordering before LLM call to prevent Gemini API errors
-        # Gemini requires: User -> Assistant (with tool_calls) -> ToolMessages -> (optional) Assistant -> User
-        # Check if last message before LLM call is valid
-        if messages_for_llm:
-            last_msg = messages_for_llm[-1]
-            # If last message is an AIMessage with tool_calls, it's invalid - should have ToolMessages after
-            if isinstance(last_msg, AIMessage) and hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
-                # #region agent log
-                try:
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "pre-fix",
-                            "hypothesisId": "H3",
-                            "location": "tutor_agent.py:call_model(invalid_last_message)",
-                            "message": "Last message is AIMessage with tool_calls - this will cause API error",
-                            "data": {
-                                "toolCallCount": len(last_msg.tool_calls)
-                            },
-                            "timestamp": int(__import__("time").time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion agent log
-                
-                logger.error(
-                    "Invalid message sequence: Last message is AIMessage with tool_calls. "
-                    "This will cause Gemini API error. Removing incomplete tool call."
-                )
-                # Remove the last message (incomplete AIMessage with tool_calls)
-                messages_for_llm = messages_for_llm[:-1]
+        # Apply comprehensive validation to entire message sequence
+        # This ensures all AIMessages with tool_calls have corresponding ToolMessages
+        messages_for_llm = self._fix_incomplete_tool_calls(messages_for_llm)
         
         # Call LLM with callbacks
         # Der CallbackHandler trackt automatisch Token-Usage, Model Parameters, etc.

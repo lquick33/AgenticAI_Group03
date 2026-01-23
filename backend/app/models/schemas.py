@@ -4,7 +4,7 @@ Pydantic Schemas
 Request/response models and data validation schemas for the API.
 """
 
-from typing import Optional
+from typing import Optional, Literal, Dict, List
 from pydantic import BaseModel, Field
 
 
@@ -190,3 +190,101 @@ class MaterialResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: str
     summary: Optional[str] = None
+
+
+# Quiz-related models
+
+class QuizQuestion(BaseModel):
+    """Model for a single quiz question."""
+    
+    id: str = Field(..., description="Unique question identifier (e.g., 'q1', 'q2')")
+    question: str = Field(..., description="The question text")
+    options: Dict[str, str] = Field(
+        ...,
+        description="Answer options as a dictionary with keys A, B, C, D",
+        min_length=4,
+        max_length=4
+    )
+    correct_answer: Literal["A", "B", "C", "D"] = Field(
+        ...,
+        description="The correct answer option (A, B, C, or D)"
+    )
+    difficulty: Literal["easy", "medium", "hard"] = Field(
+        ...,
+        description="Question difficulty level"
+    )
+    explanation: str = Field(
+        ...,
+        description="Explanation of the correct answer (shown after user answers)"
+    )
+
+
+class QuizData(BaseModel):
+    """Model for complete quiz data structure."""
+    
+    topic: str = Field(..., description="Topic name for this quiz")
+    questions: List[QuizQuestion] = Field(
+        ...,
+        description="List of quiz questions",
+        min_length=3,
+        max_length=8
+    )
+    metadata: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Metadata about question distribution (e.g., {'easy_count': 2, 'medium_count': 1, 'hard_count': 1})"
+    )
+
+
+class QuizCreate(BaseModel):
+    """Input model for creating a quiz."""
+    
+    start_page: int = Field(..., ge=1, description="Starting page number (1-indexed)")
+    end_page: int = Field(..., ge=1, description="Ending page number (1-indexed)")
+    course_material_id: str = Field(..., description="Course material ID (UUID)")
+    user_id: str = Field(..., description="User ID (UUID)")
+
+
+class QuizSubmit(BaseModel):
+    """Input model for submitting quiz answers."""
+    
+    quiz_id: str = Field(..., description="Quiz ID (UUID)")
+    answers: Dict[str, str] = Field(
+        ...,
+        description="User answers as a dictionary mapping question_id to answer (A, B, C, or D)"
+    )
+    user_id: str = Field(..., description="User ID (UUID)")
+
+
+class QuestionResult(BaseModel):
+    """Model for individual question result."""
+    
+    question_id: str
+    user_answer: Literal["A", "B", "C", "D"]
+    correct_answer: Literal["A", "B", "C", "D"]
+    correct: bool
+    explanation: Optional[str] = None
+
+
+class QuizResult(BaseModel):
+    """Response model for quiz submission results."""
+    
+    quiz_id: str
+    score: float = Field(..., ge=0.0, le=1.0, description="Score from 0.0 to 1.0")
+    correct_count: int
+    total_questions: int
+    question_results: List[QuestionResult]
+    completed_at: str
+    tutor_feedback: Optional[str] = Field(None, description="Tutor feedback message based on quiz results")
+
+
+class QuizResponse(BaseModel):
+    """Response model for quiz data retrieval."""
+    
+    id: str
+    course_material_id: str
+    user_id: str
+    topic_name: str
+    start_page: int
+    end_page: int
+    quiz_data: QuizData
+    created_at: str

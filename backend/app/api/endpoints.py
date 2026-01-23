@@ -34,6 +34,9 @@ from app.models.schemas import (
     FlashcardTaskStatusResponse,
     MaterialUpdateRequest,
     MaterialResponse,
+    QuizSubmit,
+    QuizResult,
+    QuizResponse,
 )
 from app.services.pdf_processor import process_pdf_background
 from app.services.storage import (
@@ -57,6 +60,11 @@ from app.services.session_storage import (
     update_conversation_progress,
     append_messages,
     load_conversation_with_messages,
+)
+from app.services.quiz_service import (
+    submit_quiz_results,
+    get_quiz,
+    get_quiz_result,
 )
 from langfuse import get_client, propagate_attributes
 from app.core.config import settings
@@ -2536,4 +2544,268 @@ async def update_material_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to update material: {str(e)}"
+        )
+
+
+@router.post("/quiz/submit", response_model=QuizResult, status_code=200)
+async def submit_quiz(
+    request: QuizSubmit = Body(...)
+) -> QuizResult:
+    """
+    Submit quiz answers and get results.
+    
+    After submission, generates tutor feedback based on the results.
+    
+    Args:
+        request: QuizSubmit with quiz_id, answers, and user_id
+        
+    Returns:
+        QuizResult with score, correct_count, total_questions, question_results, and tutor_feedback
+        
+    Raises:
+        HTTPException: If quiz not found, already submitted, or submission fails
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(request.user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Submit quiz results
+        result = submit_quiz_results(
+            quiz_id=request.quiz_id,
+            user_id=request.user_id,
+            answers=request.answers
+        )
+        
+        logger.info(
+            f"Quiz submitted: {request.quiz_id} "
+            f"(user: {request.user_id}, score: {result.score:.2%})"
+        )
+        
+        # Generate tutor feedback based on quiz results
+        try:
+            # Get quiz data to find course_material_id
+            quiz_record = get_quiz(request.quiz_id, request.user_id)
+            if quiz_record:
+                course_material_id = quiz_record["course_material_id"]
+                topic_name = quiz_record["topic_name"]
+                quiz_data_dict = quiz_record["quiz_data"]
+                
+                # Get or create study conversation for context
+                conversation = get_or_create_study_conversation(
+                    user_id=request.user_id,
+                    course_material_id=course_material_id,
+                    course_id=None,
+                )
+                conversation_id = conversation["id"]
+                thread_id = str(conversation_id)
+                
+                # Build feedback prompt text with wrong/correct questions
+                wrong_questions = [qr for qr in result.question_results if not qr.correct]
+                correct_questions = [qr for qr in result.question_results if qr.correct]
+                
+                # Format wrong questions text
+                wrong_questions_text = ""
+                if wrong_questions:
+                    wrong_questions_text = "Falsch beantwortete Fragen:\n"
+                    for qr in wrong_questions:
+                        # Find question details from quiz_data
+                        question_data = next(
+                            (q for q in quiz_data_dict.get("questions", []) if q.get("id") == qr.question_id),
+                            None
+                        )
+                        if question_data:
+                            wrong_questions_text += f"- Frage: {question_data.get('question', 'Unbekannt')}\n"
+                            wrong_questions_text += f"  Student-Antwort: {qr.user_answer}, Richtige Antwort: {qr.correct_answer}\n"
+                            wrong_questions_text += f"  Erklärung: {question_data.get('explanation', 'Keine Erklärung verfügbar')}\n\n"
+                
+                # Format correct questions text
+                correct_questions_text = ""
+                if correct_questions:
+                    correct_questions_text = f"Richtig beantwortete Fragen ({len(correct_questions)}): Gut gemacht!"
+                
+                # Load feedback prompt from Langfuse
+                try:
+                    feedback_prompt_text = get_tutor_prompt(
+                        "tutor-agent/quiz-feedback-de",
+                        topic_name=topic_name,
+                        correct_count=result.correct_count,
+                        total_questions=result.total_questions,
+                        score_percent=f"{(result.score * 100):.0f}",
+                        wrong_questions_text=wrong_questions_text,
+                        correct_questions_text=correct_questions_text
+                    )
+                except Exception as prompt_error:
+                    logger.warning(f"Failed to load feedback prompt from Langfuse: {prompt_error}, using fallback")
+                    # Fallback prompt
+                    feedback_prompt_text = f"""Der Student hat gerade ein Quiz zum Thema "{topic_name}" abgeschlossen.
+
+Ergebnis: {result.correct_count} von {result.total_questions} Fragen richtig beantwortet ({(result.score * 100):.0f}%)
+
+{wrong_questions_text}
+
+{correct_questions_text}
+
+Gib dem Studenten konstruktives Feedback:
+1. Erkenne die Leistung an (auch bei niedrigem Score)
+2. Erkläre die falsch beantworteten Fragen kurz und verständlich
+3. Gib Tipps, wie der Student diese Konzepte besser verstehen kann
+4. Motiviere für die nächsten Schritte
+5. Halte das Feedback prägnant (3-5 Sätze)"""
+                
+                # Initialize Tutor Agent and generate feedback
+                # Use LLM with explicit run_name for Langfuse tracking
+                llm = get_gemini_model().with_config({
+                    "run_name": "tutor-agent/quiz-feedback-generation"
+                })
+                agent = TutorAgent(llm=llm, checkpointer=_checkpointer)
+                
+                # Set state for agent (material_id, user_id)
+                agent_state = {
+                    "messages": [HumanMessage(content=feedback_prompt_text)],
+                    "material_id": course_material_id,
+                    "user_id": request.user_id,
+                    "current_page": None  # Not needed for feedback
+                }
+                
+                # Prepare config with Langfuse metadata for feedback generation
+                from app.services.observability import create_callback_handler
+                callback_handler = create_callback_handler()
+                
+                agent_config = {
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "user_id": request.user_id
+                    }
+                }
+                
+                if callback_handler:
+                    agent_config["callbacks"] = [callback_handler]
+                    agent_config["metadata"] = {
+                        "langfuse_user_id": request.user_id,
+                        "langfuse_session_id": course_material_id,
+                        "operation": "quiz_feedback_generation",
+                        "quiz_id": request.quiz_id,
+                        "topic_name": topic_name,
+                        "score": result.score,
+                        "correct_count": result.correct_count,
+                        "total_questions": result.total_questions,
+                        "score_percent": f"{(result.score * 100):.0f}",
+                        "agent_name": "TutorAgent",
+                        "run_name": "tutor-agent/quiz-feedback-generation"
+                    }
+                    logger.info(
+                        f"🟡 Langfuse: Generating tutor feedback for quiz {request.quiz_id} "
+                        f"(run_name: tutor-agent/quiz-feedback-generation) "
+                        f"with metadata: user_id={request.user_id}, session_id={course_material_id}, "
+                        f"score={result.score:.2%}, topic={topic_name}"
+                    )
+                
+                # Run agent to generate feedback
+                agent_result = agent.graph.invoke(agent_state, config=agent_config)
+                
+                if callback_handler:
+                    logger.info(
+                        f"🟢 Langfuse: Tutor feedback generation completed "
+                        f"(run_name: tutor-agent/quiz-feedback-generation) - "
+                        f"data tracked by CallbackHandler"
+                    )
+                
+                # Extract feedback from agent response
+                feedback_messages = agent_result.get("messages", [])
+                if feedback_messages:
+                    last_message = feedback_messages[-1]
+                    if hasattr(last_message, "content"):
+                        tutor_feedback = last_message.content
+                        # Add feedback to result
+                        result_dict = result.model_dump()
+                        result_dict["tutor_feedback"] = tutor_feedback
+                        result = QuizResult(**result_dict)
+                        
+                        logger.info(f"Tutor feedback generated for quiz {request.quiz_id}")
+                else:
+                    logger.warning(f"No feedback generated for quiz {request.quiz_id}")
+        
+        except Exception as e:
+            # Don't fail quiz submission if feedback generation fails
+            logger.error(f"Failed to generate tutor feedback: {str(e)}", exc_info=True)
+            # Continue without feedback
+        
+        return result
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error submitting quiz: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to submit quiz: {str(e)}"
+        )
+
+
+@router.get("/quiz/{quiz_id}", response_model=QuizResponse, status_code=200)
+async def get_quiz_endpoint(
+    quiz_id: str = Path(..., description="Quiz ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> QuizResponse:
+    """
+    Get quiz data by ID.
+    
+    Args:
+        quiz_id: Quiz ID (UUID)
+        user_id: User ID for authorization (UUID)
+        
+    Returns:
+        QuizResponse with full quiz data
+        
+    Raises:
+        HTTPException: If quiz not found or access denied
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Get quiz
+        quiz_record = get_quiz(quiz_id, user_id)
+        if not quiz_record:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Quiz not found: {quiz_id}"
+            )
+        
+        # Parse quiz_data from JSONB
+        quiz_data_dict = quiz_record["quiz_data"]
+        from app.models.schemas import QuizData
+        quiz_data = QuizData(**quiz_data_dict)
+        
+        return QuizResponse(
+            id=quiz_record["id"],
+            course_material_id=quiz_record["course_material_id"],
+            user_id=quiz_record["user_id"],
+            topic_name=quiz_record["topic_name"],
+            start_page=quiz_record["start_page"],
+            end_page=quiz_record["end_page"],
+            quiz_data=quiz_data,
+            created_at=quiz_record["created_at"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting quiz: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get quiz: {str(e)}"
         )

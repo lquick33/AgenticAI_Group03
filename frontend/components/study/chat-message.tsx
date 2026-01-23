@@ -7,6 +7,7 @@ import rehypeKatex from "rehype-katex"
 import { User } from "lucide-react"
 import { Loader } from "@/components/ui/loader"
 import { Tool } from "@/components/ui/tool"
+import { QuizComponent } from "./quiz-component"
 import type { ChatMessage as ChatMessageType, ToolCall } from "@/types"
 
 type ChatRole = "user" | "assistant"
@@ -18,15 +19,40 @@ interface ChatMessageProps {
   isStreaming?: boolean
   toolCalls?: ToolCall[]
   showTools?: boolean
+  quiz?: {
+    quiz_id: string
+    topic: string
+    questions: Array<{
+      id: string
+      question: string
+      options: Record<'A' | 'B' | 'C' | 'D', string>
+      correct_answer: 'A' | 'B' | 'C' | 'D'
+      difficulty: 'easy' | 'medium' | 'hard'
+      explanation: string
+    }>
+  }
+  onQuizComplete?: (answers: Record<string, 'A' | 'B' | 'C' | 'D'>) => void
+  isQuizSubmitting?: boolean
 }
 
-export function ChatMessage({ id, role, content, isStreaming = false, toolCalls, showTools = false }: ChatMessageProps) {
+export function ChatMessage({ 
+  id, 
+  role, 
+  content, 
+  isStreaming = false, 
+  toolCalls, 
+  showTools = false,
+  quiz,
+  onQuizComplete,
+  isQuizSubmitting = false
+}: ChatMessageProps) {
   // Show typing indicator for assistant messages with empty content or streaming state
   const showTypingIndicator = role === "assistant" && (!content || content.trim() === "" || isStreaming)
   
   if (role === "user" && !content) return null
 
   const hasTools = showTools && toolCalls && toolCalls.length > 0
+  const hasQuiz = role === "assistant" && quiz && quiz.questions && quiz.questions.length > 0
 
   return (
     <div
@@ -57,6 +83,20 @@ export function ChatMessage({ id, role, content, isStreaming = false, toolCalls,
             ))}
           </div>
         )}
+        
+        {/* Quiz Component - Render below message content if present */}
+        {hasQuiz && (
+          <div className="mb-4">
+            <QuizComponent
+              quizId={quiz!.quiz_id}
+              topic={quiz!.topic}
+              questions={quiz!.questions}
+              onComplete={onQuizComplete || (() => {})}
+              isSubmitting={isQuizSubmitting}
+            />
+          </div>
+        )}
+        
         <div
           className={cn(
             "rounded-2xl px-4 py-3",

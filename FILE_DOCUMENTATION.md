@@ -2515,15 +2515,27 @@ from app.services.session_storage import (
 - JSON parameter display with syntax highlighting
 - Status badges with icons (pending, running, completed, error)
 - Dezente Integration in chat messages
+- **Timeout Management**: 1-minute timeout with visual feedback
+- **Waiting State**: Shows spinner and "Warte auf Antwort" message while waiting for response
+- **Auto-State Detection**: Automatically shows "running" state when no result is present, only shows "completed" when result is available
 
 **State Management**:
 - `isOpen`: Controls collapsible state
+- `hasTimedOut`: Tracks if 1-minute timeout has been reached
 - Tool state: `pending` | `running` | `completed` | `error`
+- **State Logic**: If no result is present, state is automatically set to "running" (waiting for response). Only shows "completed" when result is available.
+
+**Timeout Behavior**:
+- 1-minute (60 seconds) timeout timer starts when tool call is created without result
+- Shows spinner and "Warte auf Antwort" message during waiting period
+- After timeout, shows timeout message but continues waiting for response
+- Timer is cleared when result arrives
 
 **Dependencies**: 
 - `lucide-react` - Icons (WrenchIcon, CheckCircleIcon, etc.)
 - `@/components/ui/badge` - Status badges
 - `@/components/ui/collapsible` - Collapsible container
+- `@/components/ui/loader` - Spinner component for waiting state
 - `@/lib/utils` - Utility functions
 
 **Usage**: Displayed in ChatMessage component when `showTools` is enabled and `toolCalls` are present
@@ -3331,5 +3343,352 @@ The component automatically renders math when the content contains:
 
 **Related Files**: 
 - All components using KaTeX rendering benefit from these styles
+
+---
+
+## Quiz Feature Files
+
+### `backend/app/models/schemas.py` (Quiz Models)
+
+**Purpose**: Pydantic models for quiz data structures and API request/response validation.
+
+**Key Components**:
+- **QuizQuestion**: Model for a single quiz question with id, question, options (Dict[str, str]), correct_answer (Literal["A","B","C","D"]), difficulty (Literal["easy","medium","hard"]), explanation
+- **QuizData**: Model for complete quiz data structure with topic, questions (List[QuizQuestion]), metadata (Dict[str, int])
+- **QuizCreate**: Input model for creating a quiz (start_page, end_page, course_material_id, user_id)
+- **QuizSubmit**: Input model for submitting quiz answers (quiz_id, answers, user_id)
+- **QuestionResult**: Model for individual question result (question_id, user_answer, correct_answer, correct, explanation)
+- **QuizResult**: Response model for quiz submission results (quiz_id, score, correct_count, total_questions, question_results, completed_at, tutor_feedback)
+- **QuizResponse**: Response model for quiz data retrieval (full quiz data with id, course_material_id, etc.)
+
+**Dependencies**: 
+- `pydantic` - For data validation
+- `typing` - For type hints (Literal, Dict, List, Optional)
+
+**Usage**: Used by API endpoints and services for request/response validation and data serialization.
+
+**Related Files**: 
+- `backend/app/api/endpoints.py` - Uses these models for API endpoints
+- `backend/app/services/quiz_service.py` - Uses QuizData and QuizResult
+- `backend/app/agents/quiz/quiz_generator_agent.py` - Uses QuizData for structured output
+
+---
+
+### `backend/app/services/storage.py` (get_page_analyses_for_range)
+
+**Purpose**: Function to retrieve page analyses for a specific page range, used by QuizGeneratorAgent to get context for quiz generation.
+
+**Key Function**:
+- `get_page_analyses_for_range(course_material_id, user_id, start_page, end_page)`: Returns list of page analysis records for the specified page range
+
+**Dependencies**: 
+- `get_supabase_client()` - Supabase client for database queries
+
+**Usage**: Called by QuizGeneratorAgent to fetch page analyses for quiz generation context.
+
+**Related Files**: 
+- `backend/app/agents/quiz/quiz_generator_agent.py` - Uses this function
+
+---
+
+### `backend/app/services/quiz_service.py`
+
+**Purpose**: Business logic for quiz creation, retrieval, submission, and scoring.
+
+**Key Functions**:
+- `save_quiz()`: Save QuizData to `quizzes` table, return quiz_id
+- `get_quiz()`: Retrieve quiz by ID with user authorization
+- `calculate_score()`: Calculate score and generate QuestionResult list
+- `submit_quiz_results()`: Save results to `quiz_results` table, prevent duplicates
+- `get_quiz_result()`: Retrieve quiz result by ID
+
+**Dependencies**: 
+- `get_supabase_client()` - Supabase client for database operations
+- `app.models.schemas` - QuizData, QuizResult, QuestionResult models
+
+**Usage**: Called by API endpoints and tools for quiz management.
+
+**Related Files**: 
+- `backend/app/api/endpoints.py` - Uses these functions in quiz endpoints
+- `backend/app/tools/quiz_tool.py` - Uses save_quiz()
+
+---
+
+### `backend/app/agents/quiz/quiz_generator_agent.py`
+
+**Purpose**: Subagent that generates comprehension quizzes from lecture material. Used by the Tutor Agent when a subtopic is completed.
+
+**Key Components**:
+- Extends `BaseAgent` from `app.agents.base`
+- Loads system prompt from Langfuse (`quiz-generator/system-prompt-de`)
+- Uses `with_structured_output(QuizData)` for structured generation
+- Implements `_parse_quiz_result()` method for robust Pydantic validation:
+  - Handles QuizData instance (direct)
+  - Handles dict (uses `QuizData.model_validate()`)
+  - Handles string (extracts JSON from markdown, then validates)
+- Validates difficulty distribution (1-2 easy, 1 medium, at least 1 hard)
+- Langfuse tracing with user_id and session_id
+- Error handling with detailed logging
+
+**Key Methods**:
+- `generate_quiz(start_page, end_page, course_material_id, user_id)`: Main entry point for quiz generation
+- `_parse_quiz_result(result)`: Robust parsing with Pydantic validation
+- `_validate_quiz(quiz_data)`: Validates quiz meets requirements
+
+**Dependencies**: 
+- `app.agents.base.BaseAgent` - Base agent class
+- `app.models.schemas.QuizData` - Pydantic model for quiz structure
+- `app.services.storage.get_page_analyses_for_range` - Fetch page analyses
+- `app.services.observability` - Langfuse client and callback handler
+- `app.services.analyzer.get_gemini_model` - LLM initialization
+
+**Usage**: Called by CreateQuizTool when TutorAgent detects topic completion.
+
+**Related Files**: 
+- `backend/app/tools/quiz_tool.py` - Uses QuizGeneratorAgent
+- `backend/app/agents/quiz/__init__.py` - Package initialization
+
+---
+
+### `backend/app/agents/quiz/__init__.py`
+
+**Purpose**: Package initialization file for quiz agent subpackage.
+
+**Key Components**:
+- Exports `QuizGeneratorAgent` class
+
+**Dependencies**: None
+
+**Usage**: Allows importing QuizGeneratorAgent from `app.agents.quiz`
+
+---
+
+### `backend/app/tools/quiz_tool.py`
+
+**Purpose**: Tool for creating quizzes from lecture material. Used by the Tutor Agent to generate quizzes when a subtopic is completed.
+
+**Key Components**:
+- `CreateQuizTool` class
+- `_run()` method: Calls QuizGeneratorAgent, saves quiz, returns JSON string
+- `to_langchain_tool()`: Converts to LangChain StructuredTool
+- Input schema: `CreateQuizInput` with start_page, end_page, course_material_id, user_id
+
+**Dependencies**: 
+- `app.agents.quiz.QuizGeneratorAgent` - Subagent for quiz generation
+- `app.services.quiz_service.save_quiz` - Save quiz to database
+- `app.services.analyzer.get_gemini_model` - LLM initialization
+
+**Usage**: Integrated into TutorAgent's tool list, automatically called when topic completion is detected.
+
+**Related Files**: 
+- `backend/app/agents/tutor/tutor_agent.py` - Uses CreateQuizTool
+
+---
+
+### `backend/app/agents/tutor/tutor_agent.py` (Quiz Integration)
+
+**Purpose**: Tutor Agent with integrated quiz creation capability.
+
+**Key Modifications**:
+- Import `CreateQuizTool`
+- Initialize `self.quiz_tool = CreateQuizTool()` in `__init__`
+- Add to `self.langchain_tools` list
+- Update `StateAwareToolNode.invoke()` and `ainvoke()` to inject `course_material_id` and `user_id` for `create_quiz` tool calls
+- Update system prompt enhancement to mention automatic argument filling for `create_quiz`
+
+**Dependencies**: 
+- `app.tools.quiz_tool.CreateQuizTool` - Quiz creation tool
+
+**Usage**: Automatically creates quizzes when detecting topic completion based on system prompt instructions.
+
+**Related Files**: 
+- `backend/app/tools/quiz_tool.py` - CreateQuizTool implementation
+
+---
+
+### `backend/app/api/endpoints.py` (Quiz Endpoints)
+
+**Purpose**: API endpoints for quiz submission and retrieval, including tutor feedback generation.
+
+**Key Endpoints**:
+- `POST /api/quiz/submit`: Submit quiz answers
+  - Validates user
+  - Calls `submit_quiz_results()`
+  - Generates tutor feedback using TutorAgent with Langfuse prompt (`tutor-agent/quiz-feedback-de`)
+  - Returns `QuizResult` with `tutor_feedback` field
+  
+- `GET /api/quiz/{quiz_id}`: Get quiz data
+  - Validates user authorization
+  - Returns `QuizResponse` with full quiz data
+
+**Key Features**:
+- Tutor feedback generation after quiz submission:
+  - Loads feedback prompt from Langfuse
+  - Compiles prompt with quiz results (wrong/correct questions, score, etc.)
+  - Calls TutorAgent to generate personalized feedback
+  - Adds feedback to QuizResult response
+
+**Dependencies**: 
+- `app.services.quiz_service` - submit_quiz_results, get_quiz, get_quiz_result
+- `app.models.schemas` - QuizSubmit, QuizResult, QuizResponse
+- `app.agents.tutor.TutorAgent` - For feedback generation
+- `app.services.session_storage.get_or_create_study_conversation` - For conversation context
+
+**Usage**: Called by frontend when user completes a quiz.
+
+**Related Files**: 
+- `frontend/lib/api/study.ts` - submitQuiz API client function
+- `frontend/components/study/quiz-component.tsx` - Calls submitQuiz
+
+---
+
+### `frontend/types/index.ts` (Quiz Types)
+
+**Purpose**: TypeScript type definitions for quiz data structures matching backend Pydantic models.
+
+**Key Interfaces**:
+- `QuizQuestion`: id, question, options, correct_answer, difficulty, explanation
+- `QuizData`: topic, questions, metadata
+- `Quiz`: Full quiz with id, course_material_id, etc.
+- `QuizAnswer`: question_id, answer
+- `QuestionResult`: question_id, user_answer, correct_answer, correct, explanation
+- `QuizResult`: quiz_id, score, correct_count, total_questions, question_results, completed_at, tutor_feedback
+- Extended `ChatMessage` with optional `quiz` field
+
+**Dependencies**: None (pure TypeScript types)
+
+**Usage**: Import types in components: `import type { QuizQuestion, QuizResult } from '@/types'`
+
+**Related Files**: 
+- `frontend/components/study/quiz-component.tsx` - Uses QuizQuestion type
+- `frontend/components/study/study-reader.tsx` - Uses QuizResult type
+- `frontend/lib/api/study.ts` - Uses QuizResult type
+
+---
+
+### `frontend/lib/api/study.ts` (submitQuiz)
+
+**Purpose**: API client function for quiz submission.
+
+**Key Function**:
+- `submitQuiz(quizId, answers, userId)`: POST to `/api/quiz/submit`, returns QuizResult
+
+**Dependencies**: 
+- `@/types` - QuizResult type
+
+**Usage**: Called by QuizComponent when user completes all questions.
+
+**Related Files**: 
+- `frontend/components/study/quiz-component.tsx` - Calls submitQuiz
+- `frontend/components/study/study-reader.tsx` - Uses submitQuiz in handleQuizComplete
+
+---
+
+### `frontend/components/study/quiz-component.tsx`
+
+**Purpose**: React component for interactive quiz display in the chat interface.
+
+**Key Features**:
+- Step-by-step question display (one at a time)
+- 4 answer buttons (A, B, C, D) with immediate feedback
+- Progress bar showing completion percentage
+- Score display after completion
+- Submit button that calls `onComplete` callback
+- Loading state during submission
+- Visual feedback (green for correct, red for incorrect)
+- Explanation display after each answer
+
+**Key Props**:
+- `quizId`: Quiz ID
+- `topic`: Quiz topic name
+- `questions`: Array of QuizQuestion objects
+- `onComplete`: Callback function with user answers
+- `isSubmitting`: Loading state during submission
+
+**Dependencies**: 
+- `@/components/ui/button` - Button component
+- `@/components/ui/card` - Card components
+- `@/components/ui/progress` - Progress bar
+- `lucide-react` - Icons (CheckCircle2, XCircle, Loader2)
+- `@/types` - QuizQuestion, QuizResult types
+
+**Usage**: Rendered by ChatMessage component when a message contains quiz data.
+
+**Related Files**: 
+- `frontend/components/study/chat-message.tsx` - Renders QuizComponent
+- `frontend/components/study/study-reader.tsx` - Provides quiz data and callbacks
+
+---
+
+### `frontend/components/study/chat-message.tsx` (Quiz Integration)
+
+**Purpose**: Chat message component with quiz display support.
+
+**Key Modifications**:
+- Accept `quiz` prop (optional quiz data)
+- Accept `onQuizComplete` callback prop
+- Accept `isQuizSubmitting` prop for loading state
+- Conditionally render `QuizComponent` if quiz exists and role is 'assistant'
+
+**Dependencies**: 
+- `@/components/study/quiz-component` - QuizComponent for quiz display
+
+**Usage**: Automatically displays quiz when message contains quiz data.
+
+**Related Files**: 
+- `frontend/components/study/quiz-component.tsx` - Quiz display component
+- `frontend/components/study/chat-interface.tsx` - Passes quiz props to ChatMessage
+
+---
+
+### `frontend/components/study/chat-interface.tsx` (Quiz Integration)
+
+**Purpose**: Chat interface component with quiz handling support.
+
+**Key Modifications**:
+- Accept `onQuizComplete` callback prop
+- Accept `submittingQuizId` prop for loading state
+- Pass quiz props to ChatMessage components
+
+**Dependencies**: 
+- `@/components/study/chat-message` - ChatMessage component
+
+**Usage**: Connects StudyReader quiz handling with ChatMessage components.
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Provides quiz callbacks
+- `frontend/components/study/chat-message.tsx` - Receives quiz props
+
+---
+
+### `frontend/components/study/study-reader.tsx` (Quiz Integration)
+
+**Purpose**: Main study reader component with quiz handling integration.
+
+**Key Modifications**:
+- Import `submitQuiz` from API client
+- Add `submittingQuizId` state to manage loading state
+- Handle `create_quiz` tool call response:
+  - Extract `quiz_id` and `quiz_data` from tool result
+  - Add quiz to ChatMessage state
+- Implement `handleQuizComplete` callback:
+  - Calls `submitQuiz` API
+  - Adds result message with tutor feedback to chat
+  - Manages loading state
+
+**Key Features**:
+- Extracts quiz data from tool call results (create_quiz tool)
+- Manages quiz submission state
+- Displays tutor feedback after quiz completion
+
+**Dependencies**: 
+- `@/lib/api/study.submitQuiz` - API client function
+- `@/types` - ChatMessage, QuizResult types
+
+**Usage**: Main component that orchestrates quiz creation, display, and submission.
+
+**Related Files**: 
+- `frontend/components/study/chat-interface.tsx` - Receives quiz callbacks
+- `frontend/lib/api/study.ts` - submitQuiz function
 
 ---
