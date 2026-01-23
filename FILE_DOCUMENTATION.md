@@ -3586,17 +3586,23 @@ The component automatically renders math when the content contains:
 
 ### `frontend/components/study/quiz-component.tsx`
 
-**Purpose**: React component for interactive quiz display in the chat interface.
+**Purpose**: React component for interactive quiz display in the chat interface with black background design.
 
 **Key Features**:
+- **Black background design** (`bg-black`) with white text for modern, high-contrast UI
 - Step-by-step question display (one at a time)
-- 4 answer buttons (A, B, C, D) with immediate feedback
-- Progress bar showing completion percentage
-- Score display after completion
+- 4 answer buttons (A, B, C, D) with state-based styling:
+  - Normal: `bg-white/5 border-white/20`
+  - Selected: `bg-white/20 border-white/50`
+  - Correct: `bg-green-500/20 border-green-500`
+  - Incorrect: `bg-red-500/20 border-red-500`
+- **Auto-advance**: Automatically moves to next question after 2 seconds of feedback display
+- Progress bar with white fill on semi-transparent background
+- **Score screen** with percentage display and correct count after completion
 - Submit button that calls `onComplete` callback
-- Loading state during submission
-- Visual feedback (green for correct, red for incorrect)
-- Explanation display after each answer
+- Loading state during submission with spinner
+- Visual feedback with icons (CheckCircle2 for correct, XCircle for incorrect)
+- Explanation display after each answer in colored feedback box
 
 **Key Props**:
 - `quizId`: Quiz ID
@@ -3605,18 +3611,24 @@ The component automatically renders math when the content contains:
 - `onComplete`: Callback function with user answers
 - `isSubmitting`: Loading state during submission
 
+**Design Specifications** (from QUIZ_WIDGET_DESIGN.md):
+- Container: `rounded-2xl bg-black text-white px-6 py-6 space-y-4`
+- Progress bar: `bg-white/20` background, `bg-white` fill, `h-2`, animated with `transition-all duration-300`
+- Buttons: `w-full text-left px-4 py-3 rounded-lg border-2` with state-based colors
+- Feedback: Colored boxes with `bg-green-500/20` or `bg-red-500/20` and matching borders
+- Auto-advance: 2000ms delay after feedback display
+
 **Dependencies**: 
-- `@/components/ui/button` - Button component
-- `@/components/ui/card` - Card components
-- `@/components/ui/progress` - Progress bar
-- `lucide-react` - Icons (CheckCircle2, XCircle, Loader2)
-- `@/types` - QuizQuestion, QuizResult types
+- `lucide-react` - Icons (CheckCircle2, XCircle, Loader)
+- `@/lib/utils` - `cn()` utility for className merging
+- `@/types` - QuizQuestion type
 
 **Usage**: Rendered by ChatMessage component when a message contains quiz data.
 
 **Related Files**: 
 - `frontend/components/study/chat-message.tsx` - Renders QuizComponent
 - `frontend/components/study/study-reader.tsx` - Provides quiz data and callbacks
+- `QUIZ_WIDGET_DESIGN.md` - Complete design specification
 
 ---
 

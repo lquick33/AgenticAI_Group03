@@ -1,11 +1,9 @@
 'use client'
 
-import { useState, useCallback } from 'react'
-import type { QuizQuestion, QuizResult } from '@/types'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Progress } from '@/components/ui/progress'
-import { CheckCircle2, XCircle, Loader2 } from 'lucide-react'
+import { useState, useCallback, useEffect } from 'react'
+import type { QuizQuestion } from '@/types'
+import { CheckCircle2, XCircle, Loader } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 interface QuizComponentProps {
   quizId: string
@@ -27,13 +25,36 @@ export function QuizComponent({
   const [selectedAnswer, setSelectedAnswer] = useState<'A' | 'B' | 'C' | 'D' | null>(null)
   const [showFeedback, setShowFeedback] = useState(false)
   const [isCorrect, setIsCorrect] = useState(false)
-  const [completed, setCompleted] = useState(false)
+  const [showScore, setShowScore] = useState(false)
+  const [answeredQuestions, setAnsweredQuestions] = useState<Set<number>>(new Set())
 
   const currentQuestion = questions[currentQuestionIndex]
   const progress = ((currentQuestionIndex + 1) / questions.length) * 100
+  const hasAnswered = answeredQuestions.has(currentQuestionIndex)
+
+  // Auto-advance after 2 seconds when feedback is shown
+  useEffect(() => {
+    if (showFeedback && !showScore) {
+      const timer = setTimeout(() => {
+        if (currentQuestionIndex < questions.length - 1) {
+          // Move to next question
+          setCurrentQuestionIndex((prev) => prev + 1)
+          setSelectedAnswer(null)
+          setShowFeedback(false)
+          setIsCorrect(false)
+        } else {
+          // Show score screen
+          setShowScore(true)
+          setShowFeedback(false)
+        }
+      }, 2000)
+
+      return () => clearTimeout(timer)
+    }
+  }, [showFeedback, currentQuestionIndex, questions.length, showScore])
 
   const handleAnswerSelect = useCallback((answer: 'A' | 'B' | 'C' | 'D') => {
-    if (showFeedback || completed) return // Prevent changing answer after feedback
+    if (hasAnswered || showFeedback) return
 
     setSelectedAnswer(answer)
     setAnswers((prev) => ({
@@ -41,153 +62,189 @@ export function QuizComponent({
       [currentQuestion.id]: answer,
     }))
 
+    // Mark question as answered
+    setAnsweredQuestions((prev) => new Set(prev).add(currentQuestionIndex))
+
     // Show immediate feedback
     const correct = answer === currentQuestion.correct_answer
     setIsCorrect(correct)
     setShowFeedback(true)
-  }, [currentQuestion, showFeedback, completed])
+  }, [currentQuestion, hasAnswered, showFeedback, currentQuestionIndex])
 
-  const handleNext = useCallback(() => {
-    if (currentQuestionIndex < questions.length - 1) {
-      setCurrentQuestionIndex((prev) => prev + 1)
-      setSelectedAnswer(null)
-      setShowFeedback(false)
-      setIsCorrect(false)
-    } else {
-      // All questions answered, submit quiz
-      setCompleted(true)
-      onComplete(quizId, answers)
-    }
-  }, [currentQuestionIndex, questions.length, answers, onComplete])
+  const handleSubmit = useCallback(() => {
+    onComplete(quizId, answers)
+  }, [quizId, answers, onComplete])
 
-  if (completed && isSubmitting) {
+  // Loading state
+  if (showScore && isSubmitting) {
     return (
-      <Card className="w-full max-w-2xl mx-auto">
-        <CardContent className="pt-6">
-          <div className="flex flex-col items-center justify-center py-8">
-            <Loader2 className="h-8 w-8 animate-spin text-blue-600 mb-4" />
-            <p className="text-gray-600">Quiz wird übermittelt...</p>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="rounded-2xl bg-black text-white px-6 py-6 space-y-4">
+        <div className="flex items-center justify-center gap-2 text-sm">
+          <Loader className="w-4 h-4 animate-spin" />
+          <span>Ergebnisse werden gespeichert...</span>
+        </div>
+      </div>
     )
   }
 
-  if (completed) {
-    // Show completion state (will be replaced by result message)
+  // Score screen
+  if (showScore) {
+    const correctCount = Object.entries(answers).reduce((count, [questionId, answer]) => {
+      const question = questions.find((q) => q.id === questionId)
+      return question && answer === question.correct_answer ? count + 1 : count
+    }, 0)
+    const score = (correctCount / questions.length) * 100
+
     return (
-      <Card className="w-full max-w-2xl mx-auto">
-        <CardContent className="pt-6">
-          <div className="flex flex-col items-center justify-center py-8">
-            <CheckCircle2 className="h-12 w-12 text-green-600 mb-4" />
-            <p className="text-lg font-semibold text-gray-900">Quiz abgeschlossen!</p>
-            <p className="text-gray-600 mt-2">Die Ergebnisse werden verarbeitet...</p>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="rounded-2xl bg-black text-white px-6 py-6 space-y-4">
+        <div className="text-center">
+          <h3 className="text-lg font-semibold mb-2">Quiz abgeschlossen!</h3>
+          <div className="text-4xl font-bold mb-1">{score.toFixed(0)}%</div>
+          <p className="text-sm text-white/70">
+            {correctCount} von {questions.length} Fragen richtig
+          </p>
+        </div>
+        <button
+          onClick={handleSubmit}
+          className="w-full bg-white text-black rounded-lg px-4 py-2 font-medium hover:bg-gray-100 transition-colors"
+          disabled={isSubmitting}
+        >
+          Ergebnisse absenden
+        </button>
+      </div>
     )
   }
 
   return (
-    <Card className="w-full max-w-2xl mx-auto">
-      <CardHeader>
-        <CardTitle className="text-xl font-semibold">{topic}</CardTitle>
-        <div className="mt-2">
-          <div className="flex justify-between text-sm text-gray-600 mb-1">
-            <span>Frage {currentQuestionIndex + 1} von {questions.length}</span>
-            <span>{Math.round(progress)}%</span>
-          </div>
-          <Progress value={progress} className="h-2" />
+    <div className="rounded-2xl bg-black text-white px-6 py-6 space-y-4">
+      {/* Header */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-white/70">Thema: {topic}</span>
+          <span className="text-white/70">
+            Frage {currentQuestionIndex + 1} von {questions.length}
+          </span>
         </div>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          <div>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">
-              {currentQuestion.question}
-            </h3>
-          </div>
+        
+        {/* Progress Bar */}
+        <div className="w-full bg-white/20 rounded-full h-2">
+          <div
+            className="bg-white h-2 rounded-full transition-all duration-300"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
 
-          <div className="space-y-2">
-            {(['A', 'B', 'C', 'D'] as const).map((option) => {
-              const optionText = currentQuestion.options[option]
-              const isSelected = selectedAnswer === option
-              const isCorrectOption = option === currentQuestion.correct_answer
-              
-              let buttonVariant: 'default' | 'secondary' | 'destructive' | 'outline' = 'outline'
-              let buttonClassName = 'w-full justify-start text-left'
-              
-              if (showFeedback) {
-                if (isCorrectOption) {
-                  buttonVariant = 'default'
-                  buttonClassName += ' bg-green-100 border-green-500 text-green-900 hover:bg-green-100'
-                } else if (isSelected && !isCorrectOption) {
-                  buttonVariant = 'destructive'
-                  buttonClassName += ' bg-red-100 border-red-500 text-red-900 hover:bg-red-100'
-                } else {
-                  buttonVariant = 'secondary'
-                  buttonClassName += ' opacity-60'
-                }
-              } else if (isSelected) {
-                buttonVariant = 'default'
-              }
+      {/* Question */}
+      <div>
+        <h3 className="text-lg font-semibold leading-relaxed">
+          {currentQuestion.question}
+        </h3>
+      </div>
 
-              return (
-                <Button
-                  key={option}
-                  variant={buttonVariant}
-                  className={buttonClassName}
-                  onClick={() => handleAnswerSelect(option)}
-                  disabled={showFeedback}
-                >
-                  <span className="font-semibold mr-2">{option}:</span>
-                  <span>{optionText}</span>
-                  {showFeedback && isSelected && (
-                    <span className="ml-auto">
-                      {isCorrect ? (
-                        <CheckCircle2 className="h-5 w-5 text-green-600" />
-                      ) : (
-                        <XCircle className="h-5 w-5 text-red-600" />
-                      )}
-                    </span>
-                  )}
-                  {showFeedback && isCorrectOption && !isSelected && (
-                    <span className="ml-auto">
-                      <CheckCircle2 className="h-5 w-5 text-green-600" />
-                    </span>
-                  )}
-                </Button>
+      {/* Answer Options */}
+      <div className="space-y-2">
+        {(['A', 'B', 'C', 'D'] as const).map((option) => {
+          const optionText = currentQuestion.options[option]
+          const isSelected = selectedAnswer === option
+          const isCorrectOption = option === currentQuestion.correct_answer
+          
+          // Determine button styles based on state
+          let buttonClasses = cn(
+            'w-full text-left px-4 py-3 rounded-lg border-2 transition-all',
+            'hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/50',
+            'disabled:cursor-not-allowed disabled:opacity-50'
+          )
+
+          if (showFeedback) {
+            if (isCorrectOption) {
+              buttonClasses = cn(
+                buttonClasses,
+                'bg-green-500/20 border-green-500'
               )
-            })}
-          </div>
+            } else if (isSelected && !isCorrectOption) {
+              buttonClasses = cn(
+                buttonClasses,
+                'bg-red-500/20 border-red-500'
+              )
+            } else {
+              buttonClasses = cn(
+                buttonClasses,
+                'bg-white/5 border-white/20'
+              )
+            }
+          } else if (isSelected) {
+            buttonClasses = cn(
+              buttonClasses,
+              'bg-white/20 border-white/50'
+            )
+          } else {
+            buttonClasses = cn(
+              buttonClasses,
+              'bg-white/5 border-white/20'
+            )
+          }
 
-          {showFeedback && (
-            <div className="mt-4 p-4 rounded-lg bg-gray-50">
-              <div className="flex items-start gap-2">
-                {isCorrect ? (
-                  <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
-                ) : (
-                  <XCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
-                )}
-                <div className="flex-1">
-                  <p className={`font-medium ${isCorrect ? 'text-green-900' : 'text-red-900'}`}>
-                    {isCorrect ? 'Richtig!' : 'Falsch'}
-                  </p>
-                  <p className="text-sm text-gray-700 mt-1">{currentQuestion.explanation}</p>
+          return (
+            <button
+              key={option}
+              className={buttonClasses}
+              onClick={() => handleAnswerSelect(option)}
+              disabled={hasAnswered || showFeedback}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="font-semibold text-lg w-6">{option}</span>
+                  <span className="text-sm">{optionText}</span>
                 </div>
+                {/* Icons only shown when feedback is visible */}
+                {showFeedback && isCorrectOption && (
+                  <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0" />
+                )}
+                {showFeedback && isSelected && !isCorrectOption && (
+                  <XCircle className="w-5 h-5 text-red-500 flex-shrink-0" />
+                )}
               </div>
-            </div>
-          )}
+            </button>
+          )
+        })}
+      </div>
 
-          {showFeedback && (
-            <div className="flex justify-end mt-4">
-              <Button onClick={handleNext} disabled={isSubmitting}>
-                {currentQuestionIndex < questions.length - 1 ? 'Nächste Frage' : 'Quiz abschließen'}
-              </Button>
-            </div>
+      {/* Feedback */}
+      {showFeedback && (
+        <div
+          className={cn(
+            'mt-4 p-4 rounded-lg',
+            isCorrect
+              ? 'bg-green-500/20 border border-green-500/50'
+              : 'bg-red-500/20 border border-red-500/50'
           )}
+        >
+          <div className="flex items-start gap-2">
+            {isCorrect ? (
+              <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" />
+            ) : (
+              <XCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+            )}
+            <div className="flex-1 space-y-1">
+              <p
+                className={cn(
+                  'text-sm font-medium',
+                  isCorrect ? 'text-green-300' : 'text-red-300'
+                )}
+              >
+                {isCorrect ? 'Richtig!' : 'Falsch'}
+              </p>
+              {!isCorrect && (
+                <p className="text-sm text-white/80">
+                  Die richtige Antwort ist: <strong>{currentQuestion.correct_answer}</strong>
+                </p>
+              )}
+              <p className="text-sm text-white/70">{currentQuestion.explanation}</p>
+            </div>
+          </div>
         </div>
-      </CardContent>
-    </Card>
+      )}
+    </div>
   )
 }
