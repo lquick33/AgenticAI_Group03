@@ -168,3 +168,25 @@ class FlashcardTaskStatusResponse(BaseModel):
     filename: Optional[str] = None
     created_at: float
     completed_at: Optional[float] = None
+
+
+class MaterialUpdateRequest(BaseModel):
+    """Request model for updating course material data."""
+    
+    file_name: Optional[str] = Field(None, description="New filename for the material")
+
+
+class MaterialResponse(BaseModel):
+    """Response model for course material data."""
+    
+    id: str
+    course_id: str
+    user_id: str
+    file_name: str
+    file_path: str
+    file_type: str
+    page_count: int
+    processing_status: str
+    error_message: Optional[str] = None
+    created_at: str
+    summary: Optional[str] = None

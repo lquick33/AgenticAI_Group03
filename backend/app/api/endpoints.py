@@ -32,6 +32,8 @@ from app.models.schemas import (
     ChatMessageRequest,
     FlashcardTaskResponse,
     FlashcardTaskStatusResponse,
+    MaterialUpdateRequest,
+    MaterialResponse,
 )
 from app.services.pdf_processor import process_pdf_background
 from app.services.storage import (
@@ -44,6 +46,7 @@ from app.services.storage import (
     get_page_analysis_id,
     get_flashcards_for_material,
     get_course_material_summary,
+    update_course_material_filename,
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_csv
@@ -2441,4 +2444,96 @@ async def download_flashcards_from_db(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to download flashcards: {str(e)}",
+        )
+
+
+@router.put("/materials/{material_id}", response_model=MaterialResponse, status_code=200)
+async def update_material_endpoint(
+    material_id: str = Path(..., description="Material ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)"),
+    material_update: MaterialUpdateRequest = ...
+) -> MaterialResponse:
+    """
+    Update course material data.
+    
+    Currently supports updating the file_name field.
+    Validates that the material exists and belongs to the user.
+    
+    Args:
+        material_id: Material ID (UUID)
+        user_id: User ID (UUID) - required for authorization
+        material_update: MaterialUpdateRequest with fields to update
+        
+    Returns:
+        MaterialResponse with updated material data
+        
+    Raises:
+        HTTPException: If material not found or access denied
+    """
+    # Validate user exists
+    if not validate_user_exists(user_id):
+        raise HTTPException(
+            status_code=404,
+            detail="User not found. Please sign up first.",
+        )
+    
+    # Validate that material exists and belongs to user
+    client = get_supabase_client()
+    try:
+        material_response = (
+            client.table("course_materials")
+            .select("*")
+            .eq("id", material_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+        
+        # Build update dict (only include non-None fields)
+        update_data = {}
+        if material_update.file_name is not None:
+            # Validate filename is not empty
+            if not material_update.file_name.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Filename cannot be empty"
+                )
+            update_data["file_name"] = material_update.file_name.strip()
+        
+        if not update_data:
+            raise HTTPException(
+                status_code=400,
+                detail="No fields provided for update"
+            )
+        
+        # Update material
+        updated_response = (
+            client.table("course_materials")
+            .update(update_data)
+            .eq("id", material_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        
+        if updated_response.data and len(updated_response.data) > 0:
+            return MaterialResponse(**updated_response.data[0])
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to update material"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating material: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update material: {str(e)}"
         )

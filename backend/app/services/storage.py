@@ -454,6 +454,31 @@ def update_course_material_summary(
         raise Exception(f"Failed to update course material summary: {str(e)}")
 
 
+def update_course_material_filename(
+    material_id: str,
+    filename: str
+) -> None:
+    """
+    Update the file_name field in the course_materials table.
+    
+    This function updates the display name of a course material with a
+    professionally generated filename based on the lecture content.
+    
+    Args:
+        material_id: Course material ID
+        filename: New filename (without file extension)
+    """
+    client = get_supabase_client()
+    
+    try:
+        client.table("course_materials").update(
+            {"file_name": filename}
+        ).eq("id", material_id).execute()
+        logger.info(f"Updated filename for material {material_id} to: {filename}")
+    except Exception as e:
+        raise Exception(f"Failed to update course material filename: {str(e)}")
+
+
 def get_course_material_summary(
     course_material_id: str,
     user_id: str

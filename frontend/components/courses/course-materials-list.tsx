@@ -31,6 +31,7 @@ import {
   cancelFlashcardTask,
   type FlashcardTaskStatus,
 } from '@/lib/api/study'
+import { EditableFilename } from '@/components/courses/editable-filename'
 import { toast } from 'sonner'
 
 interface CourseMaterialsListProps {
@@ -40,6 +41,7 @@ interface CourseMaterialsListProps {
 }
 
 export function CourseMaterialsList({ materials, courseId, userId }: CourseMaterialsListProps) {
+  const [localMaterials, setLocalMaterials] = useState<CourseMaterial[]>(materials)
   const [flashcardsStatus, setFlashcardsStatus] = useState<Record<string, boolean>>({})
   const [loadingFlashcards, setLoadingFlashcards] = useState<Record<string, boolean>>({})
   const [showConfirmDialog, setShowConfirmDialog] = useState(false)
@@ -49,11 +51,16 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
   const [taskStatuses, setTaskStatuses] = useState<Record<string, FlashcardTaskStatus>>({})
   const [pollingIntervals, setPollingIntervals] = useState<Record<string, NodeJS.Timeout>>({})
 
+  // Update local materials when props change
+  useEffect(() => {
+    setLocalMaterials(materials)
+  }, [materials])
+
   // Check flashcards availability for all materials
   useEffect(() => {
     const checkFlashcards = async () => {
       const status: Record<string, boolean> = {}
-      for (const material of materials) {
+      for (const material of localMaterials) {
         if (material.processing_status === 'completed') {
           try {
             const result = await getFlashcardsForMaterial(material.id, userId)
@@ -69,10 +76,10 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
       setFlashcardsStatus(status)
     }
 
-    if (materials.length > 0) {
+    if (localMaterials.length > 0) {
       checkFlashcards()
     }
-  }, [materials, userId])
+  }, [localMaterials, userId])
 
   // Cleanup polling intervals on unmount
   useEffect(() => {
@@ -299,7 +306,13 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
     }
   }
 
-  if (materials.length === 0) {
+  const handleFilenameUpdate = (materialId: string, newFilename: string) => {
+    setLocalMaterials((prev) =>
+      prev.map((m) => (m.id === materialId ? { ...m, file_name: newFilename } : m))
+    )
+  }
+
+  if (localMaterials.length === 0) {
     return (
       <div className="rounded-lg border p-6">
         <p className="text-muted-foreground text-center">
@@ -323,9 +336,16 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
             </TableRow>
           </TableHeader>
           <TableBody>
-            {materials.map((material) => (
+            {localMaterials.map((material) => (
               <TableRow key={material.id}>
-                <TableCell className="font-medium">{material.file_name}</TableCell>
+                <TableCell className="font-medium">
+                  <EditableFilename
+                    materialId={material.id}
+                    userId={userId}
+                    initialFilename={material.file_name}
+                    onUpdate={(newFilename) => handleFilenameUpdate(material.id, newFilename)}
+                  />
+                </TableCell>
                 <TableCell>{material.page_count}</TableCell>
                 <TableCell>{getStatusBadge(material.processing_status)}</TableCell>
                 <TableCell className="text-muted-foreground">

@@ -824,6 +824,8 @@ uvicorn app.main:app --reload
 
 **Key Components**:
 - `analyze_pdf_page(image_bytes: bytes) -> SlideAnalysis`: Main analysis function that processes image bytes
+- `generate_material_summary(page_data: Sequence[dict]) -> str`: Generate global topics summary from per-page analyses
+- `generate_material_filename(page_one_summary: str) -> str`: Generate professional filename based on page 1 summary
 - `get_gemini_model(api_key: str) -> ChatGoogleGenerativeAI`: Model initialization with fallback logic
 - `image_bytes_to_base64(image_bytes: bytes, format: str) -> str`: Image encoding helper
 
@@ -881,7 +883,9 @@ analysis = analyze_pdf_page(image_bytes)
    - Convert PIL Image to bytes
    - Call `analyze_pdf_page()` (async)
    - Save result to `page_analyses` table
-6. Update final status based on results
+6. Generate global material summary (if pages analyzed successfully)
+7. Update final status based on results
+8. Generate and update professional filename based on page 1 summary (if completed successfully)
 
 **Error Handling**:
 - Failed page conversions: Log error, continue with other pages
@@ -957,6 +961,7 @@ background_tasks.add_task(
 - `create_course_material(...) -> dict`: Create course_material record in database
 - `update_processing_status(material_id, status, error_message) -> None`: Update processing status
 - `save_page_analysis(course_material_id, page_number, analysis, user_id) -> dict`: Save analysis to `page_analyses` table
+- `update_course_material_filename(material_id, filename) -> None`: Update the display filename in `course_materials` table
 
 **Key Features**:
 - Supabase client singleton pattern
@@ -1041,6 +1046,12 @@ background_tasks.add_task(
 - `app.services.analyzer` - Analysis service
 - `app.services.storage` - Storage service
 - `app.models.schemas` - Response models
+
+**Additional Endpoints**:
+- `PUT /api/materials/{material_id}`: Update course material data (currently supports filename updates)
+  - Validates material ownership
+  - Request body: `{ "file_name": string }`
+  - Returns: `MaterialResponse` with updated material data
 
 **Usage**: Endpoint accessible at `POST /api/upload` when FastAPI app is running
 
@@ -1220,20 +1231,89 @@ import { UploadSection } from '@/components/courses/upload-section'
 
 ---
 
+### `frontend/components/courses/editable-filename.tsx`
+
+**Purpose**: Inline editable filename component for course materials with dezent UI design.
+
+**Key Components**:
+- `EditableFilename` component with double-click to edit functionality
+- Inline editing mode with minimal UI (no visible border, only cursor)
+- Checkmark icon for saving (appears on hover)
+- Keyboard shortcuts: Enter to save, Escape to cancel
+- Optimistic updates with error rollback
+
+**Key Features**:
+- **Double-click activation**: Double-click on filename to enter edit mode
+- **Dezent UI**: Input without visible border, only cursor visible
+- **Auto-focus and select**: Automatically focuses and selects all text when entering edit mode
+- **Checkmark icon**: Small checkmark icon (3px) appears on hover for saving
+- **Keyboard shortcuts**: 
+  - Enter: Save changes
+  - Escape: Cancel editing
+- **Loading state**: Shows spinner while saving
+- **Error handling**: Toast notifications for success/error, reverts to original on error
+- **Optimistic updates**: Updates parent component immediately on success
+
+**Props**:
+- `materialId: string` - Course material ID
+- `userId: string` - User ID for authorization
+- `initialFilename: string` - Current filename
+- `onUpdate?: (newFilename: string) => void` - Callback when filename is updated
+
+**Dependencies**: 
+- `@/lib/api/materials` - API client for updating filename
+- `sonner` - Toast notifications
+- `lucide-react` - Icons (Check, Loader2)
+
+**Usage**: Used in `course-materials-list.tsx` for each material row
+
+**Related Files**: 
+- `frontend/lib/api/materials.ts` - API client function
+- `frontend/components/courses/course-materials-list.tsx` - Parent component
+
+---
+
+### `frontend/lib/api/materials.ts`
+
+**Purpose**: API client functions for course materials operations.
+
+**Key Components**:
+- `updateMaterialFilename(materialId, filename, userId)`: Updates the filename of a course material
+
+**Key Features**:
+- RESTful API communication with backend
+- Error handling with descriptive messages
+- Type-safe function signatures
+
+**Dependencies**: 
+- `process.env.NEXT_PUBLIC_API_URL` - Backend API URL
+
+**Usage**: Imported by `EditableFilename` component
+
+**Related Files**: 
+- `backend/app/api/endpoints.py` - PUT /api/materials/{material_id} endpoint
+- `frontend/components/courses/editable-filename.tsx` - Component using this API
+
+---
+
 ### `frontend/components/courses/course-materials-list.tsx`
 
 **Purpose**: Table component displaying all uploaded course materials with their status.
 
 **Key Components**:
-- Displays material file name, page count, processing status, upload date
+- Displays material file name (editable via double-click), page count, processing status, upload date
 - Status badges (uploading, processing, completed, error)
 - Empty state when no materials exist
+- EditableFilename component for inline filename editing
+- Local state management for optimistic updates
 
 **Key Features**:
 - Client Component ("use client")
+- **Inline filename editing**: Double-click on filename to edit (via EditableFilename component)
 - Status badge variants based on `processing_status`
 - Date formatting for German locale
 - Responsive table layout
+- Optimistic UI updates when filename is changed
 
 **Table Columns**:
 - Dateiname (File name)
@@ -1250,6 +1330,7 @@ import { UploadSection } from '@/components/courses/upload-section'
 **Dependencies**: 
 - `@/components/ui/table` - Table components
 - `@/components/ui/badge` - Status badges
+- `@/components/courses/editable-filename` - Editable filename component
 - `@/types` - CourseMaterial type
 
 **Usage**: 

@@ -11,12 +11,14 @@ from typing import List
 from pdf2image import convert_from_bytes
 from PIL import Image
 
-from app.services.analyzer import analyze_pdf_page, generate_material_summary
+from app.services.analyzer import analyze_pdf_page, generate_material_summary, generate_material_filename
 from app.services.storage import (
     update_processing_status,
     save_page_analysis,
     get_all_page_analyses_for_material,
     update_course_material_summary,
+    update_course_material_filename,
+    get_page_analysis,
 )
 
 logger = logging.getLogger(__name__)
@@ -225,6 +227,44 @@ async def process_pdf_background(
         # Update final status in course_materials
         update_processing_status(material_id, status, error_message)
         logger.info(f"Background processing completed for material {material_id}: {status}")
+        
+        # Generate and update filename based on page 1 summary if processing completed successfully
+        if status == "completed" and pages_analyzed > 0:
+            try:
+                logger.info(
+                    f"Generating professional filename for material {material_id} "
+                    f"based on page 1 summary"
+                )
+                # Get page 1 analysis
+                page_one_analysis = get_page_analysis(
+                    course_material_id=material_id,
+                    page_number=1,
+                    user_id=user_id
+                )
+                
+                if page_one_analysis and page_one_analysis.get("summary"):
+                    page_one_summary = page_one_analysis.get("summary")
+                    # Generate professional filename
+                    new_filename = await generate_material_filename(
+                        page_one_summary=page_one_summary,
+                        api_key=None,  # Uses settings if None
+                        material_id=material_id,
+                        user_id=user_id
+                    )
+                    # Update filename in database
+                    update_course_material_filename(material_id, new_filename)
+                    logger.info(f"Successfully updated filename for material {material_id} to: {new_filename}")
+                else:
+                    logger.warning(
+                        f"No page 1 summary found for material {material_id} when generating filename"
+                    )
+            except Exception as filename_error:
+                logger.error(
+                    f"Failed to generate or update filename for {material_id}: "
+                    f"{filename_error}",
+                    exc_info=True,
+                )
+                # Don't fail the whole process if filename generation fails
         
     except Exception as e:
         # Unexpected error during processing
