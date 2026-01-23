@@ -102,6 +102,23 @@
   }
 }
 
+/* Gemini-inspired Typography Variables */
+:root {
+  /* Typography scale for markdown content */
+  --gem-sys-typography-markdown-type-scale--p-font-size: 1rem;
+  --gem-sys-typography-markdown-type-scale--p-font-weight: 400;
+  --gem-sys-typography-markdown-type-scale--p-line-height: 1.5rem;
+  --gem-sys-typography-markdown-type-scale--p-font-tracking: 0;
+  --gem-sys-typography-markdown-type-scale--p-font-width: "wdth" 100;
+  
+  /* Spacing - increased for presentation-like feel */
+  --gem-sys-spacing--l: 1.25rem;
+  --gem-sys-spacing--xl: 1.5rem;
+  
+  /* Colors */
+  --gem-sys-color--on-surface: #1f1f1f;
+}
+
 /* KaTeX Styling */
 @layer components {
   /* Ensure KaTeX inherits text color */
@@ -112,6 +129,65 @@
   /* Display math spacing */
   .katex-display {
     margin: 1em 0;
+  }
+  
+  /* Gemini-inspired markdown container styles */
+  .markdown-gemini {
+    font-family: "Google Sans Flex", "Google Sans", "Helvetica Neue", sans-serif;
+    font-size: var(--gem-sys-typography-markdown-type-scale--p-font-size);
+    font-weight: var(--gem-sys-typography-markdown-type-scale--p-font-weight);
+    letter-spacing: var(--gem-sys-typography-markdown-type-scale--p-font-tracking);
+    line-height: var(--gem-sys-typography-markdown-type-scale--p-line-height);
+    overflow-wrap: break-word;
+    -webkit-margin-end: 24px;
+    -moz-margin-end: 24px;
+    margin-inline-end: 24px;
+  }
+  
+  .markdown-gemini p {
+    margin: 0 0 var(--gem-sys-spacing--l);
+    overflow-wrap: anywhere;
+  }
+  
+  /* More spacing for headings to create clear section breaks */
+  .markdown-gemini h1,
+  .markdown-gemini h2,
+  .markdown-gemini h3 {
+    margin-top: var(--gem-sys-spacing--xl);
+    margin-bottom: var(--gem-sys-spacing--l);
+  }
+  
+  .markdown-gemini h1:first-child,
+  .markdown-gemini h2:first-child,
+  .markdown-gemini h3:first-child {
+    margin-top: 0;
+  }
+  
+  /* Better list spacing for presentation-like feel */
+  .markdown-gemini ul,
+  .markdown-gemini ol {
+    margin-top: var(--gem-sys-spacing--l);
+    margin-bottom: var(--gem-sys-spacing--l);
+  }
+  
+  .markdown-gemini li {
+    margin-bottom: 0.5rem;
+  }
+  
+  /* More spacing for blockquotes */
+  .markdown-gemini blockquote {
+    margin-top: var(--gem-sys-spacing--l);
+    margin-bottom: var(--gem-sys-spacing--l);
+  }
+  
+  /* Responsive line-height for larger screens */
+  @media screen and (min-width: 768px) {
+    .markdown-gemini:not(.force-compact-layout) {
+      line-height: 1.75rem;
+      -webkit-margin-end: 0;
+      -moz-margin-end: 0;
+      margin-inline-end: 0;
+    }
   }
 }
 

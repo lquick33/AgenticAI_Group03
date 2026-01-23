@@ -99,7 +99,7 @@ export function ChatMessage({
         
         <div
           className={cn(
-            "rounded-2xl px-4 py-3",
+            "rounded-2xl px-5 py-4",
             role === "assistant"
               ? "bg-black text-white"
               : "bg-gray-100 text-gray-900"
@@ -116,42 +116,32 @@ export function ChatMessage({
               </div>
             </div>
           ) : (
-            <div className="text-sm leading-relaxed prose prose-sm max-w-none">
+            <div className="markdown-gemini max-w-none">
               <ReactMarkdown
                 remarkPlugins={[remarkMath]}
                 rehypePlugins={[rehypeKatex]}
                 components={{
                   p: ({ children }) => (
-                    <p className="mb-2 last:mb-0">{children}</p>
+                    <p>{children}</p>
                   ),
                   strong: ({ children }) => (
-                    <strong
-                      className={cn(
-                        "font-semibold",
-                        role === "assistant" ? "text-white" : "text-gray-900"
-                      )}
-                    >
+                    <strong className="font-semibold">
                       {children}
                     </strong>
                   ),
                   em: ({ children }) => (
-                    <em
-                      className={cn(
-                        "italic",
-                        role === "assistant" ? "text-white" : ""
-                      )}
-                    >
+                    <em className="italic">
                       {children}
                     </em>
                   ),
                   ul: ({ children }) => (
-                    <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>
+                    <ul className="list-disc list-outside space-y-2 ml-6">{children}</ul>
                   ),
                   ol: ({ children }) => (
-                    <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>
+                    <ol className="list-decimal list-outside space-y-2 ml-6">{children}</ol>
                   ),
                   li: ({ children }) => (
-                    <li className="text-sm">{children}</li>
+                    <li className="pl-2">{children}</li>
                   ),
                   code: ({ children, className }) => {
                     const isInline = !className?.includes("language-")
@@ -160,7 +150,7 @@ export function ChatMessage({
                         className={cn(
                           "px-1 py-0.5 rounded text-xs font-mono",
                           role === "assistant"
-                            ? "bg-white/20 text-white"
+                            ? "bg-white/10 text-white"
                             : "bg-gray-200 text-gray-900"
                         )}
                       >
@@ -175,7 +165,7 @@ export function ChatMessage({
                       className={cn(
                         "p-2 rounded text-xs font-mono overflow-x-auto",
                         role === "assistant"
-                          ? "bg-white/20 text-white"
+                          ? "bg-white/10 text-white"
                           : "bg-gray-200 text-gray-900"
                       )}
                     >
@@ -183,18 +173,18 @@ export function ChatMessage({
                     </pre>
                   ),
                   h1: ({ children }) => (
-                    <h1 className="text-lg font-semibold mb-2">{children}</h1>
+                    <h1 className="text-xl font-semibold">{children}</h1>
                   ),
                   h2: ({ children }) => (
-                    <h2 className="text-base font-semibold mb-2">{children}</h2>
+                    <h2 className="text-lg font-semibold">{children}</h2>
                   ),
                   h3: ({ children }) => (
-                    <h3 className="text-sm font-semibold mb-2">{children}</h3>
+                    <h3 className="text-base font-semibold">{children}</h3>
                   ),
                   blockquote: ({ children }) => (
                     <blockquote
                       className={cn(
-                        "border-l-4 pl-3 italic",
+                        "border-l-4 pl-4 italic my-0",
                         role === "assistant"
                           ? "border-white/30 text-white/90"
                           : "border-gray-300 text-gray-700"
