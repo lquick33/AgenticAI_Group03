@@ -1,9 +1,10 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import type { QuizQuestion } from '@/types'
-import { CheckCircle2, XCircle, Loader, ChevronRight } from 'lucide-react'
+import { CheckCircle2, XCircle, Loader, ChevronRight, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { validateQuizData } from '@/lib/quiz-validation'
 
 interface QuizComponentProps {
   quizId: string
@@ -28,8 +29,71 @@ export function QuizComponent({
   const [showScore, setShowScore] = useState(false)
   const [isCompleted, setIsCompleted] = useState(false)
   const [answeredQuestions, setAnsweredQuestions] = useState<Set<number>>(new Set())
+  const [validationError, setValidationError] = useState<string | null>(null)
+
+  // Validate quiz data on mount
+  useEffect(() => {
+    try {
+      const quizData = {
+        topic,
+        questions,
+        metadata: {}
+      }
+      validateQuizData(quizData)
+      setValidationError(null)
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : 'Invalid quiz data'
+      console.error('[QuizComponent] Validation error:', errorMessage, e)
+      setValidationError(errorMessage)
+    }
+  }, [topic, questions])
+
+  // Show error state if validation failed
+  if (validationError) {
+    return (
+      <div className="rounded-2xl bg-red-50 border border-red-200 text-red-900 px-6 py-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0" />
+          <div>
+            <h3 className="text-lg font-semibold mb-1">Quiz-Daten ungültig</h3>
+            <p className="text-sm text-red-700">{validationError}</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Show error state if questions are missing or empty
+  if (!questions || questions.length === 0) {
+    return (
+      <div className="rounded-2xl bg-yellow-50 border border-yellow-200 text-yellow-900 px-6 py-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0" />
+          <div>
+            <h3 className="text-lg font-semibold mb-1">Keine Fragen verfügbar</h3>
+            <p className="text-sm text-yellow-700">Das Quiz enthält keine Fragen.</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const currentQuestion = questions[currentQuestionIndex]
+  
+  // Safety check: ensure currentQuestion exists
+  if (!currentQuestion) {
+    return (
+      <div className="rounded-2xl bg-yellow-50 border border-yellow-200 text-yellow-900 px-6 py-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0" />
+          <div>
+            <h3 className="text-lg font-semibold mb-1">Frage nicht gefunden</h3>
+            <p className="text-sm text-yellow-700">Die aktuelle Frage konnte nicht geladen werden.</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
   const progress = ((currentQuestionIndex + 1) / questions.length) * 100
   const hasAnswered = answeredQuestions.has(currentQuestionIndex)
   const isLastQuestion = currentQuestionIndex === questions.length - 1

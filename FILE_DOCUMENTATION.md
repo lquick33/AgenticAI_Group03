@@ -3692,6 +3692,87 @@ The component automatically renders math when the content contains:
 
 ---
 
+### `backend/app/exceptions/quiz_exceptions.py` (NEW)
+
+**Purpose**: Custom exception classes for structured error handling in quiz generation.
+
+**Key Components**:
+- `QuizGenerationError`: Base exception for quiz generation errors
+- `QuizValidationError`: For validation failures (with detailed error information)
+- `QuizStateError`: For state management failures
+- `QuizDataError`: For data structure/corruption issues
+
+**Dependencies**: None (base Python exceptions)
+
+**Usage**: Used throughout quiz generation pipeline to replace string-based error handling with structured exceptions.
+
+**Related Files**: 
+- `backend/app/agents/quiz/quiz_generator_agent.py` - Uses these exceptions
+- `backend/app/tools/quiz_tool.py` - Uses these exceptions
+
+---
+
+### `backend/app/services/quiz_creation_lock.py` (NEW)
+
+**Purpose**: Thread-safe lock service for managing active quiz creation operations to prevent race conditions.
+
+**Key Components**:
+- `QuizCreationLock` class: Manages locks with timeout support
+- `get_quiz_creation_lock()`: Singleton accessor function
+- Methods: `acquire_lock()`, `release_lock()`, `is_locked()`, `get_lock_info()`, `cleanup_expired_locks()`
+
+**Dependencies**: 
+- Python `threading` module for thread-safety
+- `datetime` for timeout management
+
+**Usage**: Used in `CreateQuizTool` to prevent concurrent quiz creation and in API endpoints to detect pending quiz creation.
+
+**Related Files**: 
+- `backend/app/tools/quiz_tool.py` - Uses lock service
+- `backend/app/api/endpoints.py` - Uses lock service for pending quiz detection
+
+---
+
+### `frontend/lib/quiz-validation.ts` (NEW)
+
+**Purpose**: Type guards and validation functions for quiz data structures in the frontend.
+
+**Key Components**:
+- `isValidQuizQuestion()`: Type guard for QuizQuestion
+- `isValidQuizData()`: Type guard for QuizData
+- `isValidQuizToolResponse()`: Type guard for QuizToolResponse
+- `parseQuizToolResponse()`: Parse and validate quiz tool response JSON
+- `validateQuizData()`: Validate quiz data structure
+
+**Dependencies**: 
+- `@/types` for TypeScript types
+
+**Usage**: Used in `study-reader.tsx` for parsing and validating quiz data from SSE streams.
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Uses validation functions
+- `frontend/components/study/quiz-component.tsx` - Uses validation functions
+
+---
+
+### `frontend/lib/event-queue.ts` (NEW)
+
+**Purpose**: Event queue for managing SSE stream event ordering and preventing race conditions.
+
+**Key Components**:
+- `EventQueue` class: Manages event queue with debouncing
+- Methods: `add()`, `validateOrder()`, `getNext()`, `getAllUnprocessed()`, `clear()`, `hasUnprocessed()`, `size()`
+
+**Dependencies**: 
+- `@/types` for ToolResponseEvent type
+
+**Usage**: Used in `study-reader.tsx` to manage event ordering and prevent race conditions in SSE stream processing.
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Uses EventQueue
+
+---
+
 ### `backend/app/api/endpoints.py` (Quiz Endpoints)
 
 **Purpose**: API endpoints for quiz submission and retrieval, including tutor feedback generation.

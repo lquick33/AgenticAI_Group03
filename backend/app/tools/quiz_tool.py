@@ -13,6 +13,13 @@ from pydantic import BaseModel, Field
 from app.agents.quiz.quiz_generator_agent import QuizGeneratorAgent
 from app.services.quiz_service import save_quiz
 from app.services.analyzer import get_gemini_model
+from app.services.quiz_creation_lock import get_quiz_creation_lock
+from app.models.schemas import QuizToolResponse
+from app.exceptions.quiz_exceptions import (
+    QuizGenerationError,
+    QuizValidationError,
+    QuizStateError
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,15 +87,37 @@ class CreateQuizTool:
         Returns:
             JSON string with quiz_id and quiz_data
         """
+        # Validate page range early
+        if start_page > end_page:
+            raise QuizValidationError(
+                f"start_page ({start_page}) muss <= end_page ({end_page}) sein",
+                validation_errors={"page_range": f"start_page > end_page: {start_page} > {end_page}"}
+            )
+        
+        # Acquire lock for quiz creation
+        lock_service = get_quiz_creation_lock()
+        lock_acquired = lock_service.acquire_lock(
+            material_id=course_material_id,
+            user_id=user_id,
+            start_page=start_page,
+            end_page=end_page
+        )
+        
+        if not lock_acquired:
+            # Lock already exists - quiz creation is already in progress
+            lock_info = lock_service.get_lock_info(course_material_id, user_id)
+            if lock_info:
+                raise QuizStateError(
+                    f"Quiz-Erstellung läuft bereits für Seiten {lock_info['start_page']}-{lock_info['end_page']}",
+                    state_info=lock_info
+                )
+            else:
+                raise QuizStateError(
+                    "Quiz-Erstellung läuft bereits (Lock existiert)",
+                    state_info={"material_id": course_material_id, "user_id": user_id}
+                )
+        
         try:
-            # Validate page range
-            if start_page > end_page:
-                return json.dumps({
-                    "error": f"start_page ({start_page}) muss <= end_page ({end_page}) sein",
-                    "quiz_id": None,
-                    "quiz_data": None
-                }, ensure_ascii=False)
-            
             # Generate quiz using QuizGeneratorAgent
             logger.info(
                 f"Generating quiz for pages {start_page}-{end_page} "
@@ -102,6 +131,11 @@ class CreateQuizTool:
                 user_id=user_id
             )
             
+            # Validate quiz data before saving to database
+            # This ensures we don't save invalid data even if validation was skipped earlier
+            self.quiz_agent._validate_quiz(quiz_data)
+            logger.debug("Quiz data validated before database save")
+            
             # Save quiz to database
             quiz_id = save_quiz(
                 quiz_data=quiz_data,
@@ -112,35 +146,59 @@ class CreateQuizTool:
                 topic_name=quiz_data.topic
             )
             
-            # Return quiz ID and data as JSON
-            result = {
-                "quiz_id": quiz_id,
-                "quiz_data": quiz_data.model_dump(),
-                "topic": quiz_data.topic,
-                "question_count": len(quiz_data.questions),
-                "start_page": start_page,
-                "end_page": end_page
-            }
+            # Create validated response
+            tool_response = QuizToolResponse(
+                quiz_id=quiz_id,
+                quiz_data=quiz_data,
+                topic=quiz_data.topic,
+                question_count=len(quiz_data.questions),
+                start_page=start_page,
+                end_page=end_page
+            )
             
             logger.info(f"Quiz created successfully: {quiz_id} ({len(quiz_data.questions)} questions)")
             
-            return json.dumps(result, ensure_ascii=False)
+            # Return as JSON string (required by LangChain StructuredTool)
+            return tool_response.model_dump_json(ensure_ascii=False)
         
-        except ValueError as e:
-            logger.error(f"Validation error in create_quiz: {str(e)}")
-            return json.dumps({
+        except (QuizValidationError, QuizStateError, QuizGenerationError) as e:
+            # For custom exceptions, return error as JSON string instead of raising
+            # This allows LangGraph to handle it as a ToolMessage instead of breaking the stream
+            logger.error(f"Quiz error in create_quiz: {str(e)}")
+            error_response = {
                 "error": str(e),
+                "error_type": type(e).__name__,
                 "quiz_id": None,
                 "quiz_data": None
-            }, ensure_ascii=False)
+            }
+            # Add details if available
+            if hasattr(e, "details") and e.details:
+                error_response["details"] = e.details
+            if hasattr(e, "validation_errors") and e.validation_errors:
+                error_response["validation_errors"] = e.validation_errors
+            if hasattr(e, "state_info") and e.state_info:
+                error_response["state_info"] = e.state_info
+            
+            return json.dumps(error_response, ensure_ascii=False)
         
         except Exception as e:
-            logger.error(f"Failed to create quiz: {str(e)}", exc_info=True)
-            return json.dumps({
+            # Wrap unexpected errors and return as JSON string
+            logger.error(f"Unexpected error in create_quiz: {str(e)}", exc_info=True)
+            error_response = {
                 "error": f"Fehler bei Quiz-Erstellung: {str(e)}",
+                "error_type": type(e).__name__,
                 "quiz_id": None,
-                "quiz_data": None
-            }, ensure_ascii=False)
+                "quiz_data": None,
+                "details": {"error_type": type(e).__name__, "error_message": str(e)}
+            }
+            return json.dumps(error_response, ensure_ascii=False)
+        finally:
+            # Always release lock, even if an error occurred
+            try:
+                lock_service.release_lock(course_material_id, user_id)
+                logger.debug(f"Lock released for quiz creation: {course_material_id}:{user_id}")
+            except Exception as lock_error:
+                logger.warning(f"Failed to release lock: {lock_error}")
     
     async def _arun(
         self,

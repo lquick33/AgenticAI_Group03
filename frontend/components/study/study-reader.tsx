@@ -8,7 +8,10 @@ import { Button } from '@/components/ui/button'
 import { ChatInterface } from './chat-interface'
 import { CongratulationsScreen } from './congratulations-screen'
 import { initiateChat, sendMessage, getStudySession, submitQuiz } from '@/lib/api/study'
+import { parseQuizToolResponse } from '@/lib/quiz-validation'
+import { EventQueue } from '@/lib/event-queue'
 import type { ChatMessage, ToolCall } from '@/types'
+import { QuizState } from '@/types'
 
 // Dynamically import PDF Viewer with SSR disabled
 const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default: mod.PdfViewer })), {
@@ -47,6 +50,7 @@ export function StudyReader({
   const streamControllerRef = useRef<{ close: () => void } | null>(null)
   const messageIdCounter = useRef(0)
   const chatPanelRef = useRef<HTMLDivElement | null>(null)
+  const eventQueueRef = useRef<EventQueue>(new EventQueue())
   
   // Debouncing and request tracking for page changes
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
@@ -279,6 +283,9 @@ export function StudyReader({
           if (chunk.type === 'tool_call' && chunk.tool_calls) {
             console.log('[StudyReader] Tool call received:', chunk.tool_calls.map(tc => ({ id: tc.id, name: tc.name })))
             
+            // Add to event queue for ordering validation
+            eventQueueRef.current.add(chunk)
+            
             setMessages((prev) => {
               const lastStreamingIndex = prev.findLastIndex(
                 (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
@@ -315,6 +322,16 @@ export function StudyReader({
 
           // Handle tool response events
           if (chunk.type === 'tool_response' && chunk.tool_call_id && chunk.result) {
+            // Validate event order: tool_call should come before tool_response
+            if (!eventQueueRef.current.validateOrder(chunk)) {
+              console.warn('[StudyReader] Tool response received before corresponding tool call, queuing...')
+              // Add to queue and process later
+              eventQueueRef.current.add(chunk)
+              return
+            }
+            
+            // Add to event queue
+            eventQueueRef.current.add(chunk)
             console.log('[StudyReader] Tool response received:', {
               tool_call_id: chunk.tool_call_id,
               result_length: chunk.result?.length,
@@ -340,28 +357,31 @@ export function StudyReader({
                   // Check if this is a create_quiz tool call
                   if (toolCall && toolCall.name === 'create_quiz' && chunk.result) {
                     try {
+                      // Check if result is an error response
                       const resultData = JSON.parse(chunk.result)
-                      
-                      // If quiz was created successfully, add quiz data to message
-                      // IMPORTANT: Keep tool call state as 'running' or 'pending', NOT 'completed'
-                      // The tool call is only 'completed' when the user finishes the quiz
-                      if (resultData.quiz_id && resultData.quiz_data) {
+                      if (resultData.error) {
+                        // Tool returned an error - mark tool call as completed with error
+                        const errorMessage = resultData.error || 'Quiz-Erstellung fehlgeschlagen'
+                        console.error('[StudyReader] Quiz creation failed:', errorMessage, resultData)
+                        
                         updated[lastStreamingIndex] = {
                           ...updated[lastStreamingIndex],
                           toolCalls: updated[lastStreamingIndex].toolCalls!.map(tc => 
                             tc.id === chunk.tool_call_id
-                              ? { ...tc, result: chunk.result, state: 'running' as const }
+                              ? { 
+                                  ...tc, 
+                                  result: chunk.result, 
+                                  state: 'completed' as const,
+                                  error: errorMessage
+                                }
                               : tc
                           ),
-                          quiz: {
-                            quiz_id: resultData.quiz_id,
-                            topic: resultData.topic || resultData.quiz_data.topic,
-                            questions: resultData.quiz_data.questions || []
-                          }
                         }
-                        console.log('[StudyReader] Quiz added to message:', resultData.quiz_id, '- Tool call remains pending until user completes quiz')
                       } else {
-                        // Quiz creation failed, mark as completed (error state)
+                        // Quiz was created successfully - use validated parsing function
+                        const validatedData = parseQuizToolResponse(chunk.result)
+                        
+                        // Quiz was created successfully, add quiz data to message
                         updated[lastStreamingIndex] = {
                           ...updated[lastStreamingIndex],
                           toolCalls: updated[lastStreamingIndex].toolCalls!.map(tc => 
@@ -369,16 +389,31 @@ export function StudyReader({
                               ? { ...tc, result: chunk.result, state: 'completed' as const }
                               : tc
                           ),
+                          quiz: {
+                            quiz_id: validatedData.quiz_id,
+                            topic: validatedData.topic || validatedData.quiz_data.topic,
+                            questions: validatedData.quiz_data.questions || []
+                          }
                         }
+                        console.log('[StudyReader] Quiz added to message:', validatedData.quiz_id, '- Quiz is ready for user interaction')
                       }
                     } catch (e) {
-                      // JSON parse failed, just update tool call normally
-                      console.error('[StudyReader] Failed to parse quiz result:', e)
+                      // Parsing or validation failed - show error and mark tool call as completed (error state)
+                      const errorMessage = e instanceof Error ? e.message : 'Failed to parse quiz result'
+                      console.error('[StudyReader] Failed to parse/validate quiz result:', errorMessage, e)
+                      
+                      // Show user-friendly error (you may want to use a toast library here)
+                      // For now, we'll log it and mark the tool call as completed with error
                       updated[lastStreamingIndex] = {
                         ...updated[lastStreamingIndex],
                         toolCalls: updated[lastStreamingIndex].toolCalls!.map(tc => 
                           tc.id === chunk.tool_call_id
-                            ? { ...tc, result: chunk.result, state: 'completed' as const }
+                            ? { 
+                                ...tc, 
+                                result: chunk.result, 
+                                state: 'completed' as const,
+                                error: errorMessage
+                              }
                             : tc
                         ),
                       }
@@ -812,6 +847,9 @@ export function StudyReader({
 
             // Handle tool call events
             if (chunk.type === 'tool_call' && chunk.tool_calls) {
+              // Add to event queue for ordering validation
+              eventQueueRef.current.add(chunk)
+              
               setMessages((prev) => {
                 const lastStreamingIndex = prev.findLastIndex(
                   (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
@@ -847,6 +885,17 @@ export function StudyReader({
 
             // Handle tool response events
             if (chunk.type === 'tool_response' && chunk.tool_call_id && chunk.result) {
+              // Validate event order: tool_call should come before tool_response
+              if (!eventQueueRef.current.validateOrder(chunk)) {
+                console.warn('[StudyReader] Tool response received before corresponding tool call, queuing...')
+                // Add to queue and process later
+                eventQueueRef.current.add(chunk)
+                return
+              }
+              
+              // Add to event queue
+              eventQueueRef.current.add(chunk)
+              
               setMessages((prev) => {
                 const lastStreamingIndex = prev.findLastIndex(
                   (m) => m.role === 'assistant' && m.id.startsWith('streaming-')

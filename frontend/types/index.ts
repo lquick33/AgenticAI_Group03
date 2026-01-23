@@ -149,6 +149,29 @@ export interface QuizQuestion {
   explanation: string
 }
 
+export interface QuizToolResponse {
+  quiz_id: string
+  quiz_data: QuizData
+  topic: string
+  question_count: number
+  start_page: number
+  end_page: number
+}
+
+export enum QuizState {
+  PENDING = 'pending',
+  CREATING = 'creating',
+  READY = 'ready',
+  COMPLETED = 'completed',
+  ERROR = 'error'
+}
+
+export type ToolResponseEvent = 
+  | { type: 'tool_call'; tool_calls: ToolCall[]; message_id: string }
+  | { type: 'tool_response'; tool_call_id: string; result: string; message_id: string }
+  | { type: 'delta'; role: 'assistant'; delta: string; content: string }
+  | { type: 'error'; error: string }
+
 export interface QuizData {
   topic: string
   questions: QuizQuestion[]

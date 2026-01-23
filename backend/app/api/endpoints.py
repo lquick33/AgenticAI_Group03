@@ -9,6 +9,7 @@ import json
 import logging
 import sys
 import traceback
+import uuid
 from typing import Optional, AsyncGenerator
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body
@@ -66,6 +67,7 @@ from app.services.quiz_service import (
     get_quiz,
     get_quiz_result,
 )
+from app.services.quiz_creation_lock import get_quiz_creation_lock
 from langfuse import get_client, propagate_attributes
 from app.core.config import settings
 import os
@@ -73,6 +75,19 @@ import os
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def generate_message_id(prefix: str = "msg") -> str:
+    """
+    Generate a unique message ID for SSE events.
+    
+    Args:
+        prefix: Optional prefix for the message ID (default: "msg")
+        
+    Returns:
+        Unique message ID string (e.g., "msg-550e8400-e29b-41d4-a716-446655440000")
+    """
+    return f"{prefix}-{uuid.uuid4()}"
 
 
 def get_tutor_prompt(prompt_name: str, **variables) -> str:
@@ -1011,125 +1026,38 @@ async def initiate_chat(
                     
                     return fixed_messages
 
-                def has_pending_quiz_creation(messages: list) -> bool:
+                def has_pending_quiz_creation(material_id: str, user_id: str) -> bool:
                     """
-                    Check if there is a pending quiz creation (create_quiz tool call without ToolMessage response).
+                    Check if there is a pending quiz creation using the lock service.
                     
-                    This function checks if the last AIMessage contains tool_calls for 'create_quiz' that don't
-                    have corresponding ToolMessage responses yet, indicating that a quiz is currently being created.
+                    This is a simplified version that uses the QuizCreationLock service
+                    instead of parsing messages, which is more reliable and efficient.
                     
                     Args:
-                        messages: List of messages to check (can be LangChain message objects or dicts)
+                        material_id: Course material ID
+                        user_id: User ID
                         
                     Returns:
-                        True if a create_quiz tool call is pending (no ToolMessage response found),
-                        False otherwise
-                        
-                    Raises:
-                        None - All errors are caught and logged, function returns False on error
+                        True if a quiz creation is pending (lock exists), False otherwise
                     """
-                    if not messages:
-                        return False
-                    
                     try:
-                        # Iterate backwards through messages to find the most recent AIMessage with tool_calls
-                        for i in range(len(messages) - 1, -1, -1):
-                            msg = messages[i]
-                            
-                            # Check if this is an AIMessage with tool_calls
-                            is_ai_message = isinstance(msg, AIMessage) or (
-                                isinstance(msg, dict) and msg.get("type") == "ai"
-                            )
-                            
-                            if not is_ai_message:
-                                continue
-                            
-                            # Extract tool_calls from message
-                            tool_calls = None
-                            if isinstance(msg, AIMessage):
-                                tool_calls = getattr(msg, "tool_calls", None)
-                            elif isinstance(msg, dict):
-                                tool_calls = msg.get("tool_calls")
-                            
-                            if not tool_calls:
-                                continue
-                            
-                            # Check if any tool_call is for 'create_quiz'
-                            has_create_quiz_call = False
-                            quiz_tool_call_ids = set()
-                            
-                            for tool_call in tool_calls:
-                                # Extract tool name
-                                tool_name = None
-                                if isinstance(tool_call, dict):
-                                    tool_name = tool_call.get("name", "")
-                                else:
-                                    tool_name = getattr(tool_call, "name", "")
-                                
-                                if tool_name == "create_quiz":
-                                    has_create_quiz_call = True
-                                    # Extract tool call ID
-                                    tool_call_id = None
-                                    if isinstance(tool_call, dict):
-                                        tool_call_id = tool_call.get("id")
-                                    else:
-                                        tool_call_id = getattr(tool_call, "id", None)
-                                    
-                                    if tool_call_id:
-                                        quiz_tool_call_ids.add(tool_call_id)
-                            
-                            if not has_create_quiz_call:
-                                continue
-                            
-                            # Found an AIMessage with create_quiz tool_calls
-                            # Now check if there are corresponding ToolMessages after this AIMessage
-                            # ToolMessages should come immediately after the AIMessage
-                            found_tool_messages = []
-                            j = i + 1
-                            while j < len(messages):
-                                next_msg = messages[j]
-                                
-                                # Check if this is a ToolMessage
-                                is_tool_message = isinstance(next_msg, ToolMessage) or (
-                                    isinstance(next_msg, dict) and next_msg.get("type") == "tool"
-                                )
-                                
-                                if not is_tool_message:
-                                    # Stop if we hit a non-ToolMessage (they should be consecutive)
-                                    break
-                                
-                                # Extract tool_call_id from ToolMessage
-                                tool_call_id = None
-                                if isinstance(next_msg, ToolMessage):
-                                    tool_call_id = getattr(next_msg, "tool_call_id", None)
-                                elif isinstance(next_msg, dict):
-                                    tool_call_id = next_msg.get("tool_call_id")
-                                
-                                if tool_call_id and tool_call_id in quiz_tool_call_ids:
-                                    found_tool_messages.append(tool_call_id)
-                                
-                                j += 1
-                            
-                            # If we found all tool call IDs have responses, quiz is not pending
-                            if len(found_tool_messages) == len(quiz_tool_call_ids) and len(quiz_tool_call_ids) > 0:
-                                # All create_quiz tool calls have responses, quiz creation is complete
-                                return False
-                            elif len(quiz_tool_call_ids) > 0:
-                                # We have create_quiz tool calls but not all have responses
-                                # This means quiz creation is pending
-                                logger.info(
-                                    f"Pending quiz creation detected: {len(quiz_tool_call_ids)} create_quiz tool_calls found, "
-                                    f"but only {len(found_tool_messages)} ToolMessage responses present"
-                                )
-                                return True
+                        lock_service = get_quiz_creation_lock()
+                        is_locked = lock_service.is_locked(material_id, user_id)
                         
-                        # No pending quiz creation found
-                        return False
+                        if is_locked:
+                            lock_info = lock_service.get_lock_info(material_id, user_id)
+                            if lock_info:
+                                logger.info(
+                                    f"Pending quiz creation detected via lock service: "
+                                    f"material={material_id}, pages={lock_info['start_page']}-{lock_info['end_page']}"
+                                )
+                        
+                        return is_locked
                     
                     except Exception as e:
                         # Log error but don't break the flow - return False to allow normal processing
                         logger.warning(
-                            f"Error checking for pending quiz creation: {str(e)}. "
+                            f"Error checking for pending quiz creation via lock service: {str(e)}. "
                             "Continuing with normal flow.",
                             exc_info=True
                         )
@@ -1283,7 +1211,7 @@ async def initiate_chat(
                     if is_new_thread:
                         # LangGraph state is empty, but we might have bootstrapped messages
                         # Check for pending quiz creation BEFORE fixing incomplete tool calls
-                        has_pending_quiz = has_pending_quiz_creation(base_messages)
+                        has_pending_quiz = has_pending_quiz_creation(course_material_id, request.user_id)
                         
                         if has_pending_quiz:
                             # Quiz is being created - suppress init message and only update state
@@ -1354,7 +1282,7 @@ async def initiate_chat(
                         existing_messages = snapshot.values.get("messages", [])
                         
                         # Check for pending quiz creation BEFORE fixing incomplete tool calls
-                        has_pending_quiz = has_pending_quiz_creation(existing_messages)
+                        has_pending_quiz = has_pending_quiz_creation(course_material_id, request.user_id)
                         
                         if has_pending_quiz:
                             # Quiz is being created - suppress init message and only update state
@@ -1495,12 +1423,33 @@ async def initiate_chat(
                                             # Log for debugging
                                             logger.info(f"🟡 Tool response: tool_call_id={tool_call_id}, content_length={len(tool_content)}, is_create_quiz={'create_quiz' in tool_content[:100]}")
                                             
+                                            # Check if this is an error response (from tool exception handling)
+                                            is_error_response = False
+                                            try:
+                                                if tool_content:
+                                                    parsed_content = json.loads(tool_content)
+                                                    if isinstance(parsed_content, dict) and parsed_content.get("error"):
+                                                        is_error_response = True
+                                                        logger.warning(f"Tool returned error response: {parsed_content.get('error')[:200]}")
+                                            except (json.JSONDecodeError, TypeError):
+                                                # Not JSON or not a dict - treat as normal response
+                                                pass
+                                            
                                             # Send tool response event
+                                            # Validate tool response content before sending (only for non-error responses)
+                                            if not is_error_response:
+                                                try:
+                                                    # Try to parse as JSON to validate structure
+                                                    if tool_content:
+                                                        json.loads(tool_content)
+                                                except json.JSONDecodeError:
+                                                    logger.warning(f"Tool response is not valid JSON: {tool_content[:200]}")
+                                            
                                             tool_response_event = {
                                                 "type": "tool_response",
                                                 "tool_call_id": tool_call_id,
                                                 "result": tool_content,
-                                                "message_id": f"msg-{len(assistant_response_chunks)}"
+                                                "message_id": generate_message_id()
                                             }
                                             yield f"data: {json.dumps(tool_response_event)}\n\n"
                                         else:
@@ -1539,7 +1488,7 @@ async def initiate_chat(
                                                     tool_event = {
                                                         "type": "tool_call",
                                                         "tool_calls": tool_calls_data,
-                                                        "message_id": f"msg-{len(assistant_response_chunks)}"
+                                                        "message_id": generate_message_id()
                                                     }
                                                     yield f"data: {json.dumps(tool_event)}\n\n"
 
@@ -1930,12 +1879,33 @@ async def send_chat_message(
                                         # Log for debugging
                                         logger.info(f"🟡 Tool response: tool_call_id={tool_call_id}, content_length={len(tool_content)}, is_create_quiz={'create_quiz' in tool_content[:100]}")
                                         
+                                        # Check if this is an error response (from tool exception handling)
+                                        is_error_response = False
+                                        try:
+                                            if tool_content:
+                                                parsed_content = json.loads(tool_content)
+                                                if isinstance(parsed_content, dict) and parsed_content.get("error"):
+                                                    is_error_response = True
+                                                    logger.warning(f"Tool returned error response: {parsed_content.get('error')[:200]}")
+                                        except (json.JSONDecodeError, TypeError):
+                                            # Not JSON or not a dict - treat as normal response
+                                            pass
+                                        
                                         # Send tool response event
+                                        # Validate tool response content before sending (only for non-error responses)
+                                        if not is_error_response:
+                                            try:
+                                                # Try to parse as JSON to validate structure
+                                                if tool_content:
+                                                    json.loads(tool_content)
+                                            except json.JSONDecodeError:
+                                                logger.warning(f"Tool response is not valid JSON: {tool_content[:200]}")
+                                        
                                         tool_response_event = {
                                             "type": "tool_response",
                                             "tool_call_id": tool_call_id,
                                             "result": tool_content,
-                                            "message_id": f"msg-{len(assistant_response_chunks)}"
+                                            "message_id": generate_message_id()
                                         }
                                         yield f"data: {json.dumps(tool_response_event)}\n\n"
                                     else:
@@ -1972,7 +1942,7 @@ async def send_chat_message(
                                                 tool_event = {
                                                     "type": "tool_call",
                                                     "tool_calls": tool_calls_data,
-                                                    "message_id": f"msg-{len(assistant_response_chunks)}"
+                                                    "message_id": generate_message_id()
                                                 }
                                                 yield f"data: {json.dumps(tool_event)}\n\n"
 

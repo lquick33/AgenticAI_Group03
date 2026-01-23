@@ -7,7 +7,7 @@ Used by the Tutor Agent when a subtopic is completed.
 
 import json
 import logging
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
@@ -20,7 +20,7 @@ from app.services.observability import create_callback_handler, get_langfuse_cli
 from app.services.analyzer import get_gemini_model
 from app.core.config import settings
 from langgraph.graph import MessagesState
-from typing import TypedDict, Optional, List, Dict, Any
+from app.exceptions.quiz_exceptions import QuizStateError, QuizValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +30,12 @@ class QuizGeneratorState(MessagesState):
     State for Quiz Generator Agent.
     
     Extends MessagesState with fields needed for quiz generation.
-    All fields are optional to allow gradual state building.
+    Required fields must be provided when invoking the graph.
     """
-    page_analyses: Optional[List[Dict[str, Any]]] = None
-    topic: Optional[str] = None
-    start_page: Optional[int] = None
-    end_page: Optional[int] = None
+    page_analyses: List[Dict[str, Any]]
+    topic: str
+    start_page: int
+    end_page: int
     course_material_id: Optional[str] = None
     user_id: Optional[str] = None
     quiz_data: Optional[QuizData] = None
@@ -157,37 +157,63 @@ VERMEIDE:
         Generate quiz from state context.
         
         Expects state to contain:
-        - page_analyses: List of page analysis dicts
-        - topic: Topic name
-        - start_page: Starting page number
-        - end_page: Ending page number
+        - page_analyses: List of page analysis dicts (required)
+        - topic: Topic name (required)
+        - start_page: Starting page number (required)
+        - end_page: Ending page number (required)
         - course_material_id: Course material ID (optional, for tracing)
         - user_id: User ID (optional, for tracing)
+        
+        Raises:
+            QuizStateError: If required state fields are missing or invalid
         """
-        # Extract context from state
+        # Validate state before processing
         logger.info("🟡 generate_node called - starting quiz generation")
         logger.debug(f"🟡 State type: {type(state)}, State keys: {list(state.keys()) if isinstance(state, dict) else 'not a dict'}")
         
-        page_analyses = state.get("page_analyses") or []
-        topic = state.get("topic") or "Unbekanntes Thema"
-        start_page = state.get("start_page") or 1
-        end_page = state.get("end_page") or 1
+        # Validate required fields
+        page_analyses = state.get("page_analyses")
+        topic = state.get("topic")
+        start_page = state.get("start_page")
+        end_page = state.get("end_page")
+        
+        # Validate page_analyses
+        if not page_analyses:
+            state_info = {
+                "has_page_analyses": "page_analyses" in state,
+                "page_analyses_type": type(page_analyses).__name__ if page_analyses is not None else "None",
+                "page_analyses_length": len(page_analyses) if isinstance(page_analyses, list) else "N/A",
+                "state_keys": list(state.keys()) if isinstance(state, dict) else "N/A"
+            }
+            raise QuizStateError(
+                "Keine Seitenanalysen verfügbar für Quiz-Generierung",
+                state_info=state_info
+            )
+        
+        # Validate topic
+        if not topic or not topic.strip():
+            raise QuizStateError(
+                "Topic fehlt im State",
+                state_info={"topic": topic, "state_keys": list(state.keys()) if isinstance(state, dict) else "N/A"}
+            )
+        
+        # Validate page range
+        if start_page is None or end_page is None:
+            raise QuizStateError(
+                "Seitenbereich fehlt im State",
+                state_info={"start_page": start_page, "end_page": end_page}
+            )
+        
+        if start_page > end_page:
+            raise QuizStateError(
+                f"Ungültiger Seitenbereich: start_page ({start_page}) > end_page ({end_page})",
+                state_info={"start_page": start_page, "end_page": end_page}
+            )
+        
         course_material_id = state.get("course_material_id")
         user_id = state.get("user_id")
         
-        logger.info(f"🟡 State extracted: pages={len(page_analyses) if page_analyses else 0}, topic={topic}, start={start_page}, end={end_page}")
-        
-        # Debug: Check if page_analyses is actually in state
-        if "page_analyses" not in state:
-            logger.error(f"🔴 CRITICAL: 'page_analyses' key not found in state! State keys: {list(state.keys())}")
-        elif not page_analyses:
-            logger.warning(f"⚠️ 'page_analyses' key exists in state but is empty or None. Value type: {type(state.get('page_analyses'))}, Value: {state.get('page_analyses')}")
-        
-        if not page_analyses:
-            error_msg = "Keine Seitenanalysen verfügbar für Quiz-Generierung"
-            logger.error(f"🔴 {error_msg}")
-            logger.error(f"🔴 Full state dump: {state}")
-            return {"messages": [HumanMessage(content=error_msg)]}
+        logger.info(f"🟡 State validated: pages={len(page_analyses)}, topic={topic}, start={start_page}, end={end_page}")
         
         # Build context from page analyses
         context_parts = []
@@ -279,8 +305,7 @@ Gib das Quiz im JSON-Format zurück (verwende das QuizData Schema)."""
                     f"data tracked by CallbackHandler"
                 )
             
-            # Robust parsing with Pydantic validation
-            # Handle different return types from structured_llm
+            # Parse result - structured_llm should return QuizData directly
             quiz_data = self._parse_quiz_result(result)
             
             logger.info(f"Received QuizData with {len(quiz_data.questions)} questions")
@@ -289,122 +314,86 @@ Gib das Quiz im JSON-Format zurück (verwende das QuizData Schema)."""
             self._validate_quiz(quiz_data)
             logger.info("Quiz validation passed")
             
-            # Store result in state as JSON string for extraction in generate_quiz()
-            # Use Pydantic's model_dump_json for reliable JSON serialization
-            json_content = quiz_data.model_dump_json(ensure_ascii=False)
-            logger.info(f"Quiz generated successfully: {len(quiz_data.questions)} questions, JSON length: {len(json_content)} chars")
-            return {"messages": [HumanMessage(content=json_content)], "quiz_data": quiz_data}
+            # Store result in state - use quiz_data directly, not JSON string
+            logger.info(f"Quiz generated successfully: {len(quiz_data.questions)} questions")
+            return {"quiz_data": quiz_data}
         
+        except (QuizStateError, QuizValidationError) as e:
+            # Re-raise our custom exceptions
+            logger.error(f"Quiz generation failed: {str(e)}", exc_info=True)
+            raise
         except Exception as e:
-            logger.error(f"Failed to generate quiz: {str(e)}", exc_info=True)
-            error_msg = f"Fehler bei Quiz-Generierung: {str(e)}"
-            return {"messages": [HumanMessage(content=error_msg)]}
+            # Wrap unexpected errors
+            logger.error(f"Unexpected error during quiz generation: {str(e)}", exc_info=True)
+            from app.exceptions.quiz_exceptions import QuizGenerationError
+            raise QuizGenerationError(
+                f"Fehler bei Quiz-Generierung: {str(e)}",
+                details={"error_type": type(e).__name__, "error_message": str(e)}
+            ) from e
     
     def _parse_quiz_result(self, result: any) -> QuizData:
         """
         Parse and validate quiz result using Pydantic.
         
-        Handles different return types from structured_llm:
-        - QuizData instance (direct)
-        - dict (needs conversion)
-        - str (needs JSON parsing)
+        Handles return types from structured_llm:
+        - QuizData instance (direct return from structured_llm)
+        - dict (needs conversion via Pydantic)
         
         Args:
-            result: Result from structured_llm.invoke()
+            result: Result from structured_llm.invoke() - should be QuizData or dict
             
         Returns:
             Validated QuizData instance
             
         Raises:
-            ValueError: If result cannot be parsed or validated
+            QuizDataError: If result cannot be parsed or validated
         """
-        # Case 1: Already a QuizData instance
+        # Case 1: Already a QuizData instance (expected from structured_llm)
         if isinstance(result, QuizData):
             logger.debug("Result is already QuizData instance")
             return result
         
         # Case 2: Dict - use Pydantic model_validate
         if isinstance(result, dict):
-            logger.info("Result is dict, validating with Pydantic")
+            logger.debug("Result is dict, validating with Pydantic")
             try:
                 return QuizData.model_validate(result)
             except Exception as e:
                 logger.error(f"Failed to validate dict as QuizData: {str(e)}")
-                raise ValueError(f"Ungültiges Quiz-Format: {str(e)}")
+                from app.exceptions.quiz_exceptions import QuizDataError
+                raise QuizDataError(
+                    f"Ungültiges Quiz-Format: {str(e)}",
+                    data_info={
+                        "result_type": type(result).__name__,
+                        "result_keys": list(result.keys()) if isinstance(result, dict) else "N/A",
+                        "error": str(e)
+                    }
+                ) from e
         
-        # Case 3: String - try to parse as JSON
-        if isinstance(result, str):
-            logger.info("Result is string, attempting JSON parse")
-            content = result.strip()
-            
-            # Check if content is empty after strip
-            if not content:
-                logger.error("Empty content string received from LLM")
-                raise ValueError("Fehler beim Parsen des JSON: Leere Antwort vom LLM erhalten")
-            
-            # Check if content is an error message (starts with "Fehler", "Error", or "Keine")
-            error_keywords = ["Fehler", "Error", "Keine", "keine", "failed", "Failed", "Leere"]
-            if any(content.startswith(keyword) for keyword in error_keywords):
-                logger.error(f"🔴 Agent returned error message instead of quiz data: {content[:200]}")
-                raise ValueError(content)
-            
-            # Try to extract JSON from markdown code blocks if present
-            if "```json" in content:
-                start = content.find("```json") + 7
-                end = content.find("```", start)
-                if end != -1:
-                    content = content[start:end].strip()
-                else:
-                    logger.warning("Found ```json but no closing ```, trying to parse entire content")
-            elif "```" in content:
-                start = content.find("```") + 3
-                end = content.find("```", start)
-                if end != -1:
-                    content = content[start:end].strip()
-                else:
-                    logger.warning("Found ``` but no closing ```, trying to parse entire content")
-            
-            # Check again if content is empty after extraction
-            if not content:
-                logger.error(f"Content is empty after markdown extraction. Original result length: {len(result)}")
-                logger.debug(f"Original result preview: {result[:500]}")
-                raise ValueError("Fehler beim Parsen des JSON: Kein JSON-Inhalt nach Markdown-Extraktion gefunden")
-            
-            # Log content preview for debugging
-            logger.debug(f"Attempting to parse JSON, content length: {len(content)}, preview: {content[:200]}")
-            
-            # Parse JSON
-            try:
-                parsed_dict = json.loads(content)
-                return QuizData.model_validate(parsed_dict)
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error: {str(e)}")
-                logger.error(f"Content that failed to parse (first 500 chars): {content[:500]}")
-                logger.error(f"Content that failed to parse (last 200 chars): {content[-200:]}")
-                raise ValueError(f"Fehler beim Parsen des JSON: {str(e)}")
-            except Exception as e:
-                logger.error(f"Failed to validate parsed JSON as QuizData: {str(e)}")
-                logger.error(f"Parsed dict keys: {list(parsed_dict.keys()) if isinstance(parsed_dict, dict) else 'N/A'}")
-                raise ValueError(f"Ungültiges Quiz-Format: {str(e)}")
-        
-        # Case 4: Unknown type
+        # Case 3: Unexpected type
         logger.error(f"Unexpected result type: {type(result)}, value: {result}")
-        raise ValueError(f"Unerwarteter Rückgabetyp vom LLM: {type(result)}")
+        from app.exceptions.quiz_exceptions import QuizDataError
+        raise QuizDataError(
+            f"Unerwarteter Rückgabetyp vom LLM: {type(result)}",
+            data_info={"result_type": type(result).__name__, "result_value": str(result)[:200]}
+        )
     
     def _validate_quiz(self, quiz_data: QuizData) -> None:
         """
         Validate quiz meets requirements.
         
         Raises:
-            ValueError: If quiz doesn't meet requirements
+            QuizValidationError: If quiz doesn't meet requirements
         """
         questions = quiz_data.questions
+        validation_errors = {}
         
+        # Validate question count
         if len(questions) < 3:
-            raise ValueError(f"Quiz muss mindestens 3 Fragen haben, hat aber nur {len(questions)}")
+            validation_errors["question_count"] = f"Quiz muss mindestens 3 Fragen haben, hat aber nur {len(questions)}"
         
         if len(questions) > 8:
-            raise ValueError(f"Quiz darf maximal 8 Fragen haben, hat aber {len(questions)}")
+            validation_errors["question_count"] = f"Quiz darf maximal 8 Fragen haben, hat aber {len(questions)}"
         
         # Count difficulties
         easy_count = sum(1 for q in questions if q.difficulty == "easy")
@@ -413,24 +402,49 @@ Gib das Quiz im JSON-Format zurück (verwende das QuizData Schema)."""
         
         # Validate distribution
         if easy_count < 1:
-            raise ValueError("Quiz muss mindestens 1 leichte Frage haben")
+            validation_errors["difficulty_easy"] = "Quiz muss mindestens 1 leichte Frage haben"
         
         if medium_count < 1:
-            raise ValueError("Quiz muss mindestens 1 mittlere Frage haben")
+            validation_errors["difficulty_medium"] = "Quiz muss mindestens 1 mittlere Frage haben"
         
         if hard_count < 1:
-            raise ValueError("Quiz muss mindestens 1 schwere Frage haben")
+            validation_errors["difficulty_hard"] = "Quiz muss mindestens 1 schwere Frage haben"
         
         # Validate each question
+        question_errors = {}
         for i, question in enumerate(questions):
+            question_id = question.id
+            errors_for_question = []
+            
             if len(question.options) != 4:
-                raise ValueError(f"Frage {i+1} muss genau 4 Antwortmöglichkeiten haben (A, B, C, D)")
+                errors_for_question.append(f"Frage {i+1} muss genau 4 Antwortmöglichkeiten haben (A, B, C, D)")
             
             if question.correct_answer not in question.options:
-                raise ValueError(f"Frage {i+1}: correct_answer '{question.correct_answer}' ist nicht in options")
+                errors_for_question.append(f"Frage {i+1}: correct_answer '{question.correct_answer}' ist nicht in options")
             
             if not question.explanation or not question.explanation.strip():
-                raise ValueError(f"Frage {i+1}: Erklärung fehlt")
+                errors_for_question.append(f"Frage {i+1}: Erklärung fehlt")
+            
+            # Only add to question_errors if there are actual errors
+            if errors_for_question:
+                question_errors[question_id] = errors_for_question
+        
+        # Add question errors to validation errors only if there are actual errors
+        if question_errors:
+            validation_errors["questions"] = question_errors
+        
+        # Raise exception if validation failed
+        if validation_errors:
+            raise QuizValidationError(
+                "Quiz-Validierung fehlgeschlagen",
+                validation_errors=validation_errors,
+                details={
+                    "question_count": len(questions),
+                    "easy_count": easy_count,
+                    "medium_count": medium_count,
+                    "hard_count": hard_count
+                }
+            )
         
         # Update metadata
         quiz_data.metadata = {
@@ -560,65 +574,25 @@ Gib das Quiz im JSON-Format zurück (verwende das QuizData Schema)."""
                 except Exception as e:
                     logger.warning(f"🔴 Langfuse: Error closing graph execution span: {e}")
         
-        # Try to get quiz_data directly from state first (more reliable)
-        if "quiz_data" in result:
-            quiz_data_value = result["quiz_data"]
-            logger.info(f"Found quiz_data in state, type: {type(quiz_data_value)}")
-            
-            if isinstance(quiz_data_value, QuizData):
-                quiz_data = quiz_data_value
-                # Validate again (safety check)
-                self._validate_quiz(quiz_data)
-                logger.info(f"Returning quiz_data from state: {len(quiz_data.questions)} questions")
-                return quiz_data
-            else:
-                logger.warning(f"quiz_data in state is not QuizData instance: {type(quiz_data_value)}")
+        # Extract quiz_data from state (should always be present after generate_node)
+        if "quiz_data" not in result:
+            from app.exceptions.quiz_exceptions import QuizStateError
+            raise QuizStateError(
+                "Quiz-Daten fehlen im State nach Graph-Ausführung",
+                state_info={"result_keys": list(result.keys())}
+            )
         
-        # Fallback: Extract from messages (for compatibility)
-        messages = result.get("messages", [])
-        logger.info(f"Extracting from messages. Message count: {len(messages)}")
+        quiz_data_value = result["quiz_data"]
         
-        if not messages:
-            logger.error("No messages in result")
-            raise ValueError("Agent hat keine Antwort generiert")
+        if not isinstance(quiz_data_value, QuizData):
+            from app.exceptions.quiz_exceptions import QuizDataError
+            raise QuizDataError(
+                f"Quiz-Daten im State haben falschen Typ: {type(quiz_data_value)}",
+                data_info={"expected_type": "QuizData", "actual_type": type(quiz_data_value).__name__}
+            )
         
-        last_message = messages[-1]
-        logger.info(f"Last message type: {type(last_message)}, has content: {hasattr(last_message, 'content')}")
-        
-        if not hasattr(last_message, "content"):
-            logger.error(f"Last message has no content attribute: {last_message}")
-            raise ValueError("Ungültige Agent-Antwort")
-        
-        # Parse JSON from message content using robust Pydantic validation
-        try:
-            content = last_message.content
-            logger.info(f"Message content length: {len(content) if content else 0} chars")
-            logger.debug(f"Message content preview: {content[:200] if content else 'EMPTY'}")
-            
-            if not content or not content.strip():
-                logger.error("Empty content in message")
-                raise ValueError("Leere Antwort vom Agent")
-            
-            # Check if content is an error message (starts with "Fehler", "Error", or "Keine")
-            content_stripped = content.strip()
-            error_keywords = ["Fehler", "Error", "Keine", "keine", "failed", "Failed", "Leere"]
-            if any(content_stripped.startswith(keyword) for keyword in error_keywords):
-                logger.error(f"🔴 Agent returned error message instead of quiz data: {content_stripped[:200]}")
-                raise ValueError(content_stripped)
-            
-            # Use robust parsing method that handles various formats
-            quiz_data = self._parse_quiz_result(content)
-            logger.info(f"Successfully parsed QuizData from message with {len(quiz_data.questions)} questions")
-            
-            # Validate again (safety check)
-            self._validate_quiz(quiz_data)
-            logger.info("Quiz validation passed")
-            
-            return quiz_data
-        
-        except ValueError as e:
-            # Re-raise ValueError as-is (already formatted)
-            raise
-        except Exception as e:
-            logger.error(f"Error parsing quiz data: {str(e)}", exc_info=True)
-            raise ValueError(f"Fehler bei Quiz-Generierung: {str(e)}")
+        quiz_data = quiz_data_value
+        # Final validation (safety check)
+        self._validate_quiz(quiz_data)
+        logger.info(f"Returning quiz_data from state: {len(quiz_data.questions)} questions")
+        return quiz_data
