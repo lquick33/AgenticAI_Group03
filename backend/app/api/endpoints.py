@@ -2606,6 +2606,54 @@ async def cancel_flashcard_task(
         )
 
 
+@router.get("/flashcards/active/{course_material_id}", response_model=Optional[FlashcardTaskStatusResponse], status_code=200)
+async def get_active_flashcard_task(
+    course_material_id: str = Path(..., description="Course material ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> Optional[FlashcardTaskStatusResponse]:
+    """
+    Get the active (pending or running) flashcard generation task for a course material.
+    
+    This endpoint allows the frontend to check if there's an active task
+    when the page loads, so it can restore the polling state.
+    
+    Args:
+        course_material_id: Course material ID (UUID)
+        user_id: User ID (UUID) for authorization
+        
+    Returns:
+        FlashcardTaskStatusResponse if active task exists, None otherwise
+        
+    Raises:
+        HTTPException: If validation fails
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first.",
+            )
+        
+        task_service = get_flashcard_task_service()
+        task = await task_service.get_active_task_for_material(course_material_id, user_id)
+        
+        if not task:
+            # Return None (will be serialized as null in JSON)
+            return None
+        
+        return FlashcardTaskStatusResponse(**task.to_dict())
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting active flashcard task: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get active task: {str(e)}",
+        )
+
+
 @router.get("/flashcards/{course_material_id}", status_code=200)
 async def get_flashcards(
     course_material_id: str = Path(..., description="Course material ID (UUID)"),

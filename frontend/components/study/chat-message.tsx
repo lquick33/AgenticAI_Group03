@@ -46,10 +46,13 @@ export function ChatMessage({
   onQuizComplete,
   isQuizSubmitting = false
 }: ChatMessageProps) {
-  // Show typing indicator for assistant messages with empty content or streaming state
-  const showTypingIndicator = role === "assistant" && (!content || content.trim() === "" || isStreaming)
+  // Ensure content is always a string
+  const contentString = typeof content === 'string' ? content : (content?.toString() || '')
   
-  if (role === "user" && !content) return null
+  // Show typing indicator ONLY if there's no content yet (even during streaming, show content if available)
+  const showTypingIndicator = role === "assistant" && (!contentString || contentString.trim() === "") && isStreaming
+  
+  if (role === "user" && !contentString) return null
 
   const hasTools = showTools && toolCalls && toolCalls.length > 0
   const hasQuiz = role === "assistant" && quiz && quiz.questions && quiz.questions.length > 0
@@ -195,7 +198,7 @@ export function ChatMessage({
                   ),
                 }}
               >
-                {content}
+                {contentString}
               </ReactMarkdown>
             </div>
           )}

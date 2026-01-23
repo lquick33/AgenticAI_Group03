@@ -176,7 +176,15 @@ export function ChatInterface({
             messages.map((message, index) => {
               // Check if this is the last message and it's streaming
               const isLastMessage = index === messages.length - 1
-              const isStreamingMessage = isLastMessage && isStreaming && message.role === "assistant" && (!message.content || message.content.trim() === "")
+              const messageContent = typeof message.content === 'string' ? message.content : (message.content?.toString() || '')
+              // Show streaming indicator ONLY if:
+              // 1. It's the last message
+              // 2. It's an assistant message
+              // 3. Content is empty AND (message has streaming-* ID OR isStreaming is true)
+              // This way, if content is available, it will be shown directly instead of the loading indicator
+              const isStreamingMessage = isLastMessage && message.role === "assistant" && 
+                (!messageContent || messageContent.trim() === "") && 
+                (message.id.startsWith('streaming-') || isStreaming)
               
               // Check if this message has a quiz and create callback
               const quiz = message.quiz
@@ -192,7 +200,7 @@ export function ChatInterface({
                   <ChatMessage
                     id={message.id}
                     role={message.role}
-                    content={message.content}
+                    content={messageContent}
                     isStreaming={isStreamingMessage}
                     toolCalls={message.toolCalls}
                     showTools={showTools}

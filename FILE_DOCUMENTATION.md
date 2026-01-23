@@ -1458,6 +1458,11 @@ import { UploadSection } from '@/components/courses/upload-section'
 **Key Features**:
 - Client Component ("use client")
 - **Inline filename editing**: Double-click on filename to edit (via EditableFilename component)
+- **Flashcard generation with state persistence**: 
+  - Checks for active flashcard generation tasks on mount
+  - Restores task state (progress, task_id) after page reload
+  - Automatically resumes polling for active tasks
+  - Downloads completed flashcards automatically if task finished while page was closed
 - Status badge variants based on `processing_status`
 - Date formatting for German locale
 - Responsive table layout
@@ -3065,6 +3070,14 @@ flashcards = get_flashcards_for_material(course_material_id, user_id)
   - Cancels a running task
   - Returns success status
 
+- **GET `/api/flashcards/active/{course_material_id}`**:
+  - Query parameters: `user_id` (for authorization)
+  - Returns the active (pending or running) flashcard generation task for a course material
+  - Returns `null` if no active task exists
+  - Response: `FlashcardTaskStatusResponse` or `null`
+  - **Purpose**: Allows frontend to restore task state after page reload
+  - Enables state persistence - frontend can check for active tasks on mount and resume polling
+
 **Key Features**:
 - Non-blocking background processing (no more blocking the API)
 - Real-time progress tracking (0.0 to 1.0)
@@ -3100,12 +3113,17 @@ GET /api/flashcards/download/{task_id}?user_id=...
 # Cancel if needed
 POST /api/flashcards/cancel/{task_id}?user_id=...
 → Returns: {"success": true, "message": "Task cancelled"}
+
+# Check for active task (for state restoration after page reload)
+GET /api/flashcards/active/{course_material_id}?user_id=...
+→ Returns: FlashcardTaskStatusResponse or null
 ```
 
 **Related Files**: 
 - `backend/app/services/flashcard_task_service.py` - Task service implementation
-- `frontend/lib/api/study.ts` - API client functions (needs update)
-- `frontend/components/study/congratulations-screen.tsx` - UI component (needs update)
+- `frontend/lib/api/study.ts` - API client functions including `getActiveFlashcardTask`
+- `frontend/components/courses/course-materials-list.tsx` - UI component with state restoration
+- `frontend/components/study/congratulations-screen.tsx` - UI component
 
 ---
 
@@ -3158,6 +3176,7 @@ llm.with_structured_output(FlashcardGenerationResult)
 - **FlashcardTaskService**: Singleton service managing tasks
   - `create_task()`: Creates new background task
   - `get_task()`: Retrieves task by ID
+  - `get_active_task_for_material()`: Gets active (pending/running) task for a course material
   - `cancel_task()`: Cancels running task
   - `_run_task()`: Background task execution
   - `_generate_flashcards_async()`: Async wrapper with timeouts
@@ -3247,11 +3266,16 @@ print(f"Progress: {task.progress * 100}%")
 
 **Purpose**: Extended with flashcard export API client function.
 
-**New Function**:
+**New Functions**:
 - **exportFlashcards()**: 
   - Calls `/api/flashcards/export` endpoint
   - Returns Promise<Blob> for CSV file
   - Handles errors and HTTP status codes
+- **getActiveFlashcardTask()**: 
+  - Calls `/api/flashcards/active/{course_material_id}` endpoint
+  - Returns Promise<FlashcardTaskStatus | null>
+  - Returns null if no active task exists
+  - Used for state restoration after page reload
 
 **Dependencies**: 
 - Fetch API
@@ -3266,8 +3290,9 @@ const blob = await exportFlashcards(materialId, userId)
 ```
 
 **Related Files**: 
-- `frontend/components/study/congratulations-screen.tsx` - Uses this function
-- `backend/app/api/endpoints.py` - Provides the endpoint
+- `frontend/components/study/congratulations-screen.tsx` - Uses exportFlashcards
+- `frontend/components/courses/course-materials-list.tsx` - Uses getActiveFlashcardTask for state restoration
+- `backend/app/api/endpoints.py` - Provides the endpoints
 
 ---
 

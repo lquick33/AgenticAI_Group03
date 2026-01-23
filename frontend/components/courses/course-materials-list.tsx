@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
 import { BookOpen, Download, Loader2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -29,6 +29,7 @@ import {
   getFlashcardTaskStatus,
   downloadFlashcards,
   cancelFlashcardTask,
+  getActiveFlashcardTask,
   type FlashcardTaskStatus,
 } from '@/lib/api/study'
 import { EditableFilename } from '@/components/courses/editable-filename'
@@ -50,47 +51,12 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
   const [taskIds, setTaskIds] = useState<Record<string, string>>({})
   const [taskStatuses, setTaskStatuses] = useState<Record<string, FlashcardTaskStatus>>({})
   const [pollingIntervals, setPollingIntervals] = useState<Record<string, NodeJS.Timeout>>({})
+  const startPollingRef = useRef<((materialId: string, taskId: string) => void) | null>(null)
 
   // Update local materials when props change
   useEffect(() => {
     setLocalMaterials(materials)
   }, [materials])
-
-  // Check flashcards availability for all materials
-  useEffect(() => {
-    const checkFlashcards = async () => {
-      const status: Record<string, boolean> = {}
-      for (const material of localMaterials) {
-        if (material.processing_status === 'completed') {
-          try {
-            const result = await getFlashcardsForMaterial(material.id, userId)
-            status[material.id] = result.count > 0
-          } catch (error) {
-            // If error (e.g., 404), no flashcards exist
-            status[material.id] = false
-          }
-        } else {
-          status[material.id] = false
-        }
-      }
-      setFlashcardsStatus(status)
-    }
-
-    if (localMaterials.length > 0) {
-      checkFlashcards()
-    }
-  }, [localMaterials, userId])
-
-  // Cleanup polling intervals on unmount
-  useEffect(() => {
-    return () => {
-      Object.values(pollingIntervals).forEach(interval => {
-        if (interval) {
-          clearInterval(interval)
-        }
-      })
-    }
-  }, [pollingIntervals])
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString)
@@ -128,7 +94,45 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
     }
   }
 
-  const startPolling = (materialId: string, taskId: string) => {
+  const handleDownloadAfterGeneration = useCallback(async (materialId: string, status: FlashcardTaskStatus) => {
+    // Use task_id from status, or get from state
+    const taskId = status.task_id
+    
+    if (!taskId) {
+      console.error('No task ID available for download')
+      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
+      return
+    }
+
+    try {
+      const blob = await downloadFlashcards(taskId, userId)
+      
+      // Get filename from status or use default
+      const filename = status.filename || `flashcards_${materialId}.csv`
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+
+      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
+      setFlashcardsStatus(prev => ({ ...prev, [materialId]: true }))
+      toast.success('Flashcards heruntergeladen', {
+        description: 'Die Karteikarten wurden erfolgreich generiert und heruntergeladen.',
+      })
+    } catch (error) {
+      console.error('Error downloading flashcards:', error)
+      toast.error('Fehler beim Download', {
+        description: error instanceof Error ? error.message : 'Die Karteikarten konnten nicht heruntergeladen werden.',
+      })
+      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
+    }
+  }, [userId])
+
+  const startPolling = useCallback((materialId: string, taskId: string) => {
     const interval = setInterval(async () => {
       try {
         const status = await getFlashcardTaskStatus(taskId, userId)
@@ -170,39 +174,73 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
     }, 2000) // Poll every 2 seconds
 
     setPollingIntervals(prev => ({ ...prev, [materialId]: interval }))
-  }
+  }, [userId, handleDownloadAfterGeneration])
 
-  const handleDownloadAfterGeneration = async (materialId: string, status: FlashcardTaskStatus) => {
-    const taskId = taskIds[materialId]
-    if (!taskId) return
+  // Store startPolling in ref so it can be accessed in useEffect
+  startPollingRef.current = startPolling
 
-    try {
-      const blob = await downloadFlashcards(taskId, userId)
+  // Check flashcards availability for all materials and restore active tasks
+  useEffect(() => {
+    const checkFlashcardsAndActiveTasks = async () => {
+      const status: Record<string, boolean> = {}
       
-      // Get filename from status or use default
-      const filename = status.filename || `flashcards_${materialId}.csv`
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      window.URL.revokeObjectURL(url)
-
-      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
-      setFlashcardsStatus(prev => ({ ...prev, [materialId]: true }))
-      toast.success('Flashcards heruntergeladen', {
-        description: 'Die Karteikarten wurden erfolgreich generiert und heruntergeladen.',
-      })
-    } catch (error) {
-      console.error('Error downloading flashcards:', error)
-      toast.error('Fehler beim Download', {
-        description: error instanceof Error ? error.message : 'Die Karteikarten konnten nicht heruntergeladen werden.',
-      })
-      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
+      for (const material of localMaterials) {
+        if (material.processing_status === 'completed') {
+          // Check for flashcards
+          try {
+            const result = await getFlashcardsForMaterial(material.id, userId)
+            status[material.id] = result.count > 0
+          } catch (error) {
+            // If error (e.g., 404), no flashcards exist
+            status[material.id] = false
+          }
+          
+          // Check for active flashcard generation task
+          try {
+            const activeTask = await getActiveFlashcardTask(material.id, userId)
+            if (activeTask) {
+              // Restore task state
+              setTaskIds(prev => ({ ...prev, [material.id]: activeTask.task_id }))
+              setTaskStatuses(prev => ({ ...prev, [material.id]: activeTask }))
+              setIsGenerating(prev => ({ ...prev, [material.id]: true }))
+              
+              // Resume polling if task is still running
+              if (activeTask.status === 'pending' || activeTask.status === 'running') {
+                startPollingRef.current?.(material.id, activeTask.task_id)
+              } else if (activeTask.status === 'completed') {
+                // Task completed but we just loaded - download automatically
+                await handleDownloadAfterGeneration(material.id, activeTask)
+              } else if (activeTask.status === 'failed' || activeTask.status === 'cancelled') {
+                // Task failed or was cancelled - reset state
+                setIsGenerating(prev => ({ ...prev, [material.id]: false }))
+              }
+            }
+          } catch (error) {
+            // If error checking for active task, just continue
+            console.error(`Error checking active task for material ${material.id}:`, error)
+          }
+        } else {
+          status[material.id] = false
+        }
+      }
+      setFlashcardsStatus(status)
     }
-  }
+
+    if (localMaterials.length > 0) {
+      checkFlashcardsAndActiveTasks()
+    }
+  }, [localMaterials, userId, handleDownloadAfterGeneration])
+
+  // Cleanup polling intervals on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(pollingIntervals).forEach(interval => {
+        if (interval) {
+          clearInterval(interval)
+        }
+      })
+    }
+  }, [pollingIntervals])
 
   const handleGenerateFlashcards = async (materialId: string) => {
     setIsGenerating(prev => ({ ...prev, [materialId]: true }))

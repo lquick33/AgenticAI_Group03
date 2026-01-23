@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage
 
 from app.core.config import settings
 from app.models.schemas import SlideAnalysis
-from app.services.observability import create_callback_handler
+from app.services.observability import create_callback_handler, get_langfuse_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -151,8 +151,25 @@ async def analyze_pdf_page(
     llm = get_gemini_model(api_key)
     structured_llm = llm.with_structured_output(SlideAnalysis).with_config({"run_name": "pdf-llm-page-analysis"})
     
-    # Create prompt for analysis
-    analysis_prompt = """Analysiere diese Vorlesungsfolie gründlich und extrahiere strukturierte Informationen.
+    # Try to load prompt from Langfuse first
+    analysis_prompt = None
+    langfuse_client = get_langfuse_client()
+    
+    if langfuse_client:
+        try:
+            langfuse_prompt = langfuse_client.get_prompt(
+                "pdf-analyzer/page-analysis",
+                label="production"
+            )
+            # Compile prompt (even without variables, compile() returns the prompt text)
+            analysis_prompt = langfuse_prompt.compile()
+            logger.debug("✅ Using Langfuse prompt for pdf-analyzer/page-analysis")
+        except Exception as e:
+            logger.warning(f"Failed to load Langfuse prompt for page-analysis: {e}, using fallback")
+    
+    # Fallback prompt if Langfuse is not available or fails
+    if not analysis_prompt:
+        analysis_prompt = """Analysiere diese Vorlesungsfolie gründlich und extrahiere strukturierte Informationen.
 
 Gib eine prägnante Zusammenfassung des Inhalts, identifiziere die wichtigsten Fachbegriffe,
 formuliere genau 2 mögliche Prüfungsfragen basierend auf dem Inhalt, und beschreibe alle
@@ -422,36 +439,59 @@ async def generate_material_filename(
     
     llm = get_gemini_model(api_key).with_config({"run_name": "pdf-llm-filename-generation"})
     
-    system_instructions = (
-        "Du bist ein Assistent, der aus einer Zusammenfassung der ersten Seite einer Vorlesung "
-        "einen professionellen, aussagekräftigen Dateinamen generiert. "
-        "Der Dateiname soll das Thema/Kapitel der Vorlesung klar beschreiben."
-    )
+    # Try to load prompt from Langfuse first
+    user_prompt = None
+    langfuse_client = get_langfuse_client()
     
-    user_prompt = f"""
+    if langfuse_client:
+        try:
+            langfuse_prompt = langfuse_client.get_prompt(
+                "pdf-analyzer/filename-generation",
+                label="production"
+            )
+            # Compile prompt with page_one_summary variable
+            user_prompt = langfuse_prompt.compile(page_one_summary=page_one_summary)
+            logger.debug("✅ Using Langfuse prompt for pdf-analyzer/filename-generation")
+        except Exception as e:
+            logger.warning(f"Failed to load Langfuse prompt for filename-generation: {e}, using fallback")
+    
+    # Fallback prompt if Langfuse is not available or fails
+    if not user_prompt:
+        system_instructions = (
+            "Du bist ein Assistent, der aus einer Zusammenfassung der ersten Seite einer Vorlesung "
+            "einen professionellen, aussagekräftigen Dateinamen generiert. "
+            "Der Dateiname soll das Thema/Kapitel der Vorlesung klar beschreiben."
+        )
+        
+        user_prompt = f"""
 Basierend auf der folgenden Zusammenfassung der ersten Seite einer Vorlesung, erstelle einen professionellen Dateinamen.
 
 Zusammenfassung der ersten Seite:
 {page_one_summary}
 
+WICHTIG: Die erste Seite einer Vorlesung enthält meistens die Kapitelnummer (z.B. "Kapitel 0", "Kapitel 1", "Chapter 2", etc.). 
+Extrahiere diese Kapitelnummer aus der Zusammenfassung und verwende sie für die Sortierung.
+
 Anforderungen an den Dateinamen:
-- Soll das Hauptthema oder Kapitel der Vorlesung widerspiegeln
-- Format: "Kapitel X: Thema" oder ähnlich, falls ein Kapitel erkennbar ist
-- Falls kein Kapitel erkennbar: nur das Thema
+- Extrahiere die Kapitelnummer aus der Zusammenfassung (falls vorhanden)
+- Format: "Kapitel X: Thema" - verwende IMMER dieses Format, wenn eine Kapitelnummer erkennbar ist
+- Die Kapitelnummer ist wichtig für die Sortierung, daher muss sie im Format "Kapitel X:" enthalten sein
+- Falls keine Kapitelnummer erkennbar: nur das Thema (ohne "Kapitel X:")
 - Professionell und aussagekräftig
 - Keine Dateiendung (.pdf) anfügen
 - Keine Sonderzeichen wie Klammern, Unterstriche (außer Bindestriche)
 - Maximal 100 Zeichen
 
 Beispiele:
-- "Kapitel 0: Algebra-Grundwissen"
-- "Einführung in die Lineare Algebra"
-- "Kapitel 1: Beweisverfahren"
+- "Kapitel 0: Algebra-Grundwissen" (wenn die Zusammenfassung "Kapitel 0" oder "Chapter 0" erwähnt)
+- "Kapitel 1: Beweisverfahren" (wenn die Zusammenfassung "Kapitel 1" oder "Chapter 1" erwähnt)
+- "Einführung in die Lineare Algebra" (nur wenn keine Kapitelnummer erkennbar ist)
 
 Gib **nur** den Dateinamen zurück, ohne zusätzlichen Text oder Erklärungen.
 """
+        user_prompt = system_instructions + "\n\n" + user_prompt
     
-    message = HumanMessage(content=[{"type": "text", "text": system_instructions + "\n\n" + user_prompt}])
+    message = HumanMessage(content=[{"type": "text", "text": user_prompt}])
     
     # Create Langfuse callback handler für automatisches Tracking
     callback_handler = create_callback_handler()
