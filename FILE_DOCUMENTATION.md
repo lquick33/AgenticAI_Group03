@@ -1851,6 +1851,12 @@ def get_course_material_summary(
 - Creates TutorAgent instance
 - Thread ID: `material_id` (continuous conversation)
 - Streams agent response as SSE
+- **Quiz State Detection**: Before sending init messages, checks if a quiz is currently being created:
+  - Uses `has_pending_quiz_creation()` helper function to detect pending `create_quiz` tool calls
+  - If a quiz is being created, suppresses the init message and only updates state silently
+  - Prevents premature init messages like "Ah super, wir sind auf Folie 5 angekommen" during quiz creation
+  - State (current_page) is still updated, but no agent response is generated
+  - The quiz creation will complete and send its own response
 
 **`POST /api/chat/message`**:
 - Body: `ChatMessageRequest` with `material_id`, `message`, `user_id`
@@ -2579,6 +2585,13 @@ from app.services.session_storage import (
   - Extracts tool call information (id, name, args)
   - Serializes tool calls to JSON
   - Sends tool call events via SSE stream before assistant message
+- **Quiz State Detection**: New helper function `has_pending_quiz_creation()`:
+  - Checks if a `create_quiz` tool call is currently pending (no ToolMessage response yet)
+  - Iterates backwards through message history to find AIMessage with `create_quiz` tool_calls
+  - Verifies if corresponding ToolMessage responses exist
+  - Returns `True` if quiz creation is pending, `False` otherwise
+  - Used in `/chat/initiate` to suppress init messages during quiz creation
+  - Includes comprehensive error handling and logging
 
 **Tool Event Format**:
 ```python

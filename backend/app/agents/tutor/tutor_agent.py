@@ -732,7 +732,9 @@ class TutorAgent(BaseAgent):
             }
             config["callbacks"] = [callback_handler]
             config["metadata"] = metadata
-            logger.info(f"🟡 Langfuse: Sending LLM call with metadata: user_id={metadata.get('langfuse_user_id')}, session_id={metadata.get('langfuse_session_id')}, material_id={metadata.get('material_id')}, page={metadata.get('current_page')}")
+            # WICHTIG: run_name für eindeutige Zuordnung in Langfuse
+            config["run_name"] = "tutor-agent/llm-call"
+            logger.info(f"🟡 Langfuse: Sending LLM call (run_name: tutor-agent/llm-call) with metadata: user_id={metadata.get('langfuse_user_id')}, session_id={metadata.get('langfuse_session_id')}, material_id={metadata.get('material_id')}, page={metadata.get('current_page')}")
         
         # Validate message ordering before LLM call to prevent Gemini API errors
         # Apply comprehensive validation to entire message sequence
@@ -763,7 +765,13 @@ class TutorAgent(BaseAgent):
     
     def should_continue(self, state: TutorState) -> str:
         """
-        Determine if tools should be called.
+        Determine if tools should be called or if the graph should end.
+        
+        Special handling for create_quiz tool calls:
+        - After a create_quiz tool call completes, the graph should end
+        - This prevents the agent from generating a new message immediately
+        - The quiz widget will be displayed, and the agent will wait for user to complete the quiz
+        - Once the user completes the quiz, they can send a message to get feedback
         
         Args:
             state: Current agent state
@@ -777,8 +785,29 @@ class TutorAgent(BaseAgent):
         
         last_message = messages[-1]
         
-        # Check if last message has tool calls
+        # Check if last message has tool calls (agent wants to call tools)
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
             return "continue"
+        
+        # Check if we just completed a create_quiz tool call
+        # If the last message is a ToolMessage for create_quiz, end the graph
+        # This prevents the agent from generating a follow-up message immediately
+        if isinstance(last_message, ToolMessage):
+            # Look backwards to find the corresponding AIMessage with tool_calls
+            for i in range(len(messages) - 2, -1, -1):
+                prev_msg = messages[i]
+                if isinstance(prev_msg, AIMessage) and hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls:
+                    # Check if any of the tool calls was create_quiz
+                    tool_call_id = getattr(last_message, "tool_call_id", None)
+                    for tool_call in prev_msg.tool_calls:
+                        tool_call_id_from_call = tool_call.get("id") if isinstance(tool_call, dict) else getattr(tool_call, "id", None)
+                        tool_name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, "name", "")
+                        
+                        if tool_call_id == tool_call_id_from_call and tool_name == "create_quiz":
+                            # This is a create_quiz tool response - end the graph
+                            # The quiz widget will be displayed, agent waits for user to complete quiz
+                            logger.info("create_quiz tool call completed - ending graph to wait for user quiz completion")
+                            return "end"
+                    break
         
         return "end"

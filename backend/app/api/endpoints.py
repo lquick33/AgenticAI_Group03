@@ -1011,6 +1011,130 @@ async def initiate_chat(
                     
                     return fixed_messages
 
+                def has_pending_quiz_creation(messages: list) -> bool:
+                    """
+                    Check if there is a pending quiz creation (create_quiz tool call without ToolMessage response).
+                    
+                    This function checks if the last AIMessage contains tool_calls for 'create_quiz' that don't
+                    have corresponding ToolMessage responses yet, indicating that a quiz is currently being created.
+                    
+                    Args:
+                        messages: List of messages to check (can be LangChain message objects or dicts)
+                        
+                    Returns:
+                        True if a create_quiz tool call is pending (no ToolMessage response found),
+                        False otherwise
+                        
+                    Raises:
+                        None - All errors are caught and logged, function returns False on error
+                    """
+                    if not messages:
+                        return False
+                    
+                    try:
+                        # Iterate backwards through messages to find the most recent AIMessage with tool_calls
+                        for i in range(len(messages) - 1, -1, -1):
+                            msg = messages[i]
+                            
+                            # Check if this is an AIMessage with tool_calls
+                            is_ai_message = isinstance(msg, AIMessage) or (
+                                isinstance(msg, dict) and msg.get("type") == "ai"
+                            )
+                            
+                            if not is_ai_message:
+                                continue
+                            
+                            # Extract tool_calls from message
+                            tool_calls = None
+                            if isinstance(msg, AIMessage):
+                                tool_calls = getattr(msg, "tool_calls", None)
+                            elif isinstance(msg, dict):
+                                tool_calls = msg.get("tool_calls")
+                            
+                            if not tool_calls:
+                                continue
+                            
+                            # Check if any tool_call is for 'create_quiz'
+                            has_create_quiz_call = False
+                            quiz_tool_call_ids = set()
+                            
+                            for tool_call in tool_calls:
+                                # Extract tool name
+                                tool_name = None
+                                if isinstance(tool_call, dict):
+                                    tool_name = tool_call.get("name", "")
+                                else:
+                                    tool_name = getattr(tool_call, "name", "")
+                                
+                                if tool_name == "create_quiz":
+                                    has_create_quiz_call = True
+                                    # Extract tool call ID
+                                    tool_call_id = None
+                                    if isinstance(tool_call, dict):
+                                        tool_call_id = tool_call.get("id")
+                                    else:
+                                        tool_call_id = getattr(tool_call, "id", None)
+                                    
+                                    if tool_call_id:
+                                        quiz_tool_call_ids.add(tool_call_id)
+                            
+                            if not has_create_quiz_call:
+                                continue
+                            
+                            # Found an AIMessage with create_quiz tool_calls
+                            # Now check if there are corresponding ToolMessages after this AIMessage
+                            # ToolMessages should come immediately after the AIMessage
+                            found_tool_messages = []
+                            j = i + 1
+                            while j < len(messages):
+                                next_msg = messages[j]
+                                
+                                # Check if this is a ToolMessage
+                                is_tool_message = isinstance(next_msg, ToolMessage) or (
+                                    isinstance(next_msg, dict) and next_msg.get("type") == "tool"
+                                )
+                                
+                                if not is_tool_message:
+                                    # Stop if we hit a non-ToolMessage (they should be consecutive)
+                                    break
+                                
+                                # Extract tool_call_id from ToolMessage
+                                tool_call_id = None
+                                if isinstance(next_msg, ToolMessage):
+                                    tool_call_id = getattr(next_msg, "tool_call_id", None)
+                                elif isinstance(next_msg, dict):
+                                    tool_call_id = next_msg.get("tool_call_id")
+                                
+                                if tool_call_id and tool_call_id in quiz_tool_call_ids:
+                                    found_tool_messages.append(tool_call_id)
+                                
+                                j += 1
+                            
+                            # If we found all tool call IDs have responses, quiz is not pending
+                            if len(found_tool_messages) == len(quiz_tool_call_ids) and len(quiz_tool_call_ids) > 0:
+                                # All create_quiz tool calls have responses, quiz creation is complete
+                                return False
+                            elif len(quiz_tool_call_ids) > 0:
+                                # We have create_quiz tool calls but not all have responses
+                                # This means quiz creation is pending
+                                logger.info(
+                                    f"Pending quiz creation detected: {len(quiz_tool_call_ids)} create_quiz tool_calls found, "
+                                    f"but only {len(found_tool_messages)} ToolMessage responses present"
+                                )
+                                return True
+                        
+                        # No pending quiz creation found
+                        return False
+                    
+                    except Exception as e:
+                        # Log error but don't break the flow - return False to allow normal processing
+                        logger.warning(
+                            f"Error checking for pending quiz creation: {str(e)}. "
+                            "Continuing with normal flow.",
+                            exc_info=True
+                        )
+                        return False
+
                 # Always check Supabase for conversation history when is_initial_open is true
                 # This allows us to detect returning users even if LangGraph state exists
                 if request.is_initial_open:
@@ -1158,6 +1282,53 @@ async def initiate_chat(
                     # Use existing LangGraph state if available, otherwise bootstrap
                     if is_new_thread:
                         # LangGraph state is empty, but we might have bootstrapped messages
+                        # Check for pending quiz creation BEFORE fixing incomplete tool calls
+                        has_pending_quiz = has_pending_quiz_creation(base_messages)
+                        
+                        if has_pending_quiz:
+                            # Quiz is being created - suppress init message and only update state
+                            logger.info(
+                                f"Pending quiz creation detected during page change to {request.page_number}. "
+                                "Suppressing init message and updating state only."
+                            )
+                            
+                            # Only update current_page in state, don't add init messages
+                            # The quiz creation will complete and send its own response
+                            initial_state = {
+                                "messages": base_messages,  # Keep existing messages as-is
+                                "current_page": request.page_number,
+                                "material_id": request.material_id,
+                                "user_id": request.user_id,
+                                "course_material_summary": course_summary,
+                            }
+                            
+                            # Update state silently without generating a response
+                            # This ensures current_page is updated even when quiz is pending
+                            try:
+                                # Use a minimal state update to persist the current_page change
+                                # We don't invoke the graph, just update the state directly
+                                config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+                                # Update state by invoking with empty messages (state update only)
+                                # The state fields (current_page, etc.) will be updated
+                                agent.graph.update_state(config, initial_state)
+                                logger.debug(f"State updated silently for page {request.page_number} (quiz pending)")
+                            except Exception as state_update_error:
+                                # If state update fails, log but don't break - quiz will still complete
+                                logger.warning(
+                                    f"Failed to update state silently: {state_update_error}. "
+                                    "Quiz creation will still complete normally.",
+                                    exc_info=True
+                                )
+                            
+                            # Skip agent stream - just update state silently
+                            # The quiz tool call will complete and handle the response
+                            # We'll yield a minimal response to indicate state was updated
+                            # Send a minimal response indicating state was updated
+                            yield f"data: {json.dumps({'type': 'state_update', 'current_page': request.page_number})}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        
+                        # No pending quiz - proceed with normal flow
                         # Fix incomplete tool call pairs in base_messages before adding new messages
                         base_messages = fix_incomplete_tool_calls(base_messages)
                         
@@ -1182,6 +1353,53 @@ async def initiate_chat(
                         # Existing thread in this backend process: load existing messages from snapshot
                         existing_messages = snapshot.values.get("messages", [])
                         
+                        # Check for pending quiz creation BEFORE fixing incomplete tool calls
+                        has_pending_quiz = has_pending_quiz_creation(existing_messages)
+                        
+                        if has_pending_quiz:
+                            # Quiz is being created - suppress init message and only update state
+                            logger.info(
+                                f"Pending quiz creation detected during page change to {request.page_number}. "
+                                "Suppressing init message and updating state only."
+                            )
+                            
+                            # Only update current_page in state, don't add init messages
+                            # The quiz creation will complete and send its own response
+                            initial_state = {
+                                "messages": existing_messages,  # Keep existing messages as-is (don't fix incomplete calls)
+                                "current_page": request.page_number,
+                                "material_id": request.material_id,
+                                "user_id": request.user_id,
+                                "course_material_summary": snapshot.values.get("course_material_summary") or course_summary,
+                            }
+                            
+                            # Update state silently without generating a response
+                            # This ensures current_page is updated even when quiz is pending
+                            try:
+                                # Use a minimal state update to persist the current_page change
+                                # We don't invoke the graph, just update the state directly
+                                config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+                                # Update state by invoking with empty messages (state update only)
+                                # The state fields (current_page, etc.) will be updated
+                                agent.graph.update_state(config, initial_state)
+                                logger.debug(f"State updated silently for page {request.page_number} (quiz pending)")
+                            except Exception as state_update_error:
+                                # If state update fails, log but don't break - quiz will still complete
+                                logger.warning(
+                                    f"Failed to update state silently: {state_update_error}. "
+                                    "Quiz creation will still complete normally.",
+                                    exc_info=True
+                                )
+                            
+                            # Skip agent stream - just update state silently
+                            # The quiz tool call will complete and handle the response
+                            # We'll yield a minimal response to indicate state was updated
+                            # Send a minimal response indicating state was updated
+                            yield f"data: {json.dumps({'type': 'state_update', 'current_page': request.page_number})}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        
+                        # No pending quiz - proceed with normal flow
                         # Fix incomplete tool call pairs to prevent Gemini API errors
                         # Gemini requires: AIMessage with tool_calls -> ToolMessages -> (optional) AIMessage -> HumanMessage
                         existing_messages = fix_incomplete_tool_calls(existing_messages)
@@ -1232,6 +1450,30 @@ async def initiate_chat(
                 
                 # Stream agent response with incremental content updates
                 logger.info(f"Starting agent stream for page {request.page_number}")
+                
+                # Wrap graph execution with Langfuse span for unique trace naming
+                langfuse_client = get_langfuse_client()
+                graph_span_ctx = None
+                graph_span = None
+                if langfuse_client and settings.LANGFUSE_ENABLED:
+                    try:
+                        graph_span_ctx = langfuse_client.start_as_current_observation(
+                            as_type="span",
+                            name="tutor-agent/graph-execution-initiate",
+                            input={
+                                "user_id": request.user_id,
+                                "material_id": course_material_id,
+                                "page_number": request.page_number,
+                                "thread_id": thread_id
+                            }
+                        )
+                        graph_span = graph_span_ctx.__enter__()
+                        logger.info(f"🟡 Langfuse: Started graph execution span 'tutor-agent/graph-execution-initiate'")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Failed to start graph execution span: {e}")
+                        graph_span_ctx = None
+                        graph_span = None
+                
                 try:
                     async for chunk in agent.graph.astream(initial_state, config):
                         chunk_data = {}
@@ -1386,6 +1628,14 @@ async def initiate_chat(
                         trace.update(output={"status": "completed"})
                         logger.info("🟢 Langfuse: Trace 'tutor-agent-initiate' updated with completion status")
                     
+                    # Update graph execution span with success
+                    if graph_span:
+                        try:
+                            graph_span.update(output={"status": "completed"})
+                            logger.info("🟢 Langfuse: Graph execution span updated with success")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+                    
                     yield "data: [DONE]\n\n"
                 except Exception as e:
                     logger.error(f"Error in agent stream: {str(e)}", exc_info=True)
@@ -1396,6 +1646,14 @@ async def initiate_chat(
                         trace.update(level="ERROR", status_message=str(e))
                         logger.warning("🔴 Langfuse: Trace 'tutor-agent-initiate' marked as ERROR")
                     
+                    # Update graph execution span with error
+                    if graph_span:
+                        try:
+                            graph_span.update(output={"status": "error", "error": str(e)})
+                            logger.warning("🔴 Langfuse: Graph execution span updated with error")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+                    
                     error_data = {"error": str(e)}
                     yield f"data: {json.dumps(error_data)}\n\n"
                     yield "data: [DONE]\n\n"
@@ -1404,6 +1662,15 @@ async def initiate_chat(
                     # Cleanup Langfuse tracing
                     # WICHTIG: Kein flush() hier! Das blockiert den Stream-Exit.
                     exc_info = sys.exc_info()  # Holt die aktuelle Exception, falls vorhanden
+                    
+                    # Close graph execution span
+                    if graph_span_ctx:
+                        try:
+                            logger.info("🟡 Langfuse: Closing graph execution span...")
+                            graph_span_ctx.__exit__(*exc_info)
+                            logger.info("🟢 Langfuse: Graph execution span closed")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Error closing graph execution span: {e}")
                     
                     if propagate_ctx:
                         try:
@@ -1607,6 +1874,30 @@ async def send_chat_message(
                 last_sent_content = ""  # Track what we've already sent for incremental updates
 
                 # Stream agent response with incremental content updates
+                
+                # Wrap graph execution with Langfuse span for unique trace naming
+                langfuse_client = get_langfuse_client()
+                graph_span_ctx = None
+                graph_span = None
+                if langfuse_client and settings.LANGFUSE_ENABLED:
+                    try:
+                        graph_span_ctx = langfuse_client.start_as_current_observation(
+                            as_type="span",
+                            name="tutor-agent/graph-execution-message",
+                            input={
+                                "user_id": request.user_id,
+                                "material_id": course_material_id,
+                                "message": request.message[:100],  # Truncate for input
+                                "thread_id": thread_id
+                            }
+                        )
+                        graph_span = graph_span_ctx.__enter__()
+                        logger.info(f"🟡 Langfuse: Started graph execution span 'tutor-agent/graph-execution-message'")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Failed to start graph execution span: {e}")
+                        graph_span_ctx = None
+                        graph_span = None
+                
                 async for chunk in agent.graph.astream(initial_state, config):
                     chunk_data = {}
                     for node_name, node_data in chunk.items():
@@ -1764,6 +2055,15 @@ async def send_chat_message(
                     logger.info("🟡 Langfuse: Updating trace 'tutor-agent-message' with completion status...")
                     trace.update(output={"status": "completed"})
                     logger.info("🟢 Langfuse: Trace 'tutor-agent-message' updated with completion status")
+                
+                # Update graph execution span with success
+                if graph_span:
+                    try:
+                        graph_span.update(output={"status": "completed"})
+                        logger.info("🟢 Langfuse: Graph execution span updated with success")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+                
                 yield "data: [DONE]\n\n"
             except Exception as e:
                 logger.error(f"Error in agent stream: {str(e)}", exc_info=True)
@@ -1774,6 +2074,14 @@ async def send_chat_message(
                     trace.update(level="ERROR", status_message=str(e))
                     logger.warning("🔴 Langfuse: Trace 'tutor-agent-message' marked as ERROR")
                 
+                # Update graph execution span with error
+                if graph_span:
+                    try:
+                        graph_span.update(output={"status": "error", "error": str(e)})
+                        logger.warning("🔴 Langfuse: Graph execution span updated with error")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+                
                 error_data = {"error": str(e)}
                 yield f"data: {json.dumps(error_data)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -1781,6 +2089,15 @@ async def send_chat_message(
             finally:
                 # Cleanup - KEIN FLUSH
                 exc_info = sys.exc_info()
+                
+                # Close graph execution span
+                if graph_span_ctx:
+                    try:
+                        logger.info("🟡 Langfuse: Closing graph execution span...")
+                        graph_span_ctx.__exit__(*exc_info)
+                        logger.info("🟢 Langfuse: Graph execution span closed")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Error closing graph execution span: {e}")
                 
                 if propagate_ctx:
                     try:
@@ -2704,15 +3021,64 @@ Gib dem Studenten konstruktives Feedback:
                         f"score={result.score:.2%}, topic={topic_name}"
                     )
                 
-                # Run agent to generate feedback
-                agent_result = agent.graph.invoke(agent_state, config=agent_config)
+                # Run agent to generate feedback with Langfuse tracing
+                langfuse_client = get_langfuse_client()
+                graph_span_ctx = None
+                graph_span = None
+                if langfuse_client and settings.LANGFUSE_ENABLED:
+                    try:
+                        graph_span_ctx = langfuse_client.start_as_current_observation(
+                            as_type="span",
+                            name="tutor-agent/graph-execution-quiz-feedback",
+                            input={
+                                "user_id": request.user_id,
+                                "quiz_id": request.quiz_id,
+                                "course_material_id": course_material_id,
+                                "score": result.score
+                            }
+                        )
+                        graph_span = graph_span_ctx.__enter__()
+                        logger.info(f"🟡 Langfuse: Started graph execution span 'tutor-agent/graph-execution-quiz-feedback'")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Failed to start graph execution span: {e}")
+                        graph_span_ctx = None
+                        graph_span = None
                 
-                if callback_handler:
-                    logger.info(
-                        f"🟢 Langfuse: Tutor feedback generation completed "
-                        f"(run_name: tutor-agent/quiz-feedback-generation) - "
-                        f"data tracked by CallbackHandler"
-                    )
+                try:
+                    agent_result = agent.graph.invoke(agent_state, config=agent_config)
+                    
+                    if callback_handler:
+                        logger.info(
+                            f"🟢 Langfuse: Tutor feedback generation completed "
+                            f"(run_name: tutor-agent/quiz-feedback-generation) - "
+                            f"data tracked by CallbackHandler"
+                        )
+                    
+                    # Update graph execution span with success
+                    if graph_span:
+                        try:
+                            graph_span.update(output={"status": "completed"})
+                            logger.info("🟢 Langfuse: Graph execution span updated with success")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+                except Exception as e:
+                    # Update graph execution span with error
+                    if graph_span:
+                        try:
+                            graph_span.update(output={"status": "error", "error": str(e)})
+                            logger.warning("🔴 Langfuse: Graph execution span updated with error")
+                        except Exception:
+                            pass
+                    raise
+                finally:
+                    # Close graph execution span
+                    if graph_span_ctx:
+                        try:
+                            exc_info = sys.exc_info()
+                            graph_span_ctx.__exit__(*exc_info)
+                            logger.info("🟢 Langfuse: Graph execution span closed")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Error closing graph execution span: {e}")
                 
                 # Extract feedback from agent response
                 feedback_messages = agent_result.get("messages", [])

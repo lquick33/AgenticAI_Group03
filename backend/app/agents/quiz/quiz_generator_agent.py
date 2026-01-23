@@ -502,11 +502,63 @@ Gib das Quiz im JSON-Format zurück (verwende das QuizData Schema)."""
         logger.debug(f"🟡 State keys: {list(initial_state.keys())}")
         logger.debug(f"🟡 First page_analysis keys: {list(page_analyses[0].keys()) if page_analyses else 'N/A'}")
         
-        # Run agent
+        # Run agent with Langfuse tracing for graph execution
         logger.info(f"Invoking quiz generation graph for pages {start_page}-{end_page}")
         logger.debug(f"🟡 Initial state before invoke: page_analyses count={len(initial_state.get('page_analyses', []))}")
-        result = self.graph.invoke(initial_state)
-        logger.info(f"Graph invocation completed. Result keys: {list(result.keys())}")
+        
+        # Wrap graph invocation with Langfuse span for unique trace naming
+        langfuse_client = get_langfuse_client()
+        if langfuse_client and settings.LANGFUSE_ENABLED:
+            try:
+                graph_span_ctx = langfuse_client.start_as_current_observation(
+                    as_type="span",
+                    name="quiz-generator-agent/graph-execution",
+                    input={
+                        "start_page": start_page,
+                        "end_page": end_page,
+                        "topic": topic,
+                        "course_material_id": course_material_id,
+                        "user_id": user_id
+                    }
+                )
+                graph_span = graph_span_ctx.__enter__()
+                logger.info(f"🟡 Langfuse: Started graph execution span 'quiz-generator-agent/graph-execution'")
+            except Exception as e:
+                logger.warning(f"🔴 Langfuse: Failed to start graph execution span: {e}")
+                graph_span_ctx = None
+                graph_span = None
+        else:
+            graph_span_ctx = None
+            graph_span = None
+        
+        try:
+            result = self.graph.invoke(initial_state)
+            logger.info(f"Graph invocation completed. Result keys: {list(result.keys())}")
+            
+            # Update span with success
+            if graph_span:
+                try:
+                    graph_span.update(output={"status": "success", "result_keys": list(result.keys())})
+                    logger.info("🟢 Langfuse: Graph execution span updated with success")
+                except Exception as e:
+                    logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+        except Exception as e:
+            # Update span with error
+            if graph_span:
+                try:
+                    graph_span.update(output={"status": "error", "error": str(e)})
+                    logger.warning("🔴 Langfuse: Graph execution span updated with error")
+                except Exception:
+                    pass
+            raise
+        finally:
+            # Close span
+            if graph_span_ctx:
+                try:
+                    graph_span_ctx.__exit__(None, None, None)
+                    logger.info("🟢 Langfuse: Graph execution span closed")
+                except Exception as e:
+                    logger.warning(f"🔴 Langfuse: Error closing graph execution span: {e}")
         
         # Try to get quiz_data directly from state first (more reliable)
         if "quiz_data" in result:

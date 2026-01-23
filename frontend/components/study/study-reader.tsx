@@ -82,6 +82,24 @@ export function StudyReader({
       
       const result = await submitQuiz(quizId, answers, userId)
       
+      // Mark the create_quiz tool call as completed now that user finished the quiz
+      setMessages((prev) => {
+        return prev.map((msg) => {
+          // Find message with this quiz
+          if (msg.quiz && msg.quiz.quiz_id === quizId && msg.toolCalls) {
+            return {
+              ...msg,
+              toolCalls: msg.toolCalls.map((tc) => 
+                tc.name === 'create_quiz' && tc.state !== 'completed'
+                  ? { ...tc, state: 'completed' as const }
+                  : tc
+              )
+            }
+          }
+          return msg
+        })
+      })
+      
       // Add result message to chat
       let resultContent = `Quiz abgeschlossen! Du hast ${result.correct_count} von ${result.total_questions} Fragen richtig beantwortet (${(result.score * 100).toFixed(0)}%).`
       
@@ -320,12 +338,14 @@ export function StudyReader({
                       const resultData = JSON.parse(chunk.result)
                       
                       // If quiz was created successfully, add quiz data to message
+                      // IMPORTANT: Keep tool call state as 'running' or 'pending', NOT 'completed'
+                      // The tool call is only 'completed' when the user finishes the quiz
                       if (resultData.quiz_id && resultData.quiz_data) {
                         updated[lastStreamingIndex] = {
                           ...updated[lastStreamingIndex],
                           toolCalls: updated[lastStreamingIndex].toolCalls!.map(tc => 
                             tc.id === chunk.tool_call_id
-                              ? { ...tc, result: chunk.result, state: 'completed' as const }
+                              ? { ...tc, result: chunk.result, state: 'running' as const }
                               : tc
                           ),
                           quiz: {
@@ -334,9 +354,9 @@ export function StudyReader({
                             questions: resultData.quiz_data.questions || []
                           }
                         }
-                        console.log('[StudyReader] Quiz added to message:', resultData.quiz_id)
+                        console.log('[StudyReader] Quiz added to message:', resultData.quiz_id, '- Tool call remains pending until user completes quiz')
                       } else {
-                        // Quiz creation failed, just update tool call
+                        // Quiz creation failed, mark as completed (error state)
                         updated[lastStreamingIndex] = {
                           ...updated[lastStreamingIndex],
                           toolCalls: updated[lastStreamingIndex].toolCalls!.map(tc => 
