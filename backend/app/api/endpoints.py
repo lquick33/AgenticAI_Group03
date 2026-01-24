@@ -1493,50 +1493,73 @@ async def initiate_chat(
                                                     yield f"data: {json.dumps(tool_event)}\n\n"
 
                                         # Handle assistant messages with incremental streaming
-                                        if role == "assistant" and msg.content:
-                                            content_text = msg.content
+                                        if role == "assistant":
+                                            # Check if message has content (not just tool calls)
+                                            # Also check if this is a message with tool calls but no content
+                                            has_tool_calls = hasattr(msg, "tool_calls") and bool(msg.tool_calls)
+                                            has_content = bool(msg.content)
+                                            
+                                            # Handle list content
                                             if isinstance(msg.content, list):
-                                                try:
-                                                    content_text = "".join(
-                                                        part.get("text", "") if isinstance(part, dict) else str(part)
-                                                        for part in msg.content
-                                                    )
-                                                except Exception:
-                                                    content_text = str(msg.content)
+                                                has_content = bool(msg.content) and any(
+                                                    part.get("text", "") if isinstance(part, dict) else str(part)
+                                                    for part in msg.content
+                                                )
                                             
-                                            # Send incremental delta if content has grown
-                                            if content_text and content_text != last_sent_content:
-                                                # Calculate and send delta
-                                                if last_sent_content and content_text.startswith(last_sent_content):
-                                                    delta = content_text[len(last_sent_content):]
-                                                    if delta:
-                                                        # Send delta for ghostwriter effect
-                                                        delta_data = {
-                                                            "type": "delta",
-                                                            "role": "assistant",
-                                                            "delta": delta,
+                                            # If message has tool calls but no content, skip adding to messages
+                                            # Tool calls are already sent separately above
+                                            if has_tool_calls and not has_content:
+                                                logger.debug(f"Skipping AIMessage with tool calls but no content (tool_calls: {len(msg.tool_calls) if has_tool_calls else 0})")
+                                                continue
+                                            
+                                            if has_content:
+                                                content_text = msg.content
+                                                if isinstance(msg.content, list):
+                                                    try:
+                                                        content_text = "".join(
+                                                            part.get("text", "") if isinstance(part, dict) else str(part)
+                                                            for part in msg.content
+                                                        )
+                                                    except Exception:
+                                                        content_text = str(msg.content)
+                                                
+                                                # Send incremental delta if content has grown
+                                                if content_text and content_text != last_sent_content:
+                                                    # Calculate and send delta
+                                                    if last_sent_content and content_text.startswith(last_sent_content):
+                                                        delta = content_text[len(last_sent_content):]
+                                                        if delta:
+                                                            # Send delta for ghostwriter effect
+                                                            delta_data = {
+                                                                "type": "delta",
+                                                                "role": "assistant",
+                                                                "delta": delta,
+                                                                "content": content_text
+                                                            }
+                                                            yield f"data: {json.dumps(delta_data)}\n\n"
+                                                            last_sent_content = content_text
+                                                    else:
+                                                        # Content changed in a way we can't calculate delta
+                                                        # Send full message structure for compatibility
+                                                        messages.append({
+                                                            "role": role,
                                                             "content": content_text
-                                                        }
-                                                        yield f"data: {json.dumps(delta_data)}\n\n"
+                                                        })
                                                         last_sent_content = content_text
-                                                else:
-                                                    # Content changed in a way we can't calculate delta
-                                                    # Send full message structure for compatibility
-                                                    messages.append({
-                                                        "role": role,
-                                                        "content": content_text
-                                                    })
-                                                    last_sent_content = content_text
-                                            
-                                            # Store for persistence
-                                            if str(content_text) not in assistant_response_chunks:
-                                                assistant_response_chunks.append(str(content_text))
+                                                
+                                                # Store for persistence
+                                                if str(content_text) not in assistant_response_chunks:
+                                                    assistant_response_chunks.append(str(content_text))
+                                            # If assistant message has no content (only tool calls), skip adding to messages
+                                            # Tool calls are already sent separately above
                                         else:
-                                            # Non-assistant messages: send normally
-                                            messages.append({
-                                                "role": role,
-                                                "content": msg.content,
-                                            })
+                                            # Non-assistant messages: send normally, but only if they have content
+                                            content = msg.content if hasattr(msg, "content") else ""
+                                            if content or role != "assistant":  # Allow non-assistant messages even if empty
+                                                messages.append({
+                                                    "role": role,
+                                                    "content": content,
+                                                })
                                 
                                 if messages:  # Only add if there are messages
                                     chunk_data[node_name] = {"messages": messages}
@@ -1947,50 +1970,73 @@ async def send_chat_message(
                                                 yield f"data: {json.dumps(tool_event)}\n\n"
 
                                     # Handle assistant messages with incremental streaming
-                                    if role == "assistant" and msg.content:
-                                        content_text = msg.content
+                                    if role == "assistant":
+                                        # Check if message has content (not just tool calls)
+                                        # Also check if this is a message with tool calls but no content
+                                        has_tool_calls = hasattr(msg, "tool_calls") and bool(msg.tool_calls)
+                                        has_content = bool(msg.content)
+                                        
+                                        # Handle list content
                                         if isinstance(msg.content, list):
-                                            try:
-                                                content_text = "".join(
-                                                    part.get("text", "") if isinstance(part, dict) else str(part)
-                                                    for part in msg.content
-                                                )
-                                            except Exception:
-                                                content_text = str(msg.content)
+                                            has_content = bool(msg.content) and any(
+                                                part.get("text", "") if isinstance(part, dict) else str(part)
+                                                for part in msg.content
+                                            )
                                         
-                                        # Send incremental delta if content has grown
-                                        if content_text and content_text != last_sent_content:
-                                            # Calculate and send delta
-                                            if last_sent_content and content_text.startswith(last_sent_content):
-                                                delta = content_text[len(last_sent_content):]
-                                                if delta:
-                                                    # Send delta for ghostwriter effect
-                                                    delta_data = {
-                                                        "type": "delta",
-                                                        "role": "assistant",
-                                                        "delta": delta,
+                                        # If message has tool calls but no content, skip adding to messages
+                                        # Tool calls are already sent separately above
+                                        if has_tool_calls and not has_content:
+                                            logger.debug(f"Skipping AIMessage with tool calls but no content (tool_calls: {len(msg.tool_calls) if has_tool_calls else 0})")
+                                            continue
+                                        
+                                        if has_content:
+                                            content_text = msg.content
+                                            if isinstance(msg.content, list):
+                                                try:
+                                                    content_text = "".join(
+                                                        part.get("text", "") if isinstance(part, dict) else str(part)
+                                                        for part in msg.content
+                                                    )
+                                                except Exception:
+                                                    content_text = str(msg.content)
+                                            
+                                            # Send incremental delta if content has grown
+                                            if content_text and content_text != last_sent_content:
+                                                # Calculate and send delta
+                                                if last_sent_content and content_text.startswith(last_sent_content):
+                                                    delta = content_text[len(last_sent_content):]
+                                                    if delta:
+                                                        # Send delta for ghostwriter effect
+                                                        delta_data = {
+                                                            "type": "delta",
+                                                            "role": "assistant",
+                                                            "delta": delta,
+                                                            "content": content_text
+                                                        }
+                                                        yield f"data: {json.dumps(delta_data)}\n\n"
+                                                        last_sent_content = content_text
+                                                else:
+                                                    # Content changed in a way we can't calculate delta
+                                                    # Send full message structure for compatibility
+                                                    messages.append({
+                                                        "role": role,
                                                         "content": content_text
-                                                    }
-                                                    yield f"data: {json.dumps(delta_data)}\n\n"
+                                                    })
                                                     last_sent_content = content_text
-                                            else:
-                                                # Content changed in a way we can't calculate delta
-                                                # Send full message structure for compatibility
-                                                messages.append({
-                                                    "role": role,
-                                                    "content": content_text
-                                                })
-                                                last_sent_content = content_text
-                                        
-                                        # Store for persistence
-                                        if str(content_text) not in assistant_response_chunks:
-                                            assistant_response_chunks.append(str(content_text))
+                                            
+                                            # Store for persistence
+                                            if str(content_text) not in assistant_response_chunks:
+                                                assistant_response_chunks.append(str(content_text))
+                                        # If assistant message has no content (only tool calls), skip adding to messages
+                                        # Tool calls are already sent separately above
                                     else:
-                                        # Non-assistant messages: send normally
-                                        messages.append({
-                                            "role": role,
-                                            "content": msg.content
-                                        })
+                                        # Non-assistant messages: send normally, but only if they have content
+                                        content = msg.content if hasattr(msg, "content") else ""
+                                        if content or role != "assistant":  # Allow non-assistant messages even if empty
+                                            messages.append({
+                                                "role": role,
+                                                "content": content,
+                                            })
                             if messages:
                                 chunk_data[node_name] = {"messages": messages}
                     
@@ -3125,11 +3171,50 @@ Gib dem Studenten konstruktives Feedback:
                 if feedback_messages:
                     last_message = feedback_messages[-1]
                     if hasattr(last_message, "content"):
-                        tutor_feedback = last_message.content
-                        # Add feedback to result - use model_copy to preserve all fields
-                        result = result.model_copy(update={"tutor_feedback": tutor_feedback})
+                        # Extract content properly - handle string, list, or object formats
+                        content = last_message.content
+                        tutor_feedback = None
                         
-                        logger.info(f"Tutor feedback generated for quiz {request.quiz_id}")
+                        if isinstance(content, str):
+                            # Simple string content
+                            tutor_feedback = content
+                        elif isinstance(content, list):
+                            # List format (e.g., multi-modal content)
+                            try:
+                                # Extract text from list items
+                                text_parts = []
+                                for part in content:
+                                    if isinstance(part, dict):
+                                        # Try common text fields
+                                        text = part.get("text") or part.get("content") or part.get("text_content")
+                                        if text:
+                                            text_parts.append(str(text))
+                                    elif isinstance(part, str):
+                                        text_parts.append(part)
+                                    else:
+                                        text_parts.append(str(part))
+                                tutor_feedback = "".join(text_parts) if text_parts else None
+                            except Exception as e:
+                                logger.warning(f"Failed to extract text from list content: {e}")
+                                tutor_feedback = str(content)  # Fallback
+                        elif isinstance(content, dict):
+                            # Object format - try to extract text
+                            tutor_feedback = content.get("text") or content.get("content") or content.get("text_content")
+                            if not tutor_feedback:
+                                # Fallback: convert to JSON string
+                                import json
+                                tutor_feedback = json.dumps(content, ensure_ascii=False)
+                        else:
+                            # Other types - convert to string
+                            tutor_feedback = str(content) if content else None
+                        
+                        # Only add feedback if we successfully extracted a non-empty string
+                        if tutor_feedback and tutor_feedback.strip():
+                            # Add feedback to result - use model_copy to preserve all fields
+                            result = result.model_copy(update={"tutor_feedback": tutor_feedback})
+                            logger.info(f"Tutor feedback generated for quiz {request.quiz_id} (length: {len(tutor_feedback)})")
+                        else:
+                            logger.warning(f"Tutor feedback is empty or could not be extracted for quiz {request.quiz_id}")
                 else:
                     logger.warning(f"No feedback generated for quiz {request.quiz_id}")
         
