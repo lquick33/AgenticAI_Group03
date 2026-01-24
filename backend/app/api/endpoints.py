@@ -9,6 +9,7 @@ import json
 import logging
 import sys
 import traceback
+import uuid
 from typing import Optional, AsyncGenerator
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body
@@ -32,6 +33,11 @@ from app.models.schemas import (
     ChatMessageRequest,
     FlashcardTaskResponse,
     FlashcardTaskStatusResponse,
+    MaterialUpdateRequest,
+    MaterialResponse,
+    QuizSubmit,
+    QuizResult,
+    QuizResponse,
 )
 from app.services.pdf_processor import process_pdf_background
 from app.services.storage import (
@@ -44,6 +50,7 @@ from app.services.storage import (
     get_page_analysis_id,
     get_flashcards_for_material,
     get_course_material_summary,
+    update_course_material_filename,
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_csv
@@ -55,6 +62,12 @@ from app.services.session_storage import (
     append_messages,
     load_conversation_with_messages,
 )
+from app.services.quiz_service import (
+    submit_quiz_results,
+    get_quiz,
+    get_quiz_result,
+)
+from app.services.quiz_creation_lock import get_quiz_creation_lock
 from langfuse import get_client, propagate_attributes
 from app.core.config import settings
 import os
@@ -62,6 +75,19 @@ import os
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def generate_message_id(prefix: str = "msg") -> str:
+    """
+    Generate a unique message ID for SSE events.
+    
+    Args:
+        prefix: Optional prefix for the message ID (default: "msg")
+        
+    Returns:
+        Unique message ID string (e.g., "msg-550e8400-e29b-41d4-a716-446655440000")
+    """
+    return f"{prefix}-{uuid.uuid4()}"
 
 
 def get_tutor_prompt(prompt_name: str, **variables) -> str:
@@ -1000,6 +1026,43 @@ async def initiate_chat(
                     
                     return fixed_messages
 
+                def has_pending_quiz_creation(material_id: str, user_id: str) -> bool:
+                    """
+                    Check if there is a pending quiz creation using the lock service.
+                    
+                    This is a simplified version that uses the QuizCreationLock service
+                    instead of parsing messages, which is more reliable and efficient.
+                    
+                    Args:
+                        material_id: Course material ID
+                        user_id: User ID
+                        
+                    Returns:
+                        True if a quiz creation is pending (lock exists), False otherwise
+                    """
+                    try:
+                        lock_service = get_quiz_creation_lock()
+                        is_locked = lock_service.is_locked(material_id, user_id)
+                        
+                        if is_locked:
+                            lock_info = lock_service.get_lock_info(material_id, user_id)
+                            if lock_info:
+                                logger.info(
+                                    f"Pending quiz creation detected via lock service: "
+                                    f"material={material_id}, pages={lock_info['start_page']}-{lock_info['end_page']}"
+                                )
+                        
+                        return is_locked
+                    
+                    except Exception as e:
+                        # Log error but don't break the flow - return False to allow normal processing
+                        logger.warning(
+                            f"Error checking for pending quiz creation via lock service: {str(e)}. "
+                            "Continuing with normal flow.",
+                            exc_info=True
+                        )
+                        return False
+
                 # Always check Supabase for conversation history when is_initial_open is true
                 # This allows us to detect returning users even if LangGraph state exists
                 if request.is_initial_open:
@@ -1147,6 +1210,53 @@ async def initiate_chat(
                     # Use existing LangGraph state if available, otherwise bootstrap
                     if is_new_thread:
                         # LangGraph state is empty, but we might have bootstrapped messages
+                        # Check for pending quiz creation BEFORE fixing incomplete tool calls
+                        has_pending_quiz = has_pending_quiz_creation(course_material_id, request.user_id)
+                        
+                        if has_pending_quiz:
+                            # Quiz is being created - suppress init message and only update state
+                            logger.info(
+                                f"Pending quiz creation detected during page change to {request.page_number}. "
+                                "Suppressing init message and updating state only."
+                            )
+                            
+                            # Only update current_page in state, don't add init messages
+                            # The quiz creation will complete and send its own response
+                            initial_state = {
+                                "messages": base_messages,  # Keep existing messages as-is
+                                "current_page": request.page_number,
+                                "material_id": request.material_id,
+                                "user_id": request.user_id,
+                                "course_material_summary": course_summary,
+                            }
+                            
+                            # Update state silently without generating a response
+                            # This ensures current_page is updated even when quiz is pending
+                            try:
+                                # Use a minimal state update to persist the current_page change
+                                # We don't invoke the graph, just update the state directly
+                                config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+                                # Update state by invoking with empty messages (state update only)
+                                # The state fields (current_page, etc.) will be updated
+                                agent.graph.update_state(config, initial_state)
+                                logger.debug(f"State updated silently for page {request.page_number} (quiz pending)")
+                            except Exception as state_update_error:
+                                # If state update fails, log but don't break - quiz will still complete
+                                logger.warning(
+                                    f"Failed to update state silently: {state_update_error}. "
+                                    "Quiz creation will still complete normally.",
+                                    exc_info=True
+                                )
+                            
+                            # Skip agent stream - just update state silently
+                            # The quiz tool call will complete and handle the response
+                            # We'll yield a minimal response to indicate state was updated
+                            # Send a minimal response indicating state was updated
+                            yield f"data: {json.dumps({'type': 'state_update', 'current_page': request.page_number})}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        
+                        # No pending quiz - proceed with normal flow
                         # Fix incomplete tool call pairs in base_messages before adding new messages
                         base_messages = fix_incomplete_tool_calls(base_messages)
                         
@@ -1171,6 +1281,53 @@ async def initiate_chat(
                         # Existing thread in this backend process: load existing messages from snapshot
                         existing_messages = snapshot.values.get("messages", [])
                         
+                        # Check for pending quiz creation BEFORE fixing incomplete tool calls
+                        has_pending_quiz = has_pending_quiz_creation(course_material_id, request.user_id)
+                        
+                        if has_pending_quiz:
+                            # Quiz is being created - suppress init message and only update state
+                            logger.info(
+                                f"Pending quiz creation detected during page change to {request.page_number}. "
+                                "Suppressing init message and updating state only."
+                            )
+                            
+                            # Only update current_page in state, don't add init messages
+                            # The quiz creation will complete and send its own response
+                            initial_state = {
+                                "messages": existing_messages,  # Keep existing messages as-is (don't fix incomplete calls)
+                                "current_page": request.page_number,
+                                "material_id": request.material_id,
+                                "user_id": request.user_id,
+                                "course_material_summary": snapshot.values.get("course_material_summary") or course_summary,
+                            }
+                            
+                            # Update state silently without generating a response
+                            # This ensures current_page is updated even when quiz is pending
+                            try:
+                                # Use a minimal state update to persist the current_page change
+                                # We don't invoke the graph, just update the state directly
+                                config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+                                # Update state by invoking with empty messages (state update only)
+                                # The state fields (current_page, etc.) will be updated
+                                agent.graph.update_state(config, initial_state)
+                                logger.debug(f"State updated silently for page {request.page_number} (quiz pending)")
+                            except Exception as state_update_error:
+                                # If state update fails, log but don't break - quiz will still complete
+                                logger.warning(
+                                    f"Failed to update state silently: {state_update_error}. "
+                                    "Quiz creation will still complete normally.",
+                                    exc_info=True
+                                )
+                            
+                            # Skip agent stream - just update state silently
+                            # The quiz tool call will complete and handle the response
+                            # We'll yield a minimal response to indicate state was updated
+                            # Send a minimal response indicating state was updated
+                            yield f"data: {json.dumps({'type': 'state_update', 'current_page': request.page_number})}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+                        
+                        # No pending quiz - proceed with normal flow
                         # Fix incomplete tool call pairs to prevent Gemini API errors
                         # Gemini requires: AIMessage with tool_calls -> ToolMessages -> (optional) AIMessage -> HumanMessage
                         existing_messages = fix_incomplete_tool_calls(existing_messages)
@@ -1221,6 +1378,30 @@ async def initiate_chat(
                 
                 # Stream agent response with incremental content updates
                 logger.info(f"Starting agent stream for page {request.page_number}")
+                
+                # Wrap graph execution with Langfuse span for unique trace naming
+                langfuse_client = get_langfuse_client()
+                graph_span_ctx = None
+                graph_span = None
+                if langfuse_client and settings.LANGFUSE_ENABLED:
+                    try:
+                        graph_span_ctx = langfuse_client.start_as_current_observation(
+                            as_type="span",
+                            name="tutor-agent/graph-execution-initiate",
+                            input={
+                                "user_id": request.user_id,
+                                "material_id": course_material_id,
+                                "page_number": request.page_number,
+                                "thread_id": thread_id
+                            }
+                        )
+                        graph_span = graph_span_ctx.__enter__()
+                        logger.info(f"🟡 Langfuse: Started graph execution span 'tutor-agent/graph-execution-initiate'")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Failed to start graph execution span: {e}")
+                        graph_span_ctx = None
+                        graph_span = None
+                
                 try:
                     async for chunk in agent.graph.astream(initial_state, config):
                         chunk_data = {}
@@ -1230,18 +1411,49 @@ async def initiate_chat(
                                 for msg in node_data["messages"]:
                                     # Extract tool responses (ToolMessage contains tool results)
                                     if isinstance(msg, ToolMessage):
-                                        tool_call_id = getattr(msg, "tool_call_id", None) or getattr(msg, "name", None) or ""
+                                        # ToolMessage should have tool_call_id attribute
+                                        tool_call_id = getattr(msg, "tool_call_id", None)
+                                        if not tool_call_id:
+                                            # Fallback: try to get from name attribute (shouldn't happen normally)
+                                            tool_call_id = getattr(msg, "name", None)
+                                        
                                         tool_content = getattr(msg, "content", "")
                                         
                                         if tool_call_id and tool_content:
+                                            # Log for debugging
+                                            logger.info(f"🟡 Tool response: tool_call_id={tool_call_id}, content_length={len(tool_content)}, is_create_quiz={'create_quiz' in tool_content[:100]}")
+                                            
+                                            # Check if this is an error response (from tool exception handling)
+                                            is_error_response = False
+                                            try:
+                                                if tool_content:
+                                                    parsed_content = json.loads(tool_content)
+                                                    if isinstance(parsed_content, dict) and parsed_content.get("error"):
+                                                        is_error_response = True
+                                                        logger.warning(f"Tool returned error response: {parsed_content.get('error')[:200]}")
+                                            except (json.JSONDecodeError, TypeError):
+                                                # Not JSON or not a dict - treat as normal response
+                                                pass
+                                            
                                             # Send tool response event
+                                            # Validate tool response content before sending (only for non-error responses)
+                                            if not is_error_response:
+                                                try:
+                                                    # Try to parse as JSON to validate structure
+                                                    if tool_content:
+                                                        json.loads(tool_content)
+                                                except json.JSONDecodeError:
+                                                    logger.warning(f"Tool response is not valid JSON: {tool_content[:200]}")
+                                            
                                             tool_response_event = {
                                                 "type": "tool_response",
                                                 "tool_call_id": tool_call_id,
                                                 "result": tool_content,
-                                                "message_id": f"msg-{len(assistant_response_chunks)}"
+                                                "message_id": generate_message_id()
                                             }
                                             yield f"data: {json.dumps(tool_response_event)}\n\n"
+                                        else:
+                                            logger.warning(f"⚠️ ToolMessage missing tool_call_id or content: tool_call_id={tool_call_id}, has_content={bool(tool_content)}")
                                         continue
 
                                     if hasattr(msg, "content"):
@@ -1268,13 +1480,15 @@ async def initiate_chat(
                                                             "name": tool_name,
                                                             "args": tool_args if isinstance(tool_args, dict) else {}
                                                         })
+                                                        # Log for debugging
+                                                        logger.info(f"🟡 Tool call: id={tool_id}, name={tool_name}, is_create_quiz={tool_name == 'create_quiz'}")
                                                 
                                                 if tool_calls_data:
                                                     # Send tool call event
                                                     tool_event = {
                                                         "type": "tool_call",
                                                         "tool_calls": tool_calls_data,
-                                                        "message_id": f"msg-{len(assistant_response_chunks)}"
+                                                        "message_id": generate_message_id()
                                                     }
                                                     yield f"data: {json.dumps(tool_event)}\n\n"
 
@@ -1375,6 +1589,14 @@ async def initiate_chat(
                         trace.update(output={"status": "completed"})
                         logger.info("🟢 Langfuse: Trace 'tutor-agent-initiate' updated with completion status")
                     
+                    # Update graph execution span with success
+                    if graph_span:
+                        try:
+                            graph_span.update(output={"status": "completed"})
+                            logger.info("🟢 Langfuse: Graph execution span updated with success")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+                    
                     yield "data: [DONE]\n\n"
                 except Exception as e:
                     logger.error(f"Error in agent stream: {str(e)}", exc_info=True)
@@ -1385,6 +1607,14 @@ async def initiate_chat(
                         trace.update(level="ERROR", status_message=str(e))
                         logger.warning("🔴 Langfuse: Trace 'tutor-agent-initiate' marked as ERROR")
                     
+                    # Update graph execution span with error
+                    if graph_span:
+                        try:
+                            graph_span.update(output={"status": "error", "error": str(e)})
+                            logger.warning("🔴 Langfuse: Graph execution span updated with error")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+                    
                     error_data = {"error": str(e)}
                     yield f"data: {json.dumps(error_data)}\n\n"
                     yield "data: [DONE]\n\n"
@@ -1393,6 +1623,15 @@ async def initiate_chat(
                     # Cleanup Langfuse tracing
                     # WICHTIG: Kein flush() hier! Das blockiert den Stream-Exit.
                     exc_info = sys.exc_info()  # Holt die aktuelle Exception, falls vorhanden
+                    
+                    # Close graph execution span
+                    if graph_span_ctx:
+                        try:
+                            logger.info("🟡 Langfuse: Closing graph execution span...")
+                            graph_span_ctx.__exit__(*exc_info)
+                            logger.info("🟢 Langfuse: Graph execution span closed")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Error closing graph execution span: {e}")
                     
                     if propagate_ctx:
                         try:
@@ -1596,6 +1835,30 @@ async def send_chat_message(
                 last_sent_content = ""  # Track what we've already sent for incremental updates
 
                 # Stream agent response with incremental content updates
+                
+                # Wrap graph execution with Langfuse span for unique trace naming
+                langfuse_client = get_langfuse_client()
+                graph_span_ctx = None
+                graph_span = None
+                if langfuse_client and settings.LANGFUSE_ENABLED:
+                    try:
+                        graph_span_ctx = langfuse_client.start_as_current_observation(
+                            as_type="span",
+                            name="tutor-agent/graph-execution-message",
+                            input={
+                                "user_id": request.user_id,
+                                "material_id": course_material_id,
+                                "message": request.message[:100],  # Truncate for input
+                                "thread_id": thread_id
+                            }
+                        )
+                        graph_span = graph_span_ctx.__enter__()
+                        logger.info(f"🟡 Langfuse: Started graph execution span 'tutor-agent/graph-execution-message'")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Failed to start graph execution span: {e}")
+                        graph_span_ctx = None
+                        graph_span = None
+                
                 async for chunk in agent.graph.astream(initial_state, config):
                     chunk_data = {}
                     for node_name, node_data in chunk.items():
@@ -1604,18 +1867,49 @@ async def send_chat_message(
                             for msg in node_data["messages"]:
                                 # Extract tool responses (ToolMessage contains tool results)
                                 if isinstance(msg, ToolMessage):
-                                    tool_call_id = getattr(msg, "tool_call_id", None) or getattr(msg, "name", None) or ""
+                                    # ToolMessage should have tool_call_id attribute
+                                    tool_call_id = getattr(msg, "tool_call_id", None)
+                                    if not tool_call_id:
+                                        # Fallback: try to get from name attribute (shouldn't happen normally)
+                                        tool_call_id = getattr(msg, "name", None)
+                                    
                                     tool_content = getattr(msg, "content", "")
                                     
                                     if tool_call_id and tool_content:
+                                        # Log for debugging
+                                        logger.info(f"🟡 Tool response: tool_call_id={tool_call_id}, content_length={len(tool_content)}, is_create_quiz={'create_quiz' in tool_content[:100]}")
+                                        
+                                        # Check if this is an error response (from tool exception handling)
+                                        is_error_response = False
+                                        try:
+                                            if tool_content:
+                                                parsed_content = json.loads(tool_content)
+                                                if isinstance(parsed_content, dict) and parsed_content.get("error"):
+                                                    is_error_response = True
+                                                    logger.warning(f"Tool returned error response: {parsed_content.get('error')[:200]}")
+                                        except (json.JSONDecodeError, TypeError):
+                                            # Not JSON or not a dict - treat as normal response
+                                            pass
+                                        
                                         # Send tool response event
+                                        # Validate tool response content before sending (only for non-error responses)
+                                        if not is_error_response:
+                                            try:
+                                                # Try to parse as JSON to validate structure
+                                                if tool_content:
+                                                    json.loads(tool_content)
+                                            except json.JSONDecodeError:
+                                                logger.warning(f"Tool response is not valid JSON: {tool_content[:200]}")
+                                        
                                         tool_response_event = {
                                             "type": "tool_response",
                                             "tool_call_id": tool_call_id,
                                             "result": tool_content,
-                                            "message_id": f"msg-{len(assistant_response_chunks)}"
+                                            "message_id": generate_message_id()
                                         }
                                         yield f"data: {json.dumps(tool_response_event)}\n\n"
+                                    else:
+                                        logger.warning(f"⚠️ ToolMessage missing tool_call_id or content: tool_call_id={tool_call_id}, has_content={bool(tool_content)}")
                                     continue
 
                                 if hasattr(msg, "content"):
@@ -1648,7 +1942,7 @@ async def send_chat_message(
                                                 tool_event = {
                                                     "type": "tool_call",
                                                     "tool_calls": tool_calls_data,
-                                                    "message_id": f"msg-{len(assistant_response_chunks)}"
+                                                    "message_id": generate_message_id()
                                                 }
                                                 yield f"data: {json.dumps(tool_event)}\n\n"
 
@@ -1753,6 +2047,15 @@ async def send_chat_message(
                     logger.info("🟡 Langfuse: Updating trace 'tutor-agent-message' with completion status...")
                     trace.update(output={"status": "completed"})
                     logger.info("🟢 Langfuse: Trace 'tutor-agent-message' updated with completion status")
+                
+                # Update graph execution span with success
+                if graph_span:
+                    try:
+                        graph_span.update(output={"status": "completed"})
+                        logger.info("🟢 Langfuse: Graph execution span updated with success")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+                
                 yield "data: [DONE]\n\n"
             except Exception as e:
                 logger.error(f"Error in agent stream: {str(e)}", exc_info=True)
@@ -1763,6 +2066,14 @@ async def send_chat_message(
                     trace.update(level="ERROR", status_message=str(e))
                     logger.warning("🔴 Langfuse: Trace 'tutor-agent-message' marked as ERROR")
                 
+                # Update graph execution span with error
+                if graph_span:
+                    try:
+                        graph_span.update(output={"status": "error", "error": str(e)})
+                        logger.warning("🔴 Langfuse: Graph execution span updated with error")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+                
                 error_data = {"error": str(e)}
                 yield f"data: {json.dumps(error_data)}\n\n"
                 yield "data: [DONE]\n\n"
@@ -1770,6 +2081,15 @@ async def send_chat_message(
             finally:
                 # Cleanup - KEIN FLUSH
                 exc_info = sys.exc_info()
+                
+                # Close graph execution span
+                if graph_span_ctx:
+                    try:
+                        logger.info("🟡 Langfuse: Closing graph execution span...")
+                        graph_span_ctx.__exit__(*exc_info)
+                        logger.info("🟢 Langfuse: Graph execution span closed")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Error closing graph execution span: {e}")
                 
                 if propagate_ctx:
                     try:
@@ -2256,6 +2576,54 @@ async def cancel_flashcard_task(
         )
 
 
+@router.get("/flashcards/active/{course_material_id}", response_model=Optional[FlashcardTaskStatusResponse], status_code=200)
+async def get_active_flashcard_task(
+    course_material_id: str = Path(..., description="Course material ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> Optional[FlashcardTaskStatusResponse]:
+    """
+    Get the active (pending or running) flashcard generation task for a course material.
+    
+    This endpoint allows the frontend to check if there's an active task
+    when the page loads, so it can restore the polling state.
+    
+    Args:
+        course_material_id: Course material ID (UUID)
+        user_id: User ID (UUID) for authorization
+        
+    Returns:
+        FlashcardTaskStatusResponse if active task exists, None otherwise
+        
+    Raises:
+        HTTPException: If validation fails
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first.",
+            )
+        
+        task_service = get_flashcard_task_service()
+        task = await task_service.get_active_task_for_material(course_material_id, user_id)
+        
+        if not task:
+            # Return None (will be serialized as null in JSON)
+            return None
+        
+        return FlashcardTaskStatusResponse(**task.to_dict())
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting active flashcard task: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get active task: {str(e)}",
+        )
+
+
 @router.get("/flashcards/{course_material_id}", status_code=200)
 async def get_flashcards(
     course_material_id: str = Path(..., description="Course material ID (UUID)"),
@@ -2441,4 +2809,407 @@ async def download_flashcards_from_db(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to download flashcards: {str(e)}",
+        )
+
+
+@router.put("/materials/{material_id}", response_model=MaterialResponse, status_code=200)
+async def update_material_endpoint(
+    material_id: str = Path(..., description="Material ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)"),
+    material_update: MaterialUpdateRequest = ...
+) -> MaterialResponse:
+    """
+    Update course material data.
+    
+    Currently supports updating the file_name field.
+    Validates that the material exists and belongs to the user.
+    
+    Args:
+        material_id: Material ID (UUID)
+        user_id: User ID (UUID) - required for authorization
+        material_update: MaterialUpdateRequest with fields to update
+        
+    Returns:
+        MaterialResponse with updated material data
+        
+    Raises:
+        HTTPException: If material not found or access denied
+    """
+    # Validate user exists
+    if not validate_user_exists(user_id):
+        raise HTTPException(
+            status_code=404,
+            detail="User not found. Please sign up first.",
+        )
+    
+    # Validate that material exists and belongs to user
+    client = get_supabase_client()
+    try:
+        material_response = (
+            client.table("course_materials")
+            .select("*")
+            .eq("id", material_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+        
+        # Build update dict (only include non-None fields)
+        update_data = {}
+        if material_update.file_name is not None:
+            # Validate filename is not empty
+            if not material_update.file_name.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Filename cannot be empty"
+                )
+            update_data["file_name"] = material_update.file_name.strip()
+        
+        if not update_data:
+            raise HTTPException(
+                status_code=400,
+                detail="No fields provided for update"
+            )
+        
+        # Update material
+        updated_response = (
+            client.table("course_materials")
+            .update(update_data)
+            .eq("id", material_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        
+        if updated_response.data and len(updated_response.data) > 0:
+            return MaterialResponse(**updated_response.data[0])
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to update material"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating material: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update material: {str(e)}"
+        )
+
+
+@router.post("/quiz/submit", response_model=QuizResult, status_code=200)
+async def submit_quiz(
+    request: QuizSubmit = Body(...)
+) -> QuizResult:
+    """
+    Submit quiz answers and get results.
+    
+    After submission, generates tutor feedback based on the results.
+    
+    Args:
+        request: QuizSubmit with quiz_id, answers, and user_id
+        
+    Returns:
+        QuizResult with score, correct_count, total_questions, question_results, and tutor_feedback
+        
+    Raises:
+        HTTPException: If quiz not found, already submitted, or submission fails
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(request.user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Submit quiz results
+        result = submit_quiz_results(
+            quiz_id=request.quiz_id,
+            user_id=request.user_id,
+            answers=request.answers
+        )
+        
+        logger.info(
+            f"Quiz submitted: {request.quiz_id} "
+            f"(user: {request.user_id}, score: {result.score:.2%})"
+        )
+        
+        # Generate tutor feedback based on quiz results
+        try:
+            # Get quiz data to find course_material_id
+            quiz_record = get_quiz(request.quiz_id, request.user_id)
+            if quiz_record:
+                course_material_id = quiz_record["course_material_id"]
+                topic_name = quiz_record["topic_name"]
+                quiz_data_dict = quiz_record["quiz_data"]
+                
+                # Get or create study conversation for context
+                conversation = get_or_create_study_conversation(
+                    user_id=request.user_id,
+                    course_material_id=course_material_id,
+                    course_id=None,
+                )
+                conversation_id = conversation["id"]
+                thread_id = str(conversation_id)
+                
+                # Build feedback prompt text with wrong/correct questions
+                wrong_questions = [qr for qr in result.question_results if not qr.correct]
+                correct_questions = [qr for qr in result.question_results if qr.correct]
+                
+                # Format wrong questions text
+                wrong_questions_text = ""
+                if wrong_questions:
+                    wrong_questions_text = "Falsch beantwortete Fragen:\n"
+                    for qr in wrong_questions:
+                        # Find question details from quiz_data
+                        question_data = next(
+                            (q for q in quiz_data_dict.get("questions", []) if q.get("id") == qr.question_id),
+                            None
+                        )
+                        if question_data:
+                            wrong_questions_text += f"- Frage: {question_data.get('question', 'Unbekannt')}\n"
+                            wrong_questions_text += f"  Student-Antwort: {qr.user_answer}, Richtige Antwort: {qr.correct_answer}\n"
+                            wrong_questions_text += f"  Erklärung: {question_data.get('explanation', 'Keine Erklärung verfügbar')}\n\n"
+                
+                # Format correct questions text
+                correct_questions_text = ""
+                if correct_questions:
+                    correct_questions_text = f"Richtig beantwortete Fragen ({len(correct_questions)}): Gut gemacht!"
+                
+                # Load feedback prompt from Langfuse
+                try:
+                    feedback_prompt_text = get_tutor_prompt(
+                        "tutor-agent/quiz-feedback-de",
+                        topic_name=topic_name,
+                        correct_count=result.correct_count,
+                        total_questions=result.total_questions,
+                        score_percent=f"{(result.score * 100):.0f}",
+                        wrong_questions_text=wrong_questions_text,
+                        correct_questions_text=correct_questions_text
+                    )
+                except Exception as prompt_error:
+                    logger.warning(f"Failed to load feedback prompt from Langfuse: {prompt_error}, using fallback")
+                    # Fallback prompt
+                    feedback_prompt_text = f"""Der Student hat gerade ein Quiz zum Thema "{topic_name}" abgeschlossen.
+
+Ergebnis: {result.correct_count} von {result.total_questions} Fragen richtig beantwortet ({(result.score * 100):.0f}%)
+
+{wrong_questions_text}
+
+{correct_questions_text}
+
+Gib dem Studenten konstruktives Feedback:
+1. Erkenne die Leistung an (auch bei niedrigem Score)
+2. Erkläre die falsch beantworteten Fragen kurz und verständlich
+3. Gib Tipps, wie der Student diese Konzepte besser verstehen kann
+4. Motiviere für die nächsten Schritte
+5. Halte das Feedback prägnant (3-5 Sätze)"""
+                
+                # Initialize Tutor Agent and generate feedback
+                # Use LLM with explicit run_name for Langfuse tracking
+                llm = get_gemini_model().with_config({
+                    "run_name": "tutor-agent/quiz-feedback-generation"
+                })
+                agent = TutorAgent(llm=llm, checkpointer=_checkpointer)
+                
+                # Set state for agent (material_id, user_id)
+                agent_state = {
+                    "messages": [HumanMessage(content=feedback_prompt_text)],
+                    "material_id": course_material_id,
+                    "user_id": request.user_id,
+                    "current_page": None  # Not needed for feedback
+                }
+                
+                # Prepare config with Langfuse metadata for feedback generation
+                from app.services.observability import create_callback_handler
+                callback_handler = create_callback_handler()
+                
+                agent_config = {
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "user_id": request.user_id
+                    }
+                }
+                
+                if callback_handler:
+                    agent_config["callbacks"] = [callback_handler]
+                    agent_config["metadata"] = {
+                        "langfuse_user_id": request.user_id,
+                        "langfuse_session_id": course_material_id,
+                        "operation": "quiz_feedback_generation",
+                        "quiz_id": request.quiz_id,
+                        "topic_name": topic_name,
+                        "score": result.score,
+                        "correct_count": result.correct_count,
+                        "total_questions": result.total_questions,
+                        "score_percent": f"{(result.score * 100):.0f}",
+                        "agent_name": "TutorAgent",
+                        "run_name": "tutor-agent/quiz-feedback-generation"
+                    }
+                    logger.info(
+                        f"🟡 Langfuse: Generating tutor feedback for quiz {request.quiz_id} "
+                        f"(run_name: tutor-agent/quiz-feedback-generation) "
+                        f"with metadata: user_id={request.user_id}, session_id={course_material_id}, "
+                        f"score={result.score:.2%}, topic={topic_name}"
+                    )
+                
+                # Run agent to generate feedback with Langfuse tracing
+                langfuse_client = get_langfuse_client()
+                graph_span_ctx = None
+                graph_span = None
+                if langfuse_client and settings.LANGFUSE_ENABLED:
+                    try:
+                        graph_span_ctx = langfuse_client.start_as_current_observation(
+                            as_type="span",
+                            name="tutor-agent/graph-execution-quiz-feedback",
+                            input={
+                                "user_id": request.user_id,
+                                "quiz_id": request.quiz_id,
+                                "course_material_id": course_material_id,
+                                "score": result.score
+                            }
+                        )
+                        graph_span = graph_span_ctx.__enter__()
+                        logger.info(f"🟡 Langfuse: Started graph execution span 'tutor-agent/graph-execution-quiz-feedback'")
+                    except Exception as e:
+                        logger.warning(f"🔴 Langfuse: Failed to start graph execution span: {e}")
+                        graph_span_ctx = None
+                        graph_span = None
+                
+                try:
+                    agent_result = agent.graph.invoke(agent_state, config=agent_config)
+                    
+                    if callback_handler:
+                        logger.info(
+                            f"🟢 Langfuse: Tutor feedback generation completed "
+                            f"(run_name: tutor-agent/quiz-feedback-generation) - "
+                            f"data tracked by CallbackHandler"
+                        )
+                    
+                    # Update graph execution span with success
+                    if graph_span:
+                        try:
+                            graph_span.update(output={"status": "completed"})
+                            logger.info("🟢 Langfuse: Graph execution span updated with success")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
+                except Exception as e:
+                    # Update graph execution span with error
+                    if graph_span:
+                        try:
+                            graph_span.update(output={"status": "error", "error": str(e)})
+                            logger.warning("🔴 Langfuse: Graph execution span updated with error")
+                        except Exception:
+                            pass
+                    raise
+                finally:
+                    # Close graph execution span
+                    if graph_span_ctx:
+                        try:
+                            exc_info = sys.exc_info()
+                            graph_span_ctx.__exit__(*exc_info)
+                            logger.info("🟢 Langfuse: Graph execution span closed")
+                        except Exception as e:
+                            logger.warning(f"🔴 Langfuse: Error closing graph execution span: {e}")
+                
+                # Extract feedback from agent response
+                feedback_messages = agent_result.get("messages", [])
+                if feedback_messages:
+                    last_message = feedback_messages[-1]
+                    if hasattr(last_message, "content"):
+                        tutor_feedback = last_message.content
+                        # Add feedback to result - use model_copy to preserve all fields
+                        result = result.model_copy(update={"tutor_feedback": tutor_feedback})
+                        
+                        logger.info(f"Tutor feedback generated for quiz {request.quiz_id}")
+                else:
+                    logger.warning(f"No feedback generated for quiz {request.quiz_id}")
+        
+        except Exception as e:
+            # Don't fail quiz submission if feedback generation fails
+            logger.error(f"Failed to generate tutor feedback: {str(e)}", exc_info=True)
+            # Continue without feedback
+        
+        return result
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error submitting quiz: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to submit quiz: {str(e)}"
+        )
+
+
+@router.get("/quiz/{quiz_id}", response_model=QuizResponse, status_code=200)
+async def get_quiz_endpoint(
+    quiz_id: str = Path(..., description="Quiz ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> QuizResponse:
+    """
+    Get quiz data by ID.
+    
+    Args:
+        quiz_id: Quiz ID (UUID)
+        user_id: User ID for authorization (UUID)
+        
+    Returns:
+        QuizResponse with full quiz data
+        
+    Raises:
+        HTTPException: If quiz not found or access denied
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Get quiz
+        quiz_record = get_quiz(quiz_id, user_id)
+        if not quiz_record:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Quiz not found: {quiz_id}"
+            )
+        
+        # Parse quiz_data from JSONB
+        quiz_data_dict = quiz_record["quiz_data"]
+        from app.models.schemas import QuizData
+        quiz_data = QuizData(**quiz_data_dict)
+        
+        return QuizResponse(
+            id=quiz_record["id"],
+            course_material_id=quiz_record["course_material_id"],
+            user_id=quiz_record["user_id"],
+            topic_name=quiz_record["topic_name"],
+            start_page=quiz_record["start_page"],
+            end_page=quiz_record["end_page"],
+            quiz_data=quiz_data,
+            created_at=quiz_record["created_at"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting quiz: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get quiz: {str(e)}"
         )

@@ -124,6 +124,11 @@ export interface ChatMessage {
   content: string
   timestamp: string
   toolCalls?: ToolCall[]
+  quiz?: {
+    quiz_id: string
+    topic: string
+    questions: QuizQuestion[]
+  }
 }
 
 export interface PageAnalysisData {
@@ -131,4 +136,82 @@ export interface PageAnalysisData {
   key_terms: string[]
   exam_questions: string[]
   diagram_description?: string
+}
+
+// Quiz-related types
+
+export interface QuizQuestion {
+  id: string
+  question: string
+  options: Record<'A' | 'B' | 'C' | 'D', string>
+  correct_answer: 'A' | 'B' | 'C' | 'D'
+  difficulty: 'easy' | 'medium' | 'hard'
+  explanation: string
+}
+
+export interface QuizToolResponse {
+  quiz_id: string
+  quiz_data: QuizData
+  topic: string
+  question_count: number
+  start_page: number
+  end_page: number
+}
+
+export enum QuizState {
+  PENDING = 'pending',
+  CREATING = 'creating',
+  READY = 'ready',
+  COMPLETED = 'completed',
+  ERROR = 'error'
+}
+
+export type ToolResponseEvent = 
+  | { type: 'tool_call'; tool_calls: ToolCall[]; message_id: string }
+  | { type: 'tool_response'; tool_call_id: string; result: string; message_id: string }
+  | { type: 'delta'; role: 'assistant'; delta: string; content: string }
+  | { type: 'error'; error: string }
+
+export interface QuizData {
+  topic: string
+  questions: QuizQuestion[]
+  metadata?: {
+    easy_count?: number
+    medium_count?: number
+    hard_count?: number
+  }
+}
+
+export interface Quiz {
+  id: string
+  course_material_id: string
+  user_id: string
+  topic_name: string
+  start_page: number
+  end_page: number
+  quiz_data: QuizData
+  created_at: string
+}
+
+export interface QuizAnswer {
+  question_id: string
+  answer: 'A' | 'B' | 'C' | 'D'
+}
+
+export interface QuestionResult {
+  question_id: string
+  user_answer: 'A' | 'B' | 'C' | 'D'
+  correct_answer: 'A' | 'B' | 'C' | 'D'
+  correct: boolean
+  explanation?: string | null
+}
+
+export interface QuizResult {
+  quiz_id: string
+  score: number // 0.0 to 1.0
+  correct_count: number
+  total_questions: number
+  question_results: QuestionResult[]
+  completed_at: string
+  tutor_feedback?: string | null
 }

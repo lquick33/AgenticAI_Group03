@@ -1,13 +1,13 @@
 "use client"
 
-import { useMemo } from "react"
 import { cn } from "@/lib/utils"
 import ReactMarkdown from "react-markdown"
+import remarkMath from "remark-math"
+import rehypeKatex from "rehype-katex"
 import { User } from "lucide-react"
 import { Loader } from "@/components/ui/loader"
 import { Tool } from "@/components/ui/tool"
-import { MathRenderer } from "@/components/ui/math-renderer"
-import { parseMathExpressions } from "@/lib/math-parser"
+import { QuizComponent } from "./quiz-component"
 import type { ChatMessage as ChatMessageType, ToolCall } from "@/types"
 
 type ChatRole = "user" | "assistant"
@@ -19,21 +19,43 @@ interface ChatMessageProps {
   isStreaming?: boolean
   toolCalls?: ToolCall[]
   showTools?: boolean
+  quiz?: {
+    quiz_id: string
+    topic: string
+    questions: Array<{
+      id: string
+      question: string
+      options: Record<'A' | 'B' | 'C' | 'D', string>
+      correct_answer: 'A' | 'B' | 'C' | 'D'
+      difficulty: 'easy' | 'medium' | 'hard'
+      explanation: string
+    }>
+  }
+  onQuizComplete?: (answers: Record<string, 'A' | 'B' | 'C' | 'D'>) => void
+  isQuizSubmitting?: boolean
 }
 
-export function ChatMessage({ id, role, content, isStreaming = false, toolCalls, showTools = false }: ChatMessageProps) {
-  // Show typing indicator for assistant messages with empty content or streaming state
-  const showTypingIndicator = role === "assistant" && (!content || content.trim() === "" || isStreaming)
+export function ChatMessage({ 
+  id, 
+  role, 
+  content, 
+  isStreaming = false, 
+  toolCalls, 
+  showTools = false,
+  quiz,
+  onQuizComplete,
+  isQuizSubmitting = false
+}: ChatMessageProps) {
+  // Ensure content is always a string
+  const contentString = typeof content === 'string' ? content : (content?.toString() || '')
   
-  if (role === "user" && !content) return null
+  // Show typing indicator ONLY if there's no content yet (even during streaming, show content if available)
+  const showTypingIndicator = role === "assistant" && (!contentString || contentString.trim() === "") && isStreaming
+  
+  if (role === "user" && !contentString) return null
 
   const hasTools = showTools && toolCalls && toolCalls.length > 0
-
-  // Parse content to extract math expressions
-  const parsedSegments = useMemo(() => {
-    if (!content) return []
-    return parseMathExpressions(content)
-  }, [content])
+  const hasQuiz = role === "assistant" && quiz && quiz.questions && quiz.questions.length > 0
 
   return (
     <div
@@ -64,9 +86,23 @@ export function ChatMessage({ id, role, content, isStreaming = false, toolCalls,
             ))}
           </div>
         )}
+        
+        {/* Quiz Component - Render below message content if present */}
+        {hasQuiz && (
+          <div className="mb-4">
+            <QuizComponent
+              quizId={quiz!.quiz_id}
+              topic={quiz!.topic}
+              questions={quiz!.questions}
+              onComplete={onQuizComplete || (() => {})}
+              isSubmitting={isQuizSubmitting}
+            />
+          </div>
+        )}
+        
         <div
           className={cn(
-            "rounded-2xl px-4 py-3",
+            "rounded-2xl px-5 py-4",
             role === "assistant"
               ? "bg-black text-white"
               : "bg-gray-100 text-gray-900"
@@ -83,218 +119,87 @@ export function ChatMessage({ id, role, content, isStreaming = false, toolCalls,
               </div>
             </div>
           ) : (
-            <div className="text-sm leading-relaxed prose prose-sm max-w-none">
-              {parsedSegments.length > 0 ? (
-                parsedSegments.map((segment, index) => {
-                  if (segment.type === 'text') {
-                    return (
-                      <ReactMarkdown
-                        key={index}
-                        components={{
-                          p: ({ children }) => (
-                            <p className="mb-2 last:mb-0">{children}</p>
-                          ),
-                          strong: ({ children }) => (
-                            <strong
-                              className={cn(
-                                "font-semibold",
-                                role === "assistant" ? "text-white" : "text-gray-900"
-                              )}
-                            >
-                              {children}
-                            </strong>
-                          ),
-                          em: ({ children }) => (
-                            <em
-                              className={cn(
-                                "italic",
-                                role === "assistant" ? "text-white" : ""
-                              )}
-                            >
-                              {children}
-                            </em>
-                          ),
-                          ul: ({ children }) => (
-                            <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>
-                          ),
-                          ol: ({ children }) => (
-                            <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>
-                          ),
-                          li: ({ children }) => (
-                            <li className="text-sm">{children}</li>
-                          ),
-                          code: ({ children, className }) => {
-                            const isInline = !className?.includes("language-")
-                            return isInline ? (
-                              <code
-                                className={cn(
-                                  "px-1 py-0.5 rounded text-xs font-mono",
-                                  role === "assistant"
-                                    ? "bg-white/20 text-white"
-                                    : "bg-gray-200 text-gray-900"
-                                )}
-                              >
-                                {children}
-                              </code>
-                            ) : (
-                              <code className={className}>{children}</code>
-                            )
-                          },
-                          pre: ({ children }) => (
-                            <pre
-                              className={cn(
-                                "p-2 rounded text-xs font-mono overflow-x-auto",
-                                role === "assistant"
-                                  ? "bg-white/20 text-white"
-                                  : "bg-gray-200 text-gray-900"
-                              )}
-                            >
-                              {children}
-                            </pre>
-                          ),
-                          h1: ({ children }) => (
-                            <h1 className="text-lg font-semibold mb-2">{children}</h1>
-                          ),
-                          h2: ({ children }) => (
-                            <h2 className="text-base font-semibold mb-2">{children}</h2>
-                          ),
-                          h3: ({ children }) => (
-                            <h3 className="text-sm font-semibold mb-2">{children}</h3>
-                          ),
-                          blockquote: ({ children }) => (
-                            <blockquote
-                              className={cn(
-                                "border-l-4 pl-3 italic",
-                                role === "assistant"
-                                  ? "border-white/30 text-white/90"
-                                  : "border-gray-300 text-gray-700"
-                              )}
-                            >
-                              {children}
-                            </blockquote>
-                          ),
-                        }}
-                      >
-                        {segment.content}
-                      </ReactMarkdown>
-                    )
-                  } else if (segment.type === 'inline-math') {
-                    return (
-                      <span key={index} className="inline-block">
-                        <MathRenderer 
-                          formula={segment.content} 
-                          inline={true}
-                          className={cn(
-                            role === "assistant" ? "text-white" : "text-gray-900"
-                          )}
-                        />
-                      </span>
-                    )
-                  } else if (segment.type === 'display-math') {
-                    return (
-                      <div key={index} className="my-4 flex justify-center">
-                        <MathRenderer 
-                          formula={segment.content} 
-                          inline={false}
-                          className={cn(
-                            role === "assistant" ? "text-white" : "text-gray-900"
-                          )}
-                        />
-                      </div>
-                    )
-                  }
-                  return null
-                })
-              ) : (
-                <ReactMarkdown
-                  components={{
-                    p: ({ children }) => (
-                      <p className="mb-2 last:mb-0">{children}</p>
-                    ),
-                    strong: ({ children }) => (
-                      <strong
+            <div className="markdown-gemini max-w-none">
+              <ReactMarkdown
+                remarkPlugins={[remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={{
+                  p: ({ children }) => (
+                    <p>{children}</p>
+                  ),
+                  strong: ({ children }) => (
+                    <strong className="font-semibold">
+                      {children}
+                    </strong>
+                  ),
+                  em: ({ children }) => (
+                    <em className="italic">
+                      {children}
+                    </em>
+                  ),
+                  ul: ({ children }) => (
+                    <ul className="list-disc list-outside space-y-2 ml-6">{children}</ul>
+                  ),
+                  ol: ({ children }) => (
+                    <ol className="list-decimal list-outside space-y-2 ml-6">{children}</ol>
+                  ),
+                  li: ({ children }) => (
+                    <li className="pl-2">{children}</li>
+                  ),
+                  code: ({ children, className }) => {
+                    const isInline = !className?.includes("language-")
+                    return isInline ? (
+                      <code
                         className={cn(
-                          "font-semibold",
-                          role === "assistant" ? "text-white" : "text-gray-900"
-                        )}
-                      >
-                        {children}
-                      </strong>
-                    ),
-                    em: ({ children }) => (
-                      <em
-                        className={cn(
-                          "italic",
-                          role === "assistant" ? "text-white" : ""
-                        )}
-                      >
-                        {children}
-                      </em>
-                    ),
-                    ul: ({ children }) => (
-                      <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>
-                    ),
-                    ol: ({ children }) => (
-                      <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>
-                    ),
-                    li: ({ children }) => (
-                      <li className="text-sm">{children}</li>
-                    ),
-                    code: ({ children, className }) => {
-                      const isInline = !className?.includes("language-")
-                      return isInline ? (
-                        <code
-                          className={cn(
-                            "px-1 py-0.5 rounded text-xs font-mono",
-                            role === "assistant"
-                              ? "bg-white/20 text-white"
-                              : "bg-gray-200 text-gray-900"
-                          )}
-                        >
-                          {children}
-                        </code>
-                      ) : (
-                        <code className={className}>{children}</code>
-                      )
-                    },
-                    pre: ({ children }) => (
-                      <pre
-                        className={cn(
-                          "p-2 rounded text-xs font-mono overflow-x-auto",
+                          "px-1 py-0.5 rounded text-xs font-mono",
                           role === "assistant"
-                            ? "bg-white/20 text-white"
+                            ? "bg-white/10 text-white"
                             : "bg-gray-200 text-gray-900"
                         )}
                       >
                         {children}
-                      </pre>
-                    ),
-                    h1: ({ children }) => (
-                      <h1 className="text-lg font-semibold mb-2">{children}</h1>
-                    ),
-                    h2: ({ children }) => (
-                      <h2 className="text-base font-semibold mb-2">{children}</h2>
-                    ),
-                    h3: ({ children }) => (
-                      <h3 className="text-sm font-semibold mb-2">{children}</h3>
-                    ),
-                    blockquote: ({ children }) => (
-                      <blockquote
-                        className={cn(
-                          "border-l-4 pl-3 italic",
-                          role === "assistant"
-                            ? "border-white/30 text-white/90"
-                            : "border-gray-300 text-gray-700"
-                        )}
-                      >
-                        {children}
-                      </blockquote>
-                    ),
-                  }}
-                >
-                  {content}
-                </ReactMarkdown>
-              )}
+                      </code>
+                    ) : (
+                      <code className={className}>{children}</code>
+                    )
+                  },
+                  pre: ({ children }) => (
+                    <pre
+                      className={cn(
+                        "p-2 rounded text-xs font-mono overflow-x-auto",
+                        role === "assistant"
+                          ? "bg-white/10 text-white"
+                          : "bg-gray-200 text-gray-900"
+                      )}
+                    >
+                      {children}
+                    </pre>
+                  ),
+                  h1: ({ children }) => (
+                    <h1 className="text-xl font-semibold">{children}</h1>
+                  ),
+                  h2: ({ children }) => (
+                    <h2 className="text-lg font-semibold">{children}</h2>
+                  ),
+                  h3: ({ children }) => (
+                    <h3 className="text-base font-semibold">{children}</h3>
+                  ),
+                  blockquote: ({ children }) => (
+                    <blockquote
+                      className={cn(
+                        "border-l-4 pl-4 italic my-0",
+                        role === "assistant"
+                          ? "border-white/30 text-white/90"
+                          : "border-gray-300 text-gray-700"
+                      )}
+                    >
+                      {children}
+                    </blockquote>
+                  ),
+                }}
+              >
+                {contentString}
+              </ReactMarkdown>
             </div>
           )}
         </div>

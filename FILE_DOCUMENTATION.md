@@ -280,43 +280,64 @@ frontend/
 
 ### `frontend/components/dashboard/upload-dialog.tsx`
 
-**Purpose**: Client-side dialog component for uploading course materials (PDF files) to existing or newly created courses.
+**Purpose**: Client-side dialog component for uploading multiple course materials (PDF files) to existing or newly created courses with drag-and-drop sorting and parallel upload support.
 
 **Key Components**:
-- **Dialog UI**: Uses shadcn/ui Dialog component for modal interface
+- **Dialog UI**: Uses shadcn/ui Dialog component for modal interface with tabs
 - **Mode Selection**: Toggle between "Select Existing" course or "Create New" course
 - **Course Selection**: Dropdown to select from existing courses (using Select component)
 - **Course Creation Form**: Form fields for creating new course (title, description, exam_date)
-- **File Upload**: File input for PDF file selection with validation
+- **Multi-File Upload**: File input with `multiple` attribute for selecting multiple PDF files
+- **Drag & Drop Sorting**: Sortable file list using `@dnd-kit` for reordering upload sequence
+- **Upload Status Tracking**: Tabs showing file selection and upload progress
+- **Progress Indicators**: Individual progress bars per file and overall progress
 - **API Integration**: 
   - Creates courses via Supabase client
-  - Uploads PDF files to backend API endpoint (`/api/upload`)
+  - Uploads PDF files sequentially to backend API endpoint (`/api/upload`) in defined order
 - **State Management**: 
   - Form state via React Hook Form
+  - File list state with upload status per file
   - Loading states during upload
-  - Error and success message display
+  - Error and success message display with toast notifications
 
 **Key Features**:
+- **Multi-File Support**: Upload up to 20 PDF files simultaneously
+- **Drag & Drop Sorting**: Reorder files by dragging to control upload sequence
+- **Sequential Uploads**: Files uploaded one-by-one in user-defined order
+- **Individual Progress**: Each file shows its own upload/processing progress
+- **Overall Progress**: Aggregate progress bar showing total completion
+- **Status Tracking**: Real-time status per file (pending, uploading, processing, completed, error)
+- **Error Handling**: Per-file error handling with retry functionality
+- **Toast Notifications**: Success/error notifications using Sonner
+- **File Validation**: 
+  - PDF type validation
+  - File size limit (50MB per file)
+  - Duplicate detection
+  - Max file count (20 files)
 - **Dual Mode**: Switch between selecting existing course or creating new one
-- **Form Validation**: Required fields validation (course selection/creation, PDF file)
-- **File Type Validation**: Only accepts PDF files
-- **Loading States**: Shows loading spinner during upload process
-- **Error Handling**: Displays error messages for failed operations
-- **Success Feedback**: Shows success message before closing dialog
-- **Auto Refresh**: Reloads page after successful upload to show new course/material
+- **Form Validation**: Required fields validation (course selection/creation, at least one PDF file)
+- **Auto Refresh**: Reloads page after all uploads complete
 
 **Key Functions**:
 - `createCourse(data: CourseFormData)`: Creates a new course in Supabase
-- `uploadFile(courseId: string, file: File)`: Uploads PDF to backend API
-- `onSubmit(data: CourseFormData)`: Handles form submission and orchestrates course creation + file upload
+- `uploadSingleFile(fileItem: FileUploadItem, courseId: string)`: Uploads single PDF to backend API with progress tracking
+- `onSubmit(data: CourseFormData)`: Handles form submission, creates course (if new), and uploads all files sequentially
+- `handleFileChange(e)`: Validates and adds multiple files to the upload queue
+- `handleReorderFiles(files)`: Updates file order after drag-and-drop
+- `handleRemoveFile(id)`: Removes file from upload queue
+- `handleRetryUpload(id)`: Retries failed upload
+- `getOverallProgress()`: Calculates aggregate progress percentage
 
 **Dependencies**: 
 - `react-hook-form` - Form state management
-- `@/components/ui/dialog` - Dialog modal component
+- `@dnd-kit/core`, `@dnd-kit/sortable`, `@dnd-kit/utilities` - Drag and drop functionality
+- `@/components/ui/dialog`, `@/components/ui/tabs` - Dialog and tabs UI components
 - `@/components/ui/select` - Course selection dropdown
-- `@/components/ui/button`, `@/components/ui/input`, `@/components/ui/label` - UI components
+- `@/components/ui/button`, `@/components/ui/input`, `@/components/ui/label`, `@/components/ui/progress` - UI components
+- `@/components/courses/multi-file-upload-list` - Sortable file list component
 - `@/lib/supabase/client` - Supabase client for course creation
-- `lucide-react` - Icons (Upload, Loader2, Plus)
+- `sonner` - Toast notifications
+- `lucide-react` - Icons (Upload, Loader2, Plus, Trash2, etc.)
 
 **Environment Variables**:
 - `NEXT_PUBLIC_API_URL` - Backend API URL (defaults to `http://localhost:8000` if not set)
@@ -332,18 +353,21 @@ import { UploadDialog } from '@/components/dashboard/upload-dialog'
 - `courses: Course[]` - Array of existing courses for selection dropdown
 
 **User Flow**:
-1. User clicks "Upload Material" button (triggers dialog)
+1. User clicks "Materialien hochladen" button (triggers dialog)
 2. User chooses to select existing course or create new one
 3. If creating new: Fill in course form (title, description, exam_date)
-4. Select PDF file to upload
-5. Click "Upload" button
-6. System creates course (if new) and uploads PDF to backend
-7. Backend processes PDF in background (multimodal analysis)
-8. Dialog shows success message and closes
-9. Page refreshes to show new course/material
+4. Select multiple PDF files (or drag and drop)
+5. Optionally reorder files by dragging
+6. Click "X Dateien hochladen" button
+7. System creates course (if new) and uploads PDFs sequentially in order
+8. Progress shown per file and overall
+9. Toast notifications for each successful/failed upload
+10. Dialog shows completion status
+11. Page refreshes after all uploads complete
 
 **Related Files**: 
 - `frontend/app/(dashboard)/dashboard/page.tsx` - Dashboard page that uses this component
+- `frontend/components/courses/multi-file-upload-list.tsx` - Sortable file list component
 - `backend/app/api/endpoints.py` - Backend upload endpoint that receives the file
 - `frontend/types/index.ts` - Course type definition
 
@@ -824,6 +848,8 @@ uvicorn app.main:app --reload
 
 **Key Components**:
 - `analyze_pdf_page(image_bytes: bytes) -> SlideAnalysis`: Main analysis function that processes image bytes
+- `generate_material_summary(page_data: Sequence[dict]) -> str`: Generate global topics summary from per-page analyses
+- `generate_material_filename(page_one_summary: str) -> str`: Generate professional filename based on page 1 summary
 - `get_gemini_model(api_key: str) -> ChatGoogleGenerativeAI`: Model initialization with fallback logic
 - `image_bytes_to_base64(image_bytes: bytes, format: str) -> str`: Image encoding helper
 
@@ -881,7 +907,9 @@ analysis = analyze_pdf_page(image_bytes)
    - Convert PIL Image to bytes
    - Call `analyze_pdf_page()` (async)
    - Save result to `page_analyses` table
-6. Update final status based on results
+6. Generate global material summary (if pages analyzed successfully)
+7. Update final status based on results
+8. Generate and update professional filename based on page 1 summary (if completed successfully)
 
 **Error Handling**:
 - Failed page conversions: Log error, continue with other pages
@@ -957,6 +985,7 @@ background_tasks.add_task(
 - `create_course_material(...) -> dict`: Create course_material record in database
 - `update_processing_status(material_id, status, error_message) -> None`: Update processing status
 - `save_page_analysis(course_material_id, page_number, analysis, user_id) -> dict`: Save analysis to `page_analyses` table
+- `update_course_material_filename(material_id, filename) -> None`: Update the display filename in `course_materials` table
 
 **Key Features**:
 - Supabase client singleton pattern
@@ -1041,6 +1070,12 @@ background_tasks.add_task(
 - `app.services.analyzer` - Analysis service
 - `app.services.storage` - Storage service
 - `app.models.schemas` - Response models
+
+**Additional Endpoints**:
+- `PUT /api/materials/{material_id}`: Update course material data (currently supports filename updates)
+  - Validates material ownership
+  - Request body: `{ "file_name": string }`
+  - Returns: `MaterialResponse` with updated material data
 
 **Usage**: Endpoint accessible at `POST /api/upload` when FastAPI app is running
 
@@ -1172,38 +1207,157 @@ import { CoursesTable } from '@/components/courses/courses-table'
 
 ---
 
-### `frontend/components/courses/upload-section.tsx`
+### `frontend/components/courses/multi-file-upload-list.tsx`
 
-**Purpose**: Component for uploading PDF files to a course using the `/api/upload` endpoint.
+**Purpose**: Reusable sortable file list component for multi-file upload interfaces with drag-and-drop reordering, progress tracking, and status indicators.
 
 **Key Components**:
-- File input with drag-and-drop styling
-- PDF file validation
+- **Sortable List**: Uses `@dnd-kit` for drag-and-drop reordering
+- **File Items**: Individual file cards showing:
+  - File name and size
+  - Upload status (pending, uploading, processing, completed, error)
+  - Progress bar (for uploading/processing files)
+  - Status badge with color coding
+  - Status icon (upload, spinner, checkmark, error)
+  - Drag handle for reordering
+  - Remove button
+  - Retry button (for failed uploads)
+- **Progress Tracking**: Individual progress bars per file
+- **Error Display**: Error messages shown per file
+
+**Key Features**:
+- **Drag & Drop Sorting**: Reorder files by dragging the grip handle
+- **Visual Feedback**: Opacity and shadow changes during drag
+- **Status Indicators**: 
+  - Color-coded badges (gray=pending, blue=uploading, yellow=processing, green=completed, red=error)
+  - Icons matching status
+  - Progress bars for active uploads
+- **File Information**: Displays file name (truncated if long) and formatted file size
+- **Error Handling**: Shows error messages and retry button for failed uploads
+- **Accessibility**: Keyboard navigation support via `@dnd-kit` sensors
+- **Responsive**: Handles long file names with truncation
+
+**Key Functions**:
+- `SortableFileItem`: Individual file item component with drag handle
+- `MultiFileUploadList`: Main component managing the sortable list
+- `handleDragEnd`: Updates file order after drag operation
+- `formatFileSize`: Formats bytes to human-readable size (KB, MB, GB)
+- `getStatusBadge`: Returns appropriate badge component for status
+- `getStatusIcon`: Returns appropriate icon for status
+
+**Props**:
+- `files: FileUploadItem[]` - Array of file upload items with status and progress
+- `onReorder: (files: FileUploadItem[]) => void` - Callback when files are reordered
+- `onRemove: (id: string) => void` - Callback to remove a file
+- `onRetry?: (id: string) => void` - Optional callback to retry failed upload
+- `disabled?: boolean` - Disables drag and actions when true
+
+**FileUploadItem Interface**:
+```typescript
+interface FileUploadItem {
+  id: string              // Unique identifier
+  file: File              // File object
+  status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error'
+  progress?: number       // Progress percentage (0-100)
+  errorMessage?: string   // Error message if status is 'error'
+  materialId?: string     // Course material ID after successful upload
+  order: number            // Upload order (1, 2, 3, ...)
+}
+```
+
+**Dependencies**: 
+- `@dnd-kit/core` - Drag and drop context
+- `@dnd-kit/sortable` - Sortable list functionality
+- `@dnd-kit/utilities` - CSS transform utilities
+- `@/components/ui/button` - Action buttons
+- `@/components/ui/progress` - Progress bars
+- `@/components/ui/badge` - Status badges
+- `lucide-react` - Icons (GripVertical, X, AlertCircle, CheckCircle2, Loader2, Upload)
+- `@/lib/utils` - Utility functions (cn for className merging)
+
+**Usage**: 
+```tsx
+import { MultiFileUploadList, type FileUploadItem } from '@/components/courses/multi-file-upload-list'
+
+const [files, setFiles] = useState<FileUploadItem[]>([])
+
+<MultiFileUploadList
+  files={files}
+  onReorder={setFiles}
+  onRemove={(id) => setFiles(files.filter(f => f.id !== id))}
+  onRetry={handleRetry}
+  disabled={isUploading}
+/>
+```
+
+**Related Files**: 
+- `frontend/components/dashboard/upload-dialog.tsx` - Uses this component
+- `frontend/components/courses/upload-section.tsx` - Uses this component
+
+---
+
+### `frontend/components/courses/upload-section.tsx`
+
+**Purpose**: Component for uploading multiple PDF files to a course using the `/api/upload` endpoint with drag-and-drop sorting and parallel upload support.
+
+**Key Components**:
+- File input with drag-and-drop styling and multiple file support
+- PDF file validation (type, size, duplicates)
+- Sortable file list with drag-and-drop reordering
 - Upload button with loading state
-- Error and success message display
+- Individual and overall progress indicators
+- Error and success message display with toast notifications
 - Automatic page refresh after successful upload
 
 **Key Features**:
+- **Multi-File Support**: Upload up to 20 PDF files simultaneously
+- **Drag & Drop Sorting**: Reorder files by dragging to control upload sequence
+- **Sequential Uploads**: Files uploaded one-by-one in user-defined order
+- **Individual Progress**: Each file shows its own upload/processing progress
+- **Overall Progress**: Aggregate progress bar showing total completion
+- **Status Tracking**: Real-time status per file (pending, uploading, processing, completed, error)
+- **Error Handling**: Per-file error handling with retry functionality
+- **Toast Notifications**: Success/error notifications using Sonner
+- **File Validation**: 
+  - PDF type validation
+  - File size limit (50MB per file)
+  - Duplicate detection
+  - Max file count (20 files)
 - Client Component ("use client")
-- File type validation (PDF only)
 - FormData construction for API request
 - Integration with `/api/upload` POST endpoint
 - Loading states during upload
-- Error handling with user-friendly messages
 - Automatic refresh after successful upload
 
 **Upload Flow**:
-1. User selects PDF file
-2. File validation (PDF type check)
-3. FormData created with `file`, `user_id`, `course_id`
-4. POST request to `${NEXT_PUBLIC_API_URL}/api/upload`
-5. Success message displayed
-6. Page refresh to show new material
+1. User selects multiple PDF files (or drags and drops)
+2. Files validated (PDF type, size, duplicates)
+3. User can reorder files by dragging
+4. User clicks "X Dateien hochladen" button
+5. Files uploaded sequentially in defined order
+6. FormData created with `file`, `user_id`, `course_id` for each file
+7. POST requests to `${NEXT_PUBLIC_API_URL}/api/upload` (one per file)
+8. Progress tracked per file and overall
+9. Toast notifications for each successful/failed upload
+10. Page refresh to show new materials
+
+**Key Functions**:
+- `validateFile(file: File)`: Validates PDF type and size
+- `handleFileChange(e)`: Validates and adds multiple files to the upload queue
+- `uploadSingleFile(fileItem: FileUploadItem)`: Uploads single PDF with progress tracking
+- `handleUpload()`: Orchestrates sequential upload of all files
+- `handleReorderFiles(files)`: Updates file order after drag-and-drop
+- `handleRemoveFile(id)`: Removes file from upload queue
+- `handleRetryUpload(id)`: Retries failed upload
+- `getOverallProgress()`: Calculates aggregate progress percentage
 
 **Dependencies**: 
+- `@dnd-kit/core`, `@dnd-kit/sortable`, `@dnd-kit/utilities` - Drag and drop functionality
+- `@/components/courses/multi-file-upload-list` - Sortable file list component
+- `@/components/ui/button`, `@/components/ui/progress`, `@/components/ui/label` - UI components
 - `@/lib/supabase/client` - Supabase client for user authentication
-- `@/components/ui/button` - Upload button
-- `lucide-react` - Icons (Upload, Loader2)
+- `sonner` - Toast notifications
+- `lucide-react` - Icons (Upload, Loader2, Trash2)
 - `next/navigation` - Router for refresh
 - Environment variable: `NEXT_PUBLIC_API_URL`
 
@@ -1211,12 +1365,82 @@ import { CoursesTable } from '@/components/courses/courses-table'
 ```tsx
 import { UploadSection } from '@/components/courses/upload-section'
 
-<UploadSection courseId={courseId} />
+<UploadSection courseId={courseId} userId={userId} />
 ```
+
+**Props**:
+- `courseId: string` - Course ID to upload files to
+- `userId: string` - User ID for authentication
 
 **Related Files**: 
 - `frontend/app/(dashboard)/dashboard/courses/[id]/page.tsx` - Uses this component
+- `frontend/components/courses/multi-file-upload-list.tsx` - Sortable file list component
 - `backend/app/api/endpoints.py` - Upload API endpoint
+
+---
+
+### `frontend/components/courses/editable-filename.tsx`
+
+**Purpose**: Inline editable filename component for course materials with dezent UI design.
+
+**Key Components**:
+- `EditableFilename` component with double-click to edit functionality
+- Inline editing mode with minimal UI (no visible border, only cursor)
+- Checkmark icon for saving (appears on hover)
+- Keyboard shortcuts: Enter to save, Escape to cancel
+- Optimistic updates with error rollback
+
+**Key Features**:
+- **Double-click activation**: Double-click on filename to enter edit mode
+- **Dezent UI**: Input without visible border, only cursor visible
+- **Auto-focus and select**: Automatically focuses and selects all text when entering edit mode
+- **Checkmark icon**: Small checkmark icon (3px) appears on hover for saving
+- **Keyboard shortcuts**: 
+  - Enter: Save changes
+  - Escape: Cancel editing
+- **Loading state**: Shows spinner while saving
+- **Error handling**: Toast notifications for success/error, reverts to original on error
+- **Optimistic updates**: Updates parent component immediately on success
+
+**Props**:
+- `materialId: string` - Course material ID
+- `userId: string` - User ID for authorization
+- `initialFilename: string` - Current filename
+- `onUpdate?: (newFilename: string) => void` - Callback when filename is updated
+
+**Dependencies**: 
+- `@/lib/api/materials` - API client for updating filename
+- `sonner` - Toast notifications
+- `lucide-react` - Icons (Check, Loader2)
+
+**Usage**: Used in `course-materials-list.tsx` for each material row
+
+**Related Files**: 
+- `frontend/lib/api/materials.ts` - API client function
+- `frontend/components/courses/course-materials-list.tsx` - Parent component
+
+---
+
+### `frontend/lib/api/materials.ts`
+
+**Purpose**: API client functions for course materials operations.
+
+**Key Components**:
+- `updateMaterialFilename(materialId, filename, userId)`: Updates the filename of a course material
+
+**Key Features**:
+- RESTful API communication with backend
+- Error handling with descriptive messages
+- Type-safe function signatures
+
+**Dependencies**: 
+- `process.env.NEXT_PUBLIC_API_URL` - Backend API URL
+
+**Usage**: Imported by `EditableFilename` component
+
+**Related Files**: 
+- `backend/app/api/endpoints.py` - PUT /api/materials/{material_id} endpoint
+- `frontend/components/courses/editable-filename.tsx` - Component using this API
 
 ---
 
@@ -1225,15 +1449,24 @@ import { UploadSection } from '@/components/courses/upload-section'
 **Purpose**: Table component displaying all uploaded course materials with their status.
 
 **Key Components**:
-- Displays material file name, page count, processing status, upload date
+- Displays material file name (editable via double-click), page count, processing status, upload date
 - Status badges (uploading, processing, completed, error)
 - Empty state when no materials exist
+- EditableFilename component for inline filename editing
+- Local state management for optimistic updates
 
 **Key Features**:
 - Client Component ("use client")
+- **Inline filename editing**: Double-click on filename to edit (via EditableFilename component)
+- **Flashcard generation with state persistence**: 
+  - Checks for active flashcard generation tasks on mount
+  - Restores task state (progress, task_id) after page reload
+  - Automatically resumes polling for active tasks
+  - Downloads completed flashcards automatically if task finished while page was closed
 - Status badge variants based on `processing_status`
 - Date formatting for German locale
 - Responsive table layout
+- Optimistic UI updates when filename is changed
 
 **Table Columns**:
 - Dateiname (File name)
@@ -1250,6 +1483,7 @@ import { UploadSection } from '@/components/courses/upload-section'
 **Dependencies**: 
 - `@/components/ui/table` - Table components
 - `@/components/ui/badge` - Status badges
+- `@/components/courses/editable-filename` - Editable filename component
 - `@/types` - CourseMaterial type
 
 **Usage**: 
@@ -1770,6 +2004,12 @@ def get_course_material_summary(
 - Creates TutorAgent instance
 - Thread ID: `material_id` (continuous conversation)
 - Streams agent response as SSE
+- **Quiz State Detection**: Before sending init messages, checks if a quiz is currently being created:
+  - Uses `has_pending_quiz_creation()` helper function to detect pending `create_quiz` tool calls
+  - If a quiz is being created, suppresses the init message and only updates state silently
+  - Prevents premature init messages like "Ah super, wir sind auf Folie 5 angekommen" during quiz creation
+  - State (current_page) is still updated, but no agent response is generated
+  - The quiz creation will complete and send its own response
 
 **`POST /api/chat/message`**:
 - Body: `ChatMessageRequest` with `material_id`, `message`, `user_id`
@@ -2232,6 +2472,36 @@ const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default:
 **Related Files**: 
 - `frontend/components/study/study-reader.tsx` - Main study component
 - `frontend/app/(dashboard)/dashboard/courses/[id]/page.tsx` - Course detail page (navigation source)
+- `frontend/components/study/no-page-scroll.tsx` - Prevents page scrolling on StudyReader page
+
+---
+
+### `frontend/components/study/no-page-scroll.tsx`
+
+**Purpose**: Client component that prevents page-level scrolling by adding a CSS class to html/body elements. Used only on the StudyReader page to prevent unwanted page scrolling while allowing internal component scrolling.
+
+**Key Features**:
+- Adds `no-page-scroll` class to `document.documentElement` (html) and `document.body` on mount
+- Removes the class on unmount to restore normal scrolling behavior
+- Uses `useEffect` hook for lifecycle management
+- Returns `null` (no visual output)
+
+**How it works**:
+1. On component mount, adds `no-page-scroll` class to html and body
+2. CSS rule `html.no-page-scroll, body.no-page-scroll` applies `height: 100%` and `overflow: hidden`
+3. On component unmount, removes the class to restore normal scrolling
+
+**Usage**: 
+- Import and use as a component on pages where page-level scrolling should be disabled
+- Currently used only on the StudyReader page (`/dashboard/courses/[id]/study/[materialId]`)
+
+**Dependencies**: 
+- React hooks (`useEffect`)
+- CSS class defined in `globals.css`
+
+**Related Files**: 
+- `frontend/app/(dashboard)/dashboard/courses/[id]/study/[materialId]/page.tsx` - Uses this component
+- `frontend/app/globals.css` - Defines `.no-page-scroll` CSS class
 
 ---
 
@@ -2404,15 +2674,27 @@ from app.services.session_storage import (
 - JSON parameter display with syntax highlighting
 - Status badges with icons (pending, running, completed, error)
 - Dezente Integration in chat messages
+- **Timeout Management**: 1-minute timeout with visual feedback
+- **Waiting State**: Shows spinner and "Warte auf Antwort" message while waiting for response
+- **Auto-State Detection**: Automatically shows "running" state when no result is present, only shows "completed" when result is available
 
 **State Management**:
 - `isOpen`: Controls collapsible state
+- `hasTimedOut`: Tracks if 1-minute timeout has been reached
 - Tool state: `pending` | `running` | `completed` | `error`
+- **State Logic**: If no result is present, state is automatically set to "running" (waiting for response). Only shows "completed" when result is available.
+
+**Timeout Behavior**:
+- 1-minute (60 seconds) timeout timer starts when tool call is created without result
+- Shows spinner and "Warte auf Antwort" message during waiting period
+- After timeout, shows timeout message but continues waiting for response
+- Timer is cleared when result arrives
 
 **Dependencies**: 
 - `lucide-react` - Icons (WrenchIcon, CheckCircleIcon, etc.)
 - `@/components/ui/badge` - Status badges
 - `@/components/ui/collapsible` - Collapsible container
+- `@/components/ui/loader` - Spinner component for waiting state
 - `@/lib/utils` - Utility functions
 
 **Usage**: Displayed in ChatMessage component when `showTools` is enabled and `toolCalls` are present
@@ -2456,6 +2738,13 @@ from app.services.session_storage import (
   - Extracts tool call information (id, name, args)
   - Serializes tool calls to JSON
   - Sends tool call events via SSE stream before assistant message
+- **Quiz State Detection**: New helper function `has_pending_quiz_creation()`:
+  - Checks if a `create_quiz` tool call is currently pending (no ToolMessage response yet)
+  - Iterates backwards through message history to find AIMessage with `create_quiz` tool_calls
+  - Verifies if corresponding ToolMessage responses exist
+  - Returns `True` if quiz creation is pending, `False` otherwise
+  - Used in `/chat/initiate` to suppress init messages during quiz creation
+  - Includes comprehensive error handling and logging
 
 **Tool Event Format**:
 ```python
@@ -2781,6 +3070,14 @@ flashcards = get_flashcards_for_material(course_material_id, user_id)
   - Cancels a running task
   - Returns success status
 
+- **GET `/api/flashcards/active/{course_material_id}`**:
+  - Query parameters: `user_id` (for authorization)
+  - Returns the active (pending or running) flashcard generation task for a course material
+  - Returns `null` if no active task exists
+  - Response: `FlashcardTaskStatusResponse` or `null`
+  - **Purpose**: Allows frontend to restore task state after page reload
+  - Enables state persistence - frontend can check for active tasks on mount and resume polling
+
 **Key Features**:
 - Non-blocking background processing (no more blocking the API)
 - Real-time progress tracking (0.0 to 1.0)
@@ -2816,12 +3113,17 @@ GET /api/flashcards/download/{task_id}?user_id=...
 # Cancel if needed
 POST /api/flashcards/cancel/{task_id}?user_id=...
 → Returns: {"success": true, "message": "Task cancelled"}
+
+# Check for active task (for state restoration after page reload)
+GET /api/flashcards/active/{course_material_id}?user_id=...
+→ Returns: FlashcardTaskStatusResponse or null
 ```
 
 **Related Files**: 
 - `backend/app/services/flashcard_task_service.py` - Task service implementation
-- `frontend/lib/api/study.ts` - API client functions (needs update)
-- `frontend/components/study/congratulations-screen.tsx` - UI component (needs update)
+- `frontend/lib/api/study.ts` - API client functions including `getActiveFlashcardTask`
+- `frontend/components/courses/course-materials-list.tsx` - UI component with state restoration
+- `frontend/components/study/congratulations-screen.tsx` - UI component
 
 ---
 
@@ -2874,6 +3176,7 @@ llm.with_structured_output(FlashcardGenerationResult)
 - **FlashcardTaskService**: Singleton service managing tasks
   - `create_task()`: Creates new background task
   - `get_task()`: Retrieves task by ID
+  - `get_active_task_for_material()`: Gets active (pending/running) task for a course material
   - `cancel_task()`: Cancels running task
   - `_run_task()`: Background task execution
   - `_generate_flashcards_async()`: Async wrapper with timeouts
@@ -2963,11 +3266,16 @@ print(f"Progress: {task.progress * 100}%")
 
 **Purpose**: Extended with flashcard export API client function.
 
-**New Function**:
+**New Functions**:
 - **exportFlashcards()**: 
   - Calls `/api/flashcards/export` endpoint
   - Returns Promise<Blob> for CSV file
   - Handles errors and HTTP status codes
+- **getActiveFlashcardTask()**: 
+  - Calls `/api/flashcards/active/{course_material_id}` endpoint
+  - Returns Promise<FlashcardTaskStatus | null>
+  - Returns null if no active task exists
+  - Used for state restoration after page reload
 
 **Dependencies**: 
 - Fetch API
@@ -2982,8 +3290,9 @@ const blob = await exportFlashcards(materialId, userId)
 ```
 
 **Related Files**: 
-- `frontend/components/study/congratulations-screen.tsx` - Uses this function
-- `backend/app/api/endpoints.py` - Provides the endpoint
+- `frontend/components/study/congratulations-screen.tsx` - Uses exportFlashcards
+- `frontend/components/courses/course-materials-list.tsx` - Uses getActiveFlashcardTask for state restoration
+- `backend/app/api/endpoints.py` - Provides the endpoints
 
 ---
 
@@ -3156,147 +3465,509 @@ python backend/langfuse_to_anki_csv.py --input langfuse_export.json --output fla
 
 ## Frontend Math Rendering Files
 
-### `frontend/lib/math-parser.ts`
+### `frontend/components/study/chat-message.tsx` (KaTeX Integration)
 
-**Purpose**: Utility function to parse text content and extract mathematical expressions in the format used by the Tutor Agent. Handles both inline math `(formel)` and display math `[formel]` patterns.
-
-**Key Components**:
-- **parseMathExpressions()**: Main parsing function that:
-  - Scans text for `(formel)` and `[formel]` patterns
-  - Handles nested parentheses and brackets correctly
-  - Returns an array of segments with type (`text` | `inline-math` | `display-math`) and content
-- **findNextMatch()**: Helper function that finds matching bracket/parenthesis pairs while handling nesting
-- **MathSegment Interface**: TypeScript interface defining the structure of parsed segments
-
-**Dependencies**: 
-- TypeScript
-- No external dependencies
-
-**Usage**:
-```typescript
-import { parseMathExpressions } from '@/lib/math-parser'
-
-const segments = parseMathExpressions("Das ist (x^2 + y^2) eine Formel")
-// Returns: [
-//   { type: 'text', content: 'Das ist ' },
-//   { type: 'inline-math', content: 'x^2 + y^2' },
-//   { type: 'text', content: ' eine Formel' }
-// ]
-```
-
-**Related Files**: 
-- `frontend/components/ui/math-renderer.tsx` - Renders the parsed math expressions
-- `frontend/components/study/chat-message.tsx` - Uses the parser to display math in chat messages
-
----
-
-### `frontend/components/ui/math-renderer.tsx`
-
-**Purpose**: React component that renders mathematical expressions using MathJax. Supports both inline and display math modes with proper styling integration.
-
-**Key Components**:
-- **MathRenderer Component**: 
-  - Wraps formulas in appropriate MathJax delimiters (`\(` `\)` for inline, `\[` `\]` for display)
-  - Uses `better-react-mathjax` library for React integration
-  - Supports `inline` prop to control rendering mode
-  - Uses `hideUntilTypeset="first"` to prevent flickering during rendering
-  - Supports dynamic updates for streaming content
-
-**Props**:
-- `formula`: The LaTeX formula string to render
-- `inline`: Boolean indicating inline (true) or display (false) mode (default: true)
-- `className`: Additional CSS classes for styling
-
-**Dependencies**: 
-- `better-react-mathjax` - React wrapper for MathJax v3
-- `@/lib/utils` - For `cn` utility function
-
-**Usage**:
-```tsx
-import { MathRenderer } from '@/components/ui/math-renderer'
-
-// Inline math
-<MathRenderer formula="x^2 + y^2" inline={true} />
-
-// Display math
-<MathRenderer formula="\\int_0^1 f(x) dx" inline={false} />
-```
-
-**Related Files**: 
-- `frontend/lib/math-parser.ts` - Parses text to extract math expressions
-- `frontend/components/study/chat-message.tsx` - Uses MathRenderer to display math in messages
-- `frontend/components/study/chat-interface.tsx` - Provides MathJaxContext
-
----
-
-### `frontend/components/study/chat-interface.tsx` (MathJax Integration)
-
-**Purpose**: Chat interface component that wraps the conversation area with MathJaxContext to enable MathJax rendering throughout the chat.
+**Purpose**: Chat message component that displays user and assistant messages. Enhanced to render mathematical expressions using KaTeX via `remark-math` and `rehype-katex` plugins (OpenAI-style approach).
 
 **Key Changes**:
-- **MathJaxContext Integration**: 
-  - Wraps the entire chat interface with `MathJaxContext`
-  - Configures MathJax with custom delimiters matching the Tutor Agent format:
-    - Inline: `\(` and `\)`
-    - Display: `\[` and `\]`
-  - Uses `hideUntilTypeset="first"` to prevent content flickering
-- **Configuration**: 
-  - Skips HTML tags (script, noscript, style, textarea, pre, code) to avoid conflicts
-  - Ensures MathJax only processes mathematical expressions, not code blocks
-
-**Dependencies**: 
-- `better-react-mathjax` - For MathJaxContext component
-
-**Related Files**: 
-- `frontend/components/study/chat-message.tsx` - Renders messages with math expressions
-- `frontend/components/ui/math-renderer.tsx` - Individual math rendering component
-
----
-
-### `frontend/components/study/chat-message.tsx` (MathJax Integration)
-
-**Purpose**: Chat message component that displays user and assistant messages. Enhanced to parse and render mathematical expressions using MathJax.
-
-**Key Changes**:
-- **Math Parsing**: 
-  - Uses `parseMathExpressions()` to split content into text and math segments
-  - Processes segments separately: text with ReactMarkdown, math with MathRenderer
+- **Math Rendering**: 
+  - Uses `remark-math` plugin to recognize math expressions in Markdown
+  - Uses `rehype-katex` plugin to render math with KaTeX
+  - Follows OpenAI's approach: Markdown is parsed first, then math is recognized and rendered
 - **Rendering Logic**:
-  - Text segments: Rendered with ReactMarkdown (preserves all markdown features)
-  - Inline math: Rendered with `MathRenderer` inline mode, wrapped in `<span>`
-  - Display math: Rendered with `MathRenderer` display mode, wrapped in centered `<div>`
-- **Fallback**: If no math expressions are found, falls back to standard ReactMarkdown rendering
+  - Single `ReactMarkdown` component with both plugins
+  - Inline math: `$formula$` (e.g., `$x^2 + y^2$`)
+  - Display math: `$$formula$$` (e.g., `$$\int_0^1 f(x) dx$$`)
+  - All Markdown features (bold, lists, code, etc.) work seamlessly with math
 - **Styling**: Math expressions inherit text color from the message role (assistant/user)
 
 **Dependencies**: 
-- `@/lib/math-parser` - For parsing math expressions
-- `@/components/ui/math-renderer` - For rendering math
-- `react-markdown` - For rendering text segments
-- `better-react-mathjax` - Provided by parent MathJaxContext
+- `react-markdown` - For Markdown rendering
+- `remark-math` - For recognizing math expressions in Markdown
+- `rehype-katex` - For rendering math with KaTeX
+- `katex` - KaTeX library (CSS imported in `layout.tsx`)
+
+**Usage**:
+The component automatically renders math when the content contains:
+- Inline math: `Das ist $x^2 + y^2$ eine Formel`
+- Display math: `$$\int_0^1 f(x) dx$$`
 
 **Related Files**: 
-- `frontend/lib/math-parser.ts` - Parsing logic
-- `frontend/components/ui/math-renderer.tsx` - Math rendering component
-- `frontend/components/study/chat-interface.tsx` - Provides MathJaxContext
+- `frontend/app/layout.tsx` - Imports KaTeX CSS
+- `frontend/app/globals.css` - KaTeX styling rules
+- `frontend/components/study/chat-interface.tsx` - Chat interface container
 
 ---
 
-### `frontend/app/globals.css` (MathJax Styling)
+### `frontend/app/layout.tsx` (KaTeX CSS Import)
 
-**Purpose**: Global CSS file that includes styling rules for MathJax-rendered mathematical expressions to ensure proper integration with the chat interface design.
+**Purpose**: Root layout component that imports KaTeX CSS for math rendering.
+
+**Key Changes**:
+- **KaTeX CSS Import**: 
+  - Imports `katex/dist/katex.min.css` to enable proper math styling
+  - Required for KaTeX to render correctly
+
+**Dependencies**: 
+- `katex` - KaTeX library
+
+**Related Files**: 
+- `frontend/components/study/chat-message.tsx` - Uses KaTeX for rendering
+
+---
+
+### `frontend/app/globals.css` (KaTeX Styling)
+
+**Purpose**: Global CSS file that includes styling rules for KaTeX-rendered mathematical expressions to ensure proper integration with the chat interface design.
 
 **Key Components**:
-- **Math Expression Styling**:
-  - Ensures MathJax expressions inherit text color from parent
-  - Inline math: Flows naturally with text, baseline-aligned
-  - Display math: Centered, with proper vertical spacing (1rem margin)
-- **MathJax Output Styling**:
-  - Forces MathJax SVG/HTML output to inherit color
-  - Ensures display equations have proper spacing (1em margin)
+- **KaTeX Styling**:
+  - Ensures KaTeX expressions inherit text color from parent
+  - Display math: Proper vertical spacing (1em margin)
 
 **Dependencies**: None (pure CSS)
 
 **Related Files**: 
-- All components using MathJax rendering benefit from these styles
+- All components using KaTeX rendering benefit from these styles
+
+---
+
+## Quiz Feature Files
+
+### `backend/app/models/schemas.py` (Quiz Models)
+
+**Purpose**: Pydantic models for quiz data structures and API request/response validation.
+
+**Key Components**:
+- **QuizQuestion**: Model for a single quiz question with id, question, options (Dict[str, str]), correct_answer (Literal["A","B","C","D"]), difficulty (Literal["easy","medium","hard"]), explanation
+- **QuizData**: Model for complete quiz data structure with topic, questions (List[QuizQuestion]), metadata (Dict[str, int])
+- **QuizCreate**: Input model for creating a quiz (start_page, end_page, course_material_id, user_id)
+- **QuizSubmit**: Input model for submitting quiz answers (quiz_id, answers, user_id)
+- **QuestionResult**: Model for individual question result (question_id, user_answer, correct_answer, correct, explanation)
+- **QuizResult**: Response model for quiz submission results (quiz_id, score, correct_count, total_questions, question_results, completed_at, tutor_feedback)
+- **QuizResponse**: Response model for quiz data retrieval (full quiz data with id, course_material_id, etc.)
+
+**Dependencies**: 
+- `pydantic` - For data validation
+- `typing` - For type hints (Literal, Dict, List, Optional)
+
+**Usage**: Used by API endpoints and services for request/response validation and data serialization.
+
+**Related Files**: 
+- `backend/app/api/endpoints.py` - Uses these models for API endpoints
+- `backend/app/services/quiz_service.py` - Uses QuizData and QuizResult
+- `backend/app/agents/quiz/quiz_generator_agent.py` - Uses QuizData for structured output
+
+---
+
+### `backend/app/services/storage.py` (get_page_analyses_for_range)
+
+**Purpose**: Function to retrieve page analyses for a specific page range, used by QuizGeneratorAgent to get context for quiz generation.
+
+**Key Function**:
+- `get_page_analyses_for_range(course_material_id, user_id, start_page, end_page)`: Returns list of page analysis records for the specified page range
+
+**Dependencies**: 
+- `get_supabase_client()` - Supabase client for database queries
+
+**Usage**: Called by QuizGeneratorAgent to fetch page analyses for quiz generation context.
+
+**Related Files**: 
+- `backend/app/agents/quiz/quiz_generator_agent.py` - Uses this function
+
+---
+
+### `backend/app/services/quiz_service.py`
+
+**Purpose**: Business logic for quiz creation, retrieval, submission, and scoring.
+
+**Key Functions**:
+- `save_quiz()`: Save QuizData to `quizzes` table, return quiz_id
+- `get_quiz()`: Retrieve quiz by ID with user authorization
+- `calculate_score()`: Calculate score and generate QuestionResult list
+- `submit_quiz_results()`: Save results to `quiz_results` table, prevent duplicates
+- `get_quiz_result()`: Retrieve quiz result by ID
+
+**Dependencies**: 
+- `get_supabase_client()` - Supabase client for database operations
+- `app.models.schemas` - QuizData, QuizResult, QuestionResult models
+
+**Usage**: Called by API endpoints and tools for quiz management.
+
+**Related Files**: 
+- `backend/app/api/endpoints.py` - Uses these functions in quiz endpoints
+- `backend/app/tools/quiz_tool.py` - Uses save_quiz()
+
+---
+
+### `backend/app/agents/quiz/quiz_generator_agent.py`
+
+**Purpose**: Subagent that generates comprehension quizzes from lecture material. Used by the Tutor Agent when a subtopic is completed.
+
+**Key Components**:
+- Extends `BaseAgent` from `app.agents.base`
+- Loads system prompt from Langfuse (`quiz-generator/system-prompt-de`)
+- Uses `with_structured_output(QuizData)` for structured generation
+- Implements `_parse_quiz_result()` method for robust Pydantic validation:
+  - Handles QuizData instance (direct)
+  - Handles dict (uses `QuizData.model_validate()`)
+  - Handles string (extracts JSON from markdown, then validates)
+- Validates difficulty distribution (1-2 easy, 1 medium, at least 1 hard)
+- Langfuse tracing with user_id and session_id
+- Error handling with detailed logging
+
+**Key Methods**:
+- `generate_quiz(start_page, end_page, course_material_id, user_id)`: Main entry point for quiz generation
+- `_parse_quiz_result(result)`: Robust parsing with Pydantic validation
+- `_validate_quiz(quiz_data)`: Validates quiz meets requirements
+
+**Dependencies**: 
+- `app.agents.base.BaseAgent` - Base agent class
+- `app.models.schemas.QuizData` - Pydantic model for quiz structure
+- `app.services.storage.get_page_analyses_for_range` - Fetch page analyses
+- `app.services.observability` - Langfuse client and callback handler
+- `app.services.analyzer.get_gemini_model` - LLM initialization
+
+**Usage**: Called by CreateQuizTool when TutorAgent detects topic completion.
+
+**Related Files**: 
+- `backend/app/tools/quiz_tool.py` - Uses QuizGeneratorAgent
+- `backend/app/agents/quiz/__init__.py` - Package initialization
+
+---
+
+### `backend/app/agents/quiz/__init__.py`
+
+**Purpose**: Package initialization file for quiz agent subpackage.
+
+**Key Components**:
+- Exports `QuizGeneratorAgent` class
+
+**Dependencies**: None
+
+**Usage**: Allows importing QuizGeneratorAgent from `app.agents.quiz`
+
+---
+
+### `backend/app/tools/quiz_tool.py`
+
+**Purpose**: Tool for creating quizzes from lecture material. Used by the Tutor Agent to generate quizzes when a subtopic is completed.
+
+**Key Components**:
+- `CreateQuizTool` class
+- `_run()` method: Calls QuizGeneratorAgent, saves quiz, returns JSON string
+- `to_langchain_tool()`: Converts to LangChain StructuredTool
+- Input schema: `CreateQuizInput` with start_page, end_page, course_material_id, user_id
+
+**Dependencies**: 
+- `app.agents.quiz.QuizGeneratorAgent` - Subagent for quiz generation
+- `app.services.quiz_service.save_quiz` - Save quiz to database
+- `app.services.analyzer.get_gemini_model` - LLM initialization
+
+**Usage**: Integrated into TutorAgent's tool list, automatically called when topic completion is detected.
+
+**Related Files**: 
+- `backend/app/agents/tutor/tutor_agent.py` - Uses CreateQuizTool
+
+---
+
+### `backend/app/agents/tutor/tutor_agent.py` (Quiz Integration)
+
+**Purpose**: Tutor Agent with integrated quiz creation capability.
+
+**Key Modifications**:
+- Import `CreateQuizTool`
+- Initialize `self.quiz_tool = CreateQuizTool()` in `__init__`
+- Add to `self.langchain_tools` list
+- Update `StateAwareToolNode.invoke()` and `ainvoke()` to inject `course_material_id` and `user_id` for `create_quiz` tool calls
+- Update system prompt enhancement to mention automatic argument filling for `create_quiz`
+
+**Dependencies**: 
+- `app.tools.quiz_tool.CreateQuizTool` - Quiz creation tool
+
+**Usage**: Automatically creates quizzes when detecting topic completion based on system prompt instructions.
+
+**Related Files**: 
+- `backend/app/tools/quiz_tool.py` - CreateQuizTool implementation
+
+---
+
+### `backend/app/exceptions/quiz_exceptions.py` (NEW)
+
+**Purpose**: Custom exception classes for structured error handling in quiz generation.
+
+**Key Components**:
+- `QuizGenerationError`: Base exception for quiz generation errors
+- `QuizValidationError`: For validation failures (with detailed error information)
+- `QuizStateError`: For state management failures
+- `QuizDataError`: For data structure/corruption issues
+
+**Dependencies**: None (base Python exceptions)
+
+**Usage**: Used throughout quiz generation pipeline to replace string-based error handling with structured exceptions.
+
+**Related Files**: 
+- `backend/app/agents/quiz/quiz_generator_agent.py` - Uses these exceptions
+- `backend/app/tools/quiz_tool.py` - Uses these exceptions
+
+---
+
+### `backend/app/services/quiz_creation_lock.py` (NEW)
+
+**Purpose**: Thread-safe lock service for managing active quiz creation operations to prevent race conditions.
+
+**Key Components**:
+- `QuizCreationLock` class: Manages locks with timeout support
+- `get_quiz_creation_lock()`: Singleton accessor function
+- Methods: `acquire_lock()`, `release_lock()`, `is_locked()`, `get_lock_info()`, `cleanup_expired_locks()`
+
+**Dependencies**: 
+- Python `threading` module for thread-safety
+- `datetime` for timeout management
+
+**Usage**: Used in `CreateQuizTool` to prevent concurrent quiz creation and in API endpoints to detect pending quiz creation.
+
+**Related Files**: 
+- `backend/app/tools/quiz_tool.py` - Uses lock service
+- `backend/app/api/endpoints.py` - Uses lock service for pending quiz detection
+
+---
+
+### `frontend/lib/quiz-validation.ts` (NEW)
+
+**Purpose**: Type guards and validation functions for quiz data structures in the frontend.
+
+**Key Components**:
+- `isValidQuizQuestion()`: Type guard for QuizQuestion
+- `isValidQuizData()`: Type guard for QuizData
+- `isValidQuizToolResponse()`: Type guard for QuizToolResponse
+- `parseQuizToolResponse()`: Parse and validate quiz tool response JSON
+- `validateQuizData()`: Validate quiz data structure
+
+**Dependencies**: 
+- `@/types` for TypeScript types
+
+**Usage**: Used in `study-reader.tsx` for parsing and validating quiz data from SSE streams.
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Uses validation functions
+- `frontend/components/study/quiz-component.tsx` - Uses validation functions
+
+---
+
+### `frontend/lib/event-queue.ts` (NEW)
+
+**Purpose**: Event queue for managing SSE stream event ordering and preventing race conditions.
+
+**Key Components**:
+- `EventQueue` class: Manages event queue with debouncing
+- Methods: `add()`, `validateOrder()`, `getNext()`, `getAllUnprocessed()`, `clear()`, `hasUnprocessed()`, `size()`
+
+**Dependencies**: 
+- `@/types` for ToolResponseEvent type
+
+**Usage**: Used in `study-reader.tsx` to manage event ordering and prevent race conditions in SSE stream processing.
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Uses EventQueue
+
+---
+
+### `backend/app/api/endpoints.py` (Quiz Endpoints)
+
+**Purpose**: API endpoints for quiz submission and retrieval, including tutor feedback generation.
+
+**Key Endpoints**:
+- `POST /api/quiz/submit`: Submit quiz answers
+  - Validates user
+  - Calls `submit_quiz_results()`
+  - Generates tutor feedback using TutorAgent with Langfuse prompt (`tutor-agent/quiz-feedback-de`)
+  - Returns `QuizResult` with `tutor_feedback` field
+  
+- `GET /api/quiz/{quiz_id}`: Get quiz data
+  - Validates user authorization
+  - Returns `QuizResponse` with full quiz data
+
+**Key Features**:
+- Tutor feedback generation after quiz submission:
+  - Loads feedback prompt from Langfuse
+  - Compiles prompt with quiz results (wrong/correct questions, score, etc.)
+  - Calls TutorAgent to generate personalized feedback
+  - Adds feedback to QuizResult response
+
+**Dependencies**: 
+- `app.services.quiz_service` - submit_quiz_results, get_quiz, get_quiz_result
+- `app.models.schemas` - QuizSubmit, QuizResult, QuizResponse
+- `app.agents.tutor.TutorAgent` - For feedback generation
+- `app.services.session_storage.get_or_create_study_conversation` - For conversation context
+
+**Usage**: Called by frontend when user completes a quiz.
+
+**Related Files**: 
+- `frontend/lib/api/study.ts` - submitQuiz API client function
+- `frontend/components/study/quiz-component.tsx` - Calls submitQuiz
+
+---
+
+### `frontend/types/index.ts` (Quiz Types)
+
+**Purpose**: TypeScript type definitions for quiz data structures matching backend Pydantic models.
+
+**Key Interfaces**:
+- `QuizQuestion`: id, question, options, correct_answer, difficulty, explanation
+- `QuizData`: topic, questions, metadata
+- `Quiz`: Full quiz with id, course_material_id, etc.
+- `QuizAnswer`: question_id, answer
+- `QuestionResult`: question_id, user_answer, correct_answer, correct, explanation
+- `QuizResult`: quiz_id, score, correct_count, total_questions, question_results, completed_at, tutor_feedback
+- Extended `ChatMessage` with optional `quiz` field
+
+**Dependencies**: None (pure TypeScript types)
+
+**Usage**: Import types in components: `import type { QuizQuestion, QuizResult } from '@/types'`
+
+**Related Files**: 
+- `frontend/components/study/quiz-component.tsx` - Uses QuizQuestion type
+- `frontend/components/study/study-reader.tsx` - Uses QuizResult type
+- `frontend/lib/api/study.ts` - Uses QuizResult type
+
+---
+
+### `frontend/lib/api/study.ts` (submitQuiz)
+
+**Purpose**: API client function for quiz submission.
+
+**Key Function**:
+- `submitQuiz(quizId, answers, userId)`: POST to `/api/quiz/submit`, returns QuizResult
+
+**Dependencies**: 
+- `@/types` - QuizResult type
+
+**Usage**: Called by QuizComponent when user completes all questions.
+
+**Related Files**: 
+- `frontend/components/study/quiz-component.tsx` - Calls submitQuiz
+- `frontend/components/study/study-reader.tsx` - Uses submitQuiz in handleQuizComplete
+
+---
+
+### `frontend/components/study/quiz-component.tsx`
+
+**Purpose**: React component for interactive quiz display in the chat interface with black background design.
+
+**Key Features**:
+- **Black background design** (`bg-black`) with white text for modern, high-contrast UI
+- Step-by-step question display (one at a time)
+- 4 answer buttons (A, B, C, D) with state-based styling:
+  - Normal: `bg-white/5 border-white/20`
+  - Selected: `bg-white/20 border-white/50`
+  - Correct: `bg-green-500/20 border-green-500`
+  - Incorrect: `bg-red-500/20 border-red-500`
+- **Auto-advance**: Automatically moves to next question after 2 seconds of feedback display
+- Progress bar with white fill on semi-transparent background
+- **Score screen** with percentage display and correct count after completion
+- Submit button that calls `onComplete` callback
+- Loading state during submission with spinner
+- Visual feedback with icons (CheckCircle2 for correct, XCircle for incorrect)
+- Explanation display after each answer in colored feedback box
+
+**Key Props**:
+- `quizId`: Quiz ID
+- `topic`: Quiz topic name
+- `questions`: Array of QuizQuestion objects
+- `onComplete`: Callback function with user answers
+- `isSubmitting`: Loading state during submission
+
+**Design Specifications** (from QUIZ_WIDGET_DESIGN.md):
+- Container: `rounded-2xl bg-black text-white px-6 py-6 space-y-4`
+- Progress bar: `bg-white/20` background, `bg-white` fill, `h-2`, animated with `transition-all duration-300`
+- Buttons: `w-full text-left px-4 py-3 rounded-lg border-2` with state-based colors
+- Feedback: Colored boxes with `bg-green-500/20` or `bg-red-500/20` and matching borders
+- Auto-advance: 2000ms delay after feedback display
+
+**Dependencies**: 
+- `lucide-react` - Icons (CheckCircle2, XCircle, Loader)
+- `@/lib/utils` - `cn()` utility for className merging
+- `@/types` - QuizQuestion type
+
+**Usage**: Rendered by ChatMessage component when a message contains quiz data.
+
+**Related Files**: 
+- `frontend/components/study/chat-message.tsx` - Renders QuizComponent
+- `frontend/components/study/study-reader.tsx` - Provides quiz data and callbacks
+- `QUIZ_WIDGET_DESIGN.md` - Complete design specification
+
+---
+
+### `frontend/components/study/chat-message.tsx` (Quiz Integration)
+
+**Purpose**: Chat message component with quiz display support.
+
+**Key Modifications**:
+- Accept `quiz` prop (optional quiz data)
+- Accept `onQuizComplete` callback prop
+- Accept `isQuizSubmitting` prop for loading state
+- Conditionally render `QuizComponent` if quiz exists and role is 'assistant'
+
+**Dependencies**: 
+- `@/components/study/quiz-component` - QuizComponent for quiz display
+
+**Usage**: Automatically displays quiz when message contains quiz data.
+
+**Related Files**: 
+- `frontend/components/study/quiz-component.tsx` - Quiz display component
+- `frontend/components/study/chat-interface.tsx` - Passes quiz props to ChatMessage
+
+---
+
+### `frontend/components/study/chat-interface.tsx` (Quiz Integration)
+
+**Purpose**: Chat interface component with quiz handling support.
+
+**Key Modifications**:
+- Accept `onQuizComplete` callback prop
+- Accept `submittingQuizId` prop for loading state
+- Pass quiz props to ChatMessage components
+
+**Dependencies**: 
+- `@/components/study/chat-message` - ChatMessage component
+
+**Usage**: Connects StudyReader quiz handling with ChatMessage components.
+
+**Related Files**: 
+- `frontend/components/study/study-reader.tsx` - Provides quiz callbacks
+- `frontend/components/study/chat-message.tsx` - Receives quiz props
+
+---
+
+### `frontend/components/study/study-reader.tsx` (Quiz Integration)
+
+**Purpose**: Main study reader component with quiz handling integration.
+
+**Key Modifications**:
+- Import `submitQuiz` from API client
+- Add `submittingQuizId` state to manage loading state
+- Handle `create_quiz` tool call response:
+  - Extract `quiz_id` and `quiz_data` from tool result
+  - Add quiz to ChatMessage state
+- Implement `handleQuizComplete` callback:
+  - Calls `submitQuiz` API
+  - Adds result message with tutor feedback to chat
+  - Manages loading state
+
+**Key Features**:
+- Extracts quiz data from tool call results (create_quiz tool)
+- Manages quiz submission state
+- Displays tutor feedback after quiz completion
+
+**Dependencies**: 
+- `@/lib/api/study.submitQuiz` - API client function
+- `@/types` - ChatMessage, QuizResult types
+
+**Usage**: Main component that orchestrates quiz creation, display, and submission.
+
+**Related Files**: 
+- `frontend/components/study/chat-interface.tsx` - Receives quiz callbacks
+- `frontend/lib/api/study.ts` - submitQuiz function
 
 ---

@@ -28,9 +28,13 @@ interface DashboardSidebarProps {
     email: string
     avatar: string
   }
+  courses?: Array<{
+    id: string
+    title: string
+  }>
 }
 
-export function DashboardSidebar({ user, ...props }: DashboardSidebarProps & React.ComponentProps<typeof Sidebar>) {
+export function DashboardSidebar({ user, courses = [], ...props }: DashboardSidebarProps & React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname()
 
   // Sample teams data - in a real app, this would come from your data source
@@ -83,24 +87,12 @@ export function DashboardSidebar({ user, ...props }: DashboardSidebarProps & Rea
     },
   ]
 
-  // Sample projects (courses) - in a real app, fetch from Supabase
-  const projects = [
-    {
-      name: "KI Grundlagen",
-      url: "/dashboard/courses/ki-grundlagen",
-      icon: BookOpen,
-    },
-    {
-      name: "Programmierung",
-      url: "/dashboard/courses/programmierung",
-      icon: BookOpen,
-    },
-    {
-      name: "Datenbanken",
-      url: "/dashboard/courses/datenbanken",
-      icon: BookOpen,
-    },
-  ]
+  // Transform courses to projects format
+  const projects = courses.map((course) => ({
+    name: course.title,
+    url: `/dashboard/courses/${course.id}`,
+    icon: BookOpen,
+  }))
 
   return (
     <Sidebar collapsible="icon" {...props}>

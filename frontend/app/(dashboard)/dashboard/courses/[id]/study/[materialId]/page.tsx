@@ -2,6 +2,7 @@ import { requireAuth } from '@/lib/auth'
 import { createClient } from '@/lib/supabase/server'
 import { DashboardSidebar } from '@/components/dashboard/sidebar'
 import { StudyReader } from '@/components/study/study-reader'
+import { NoPageScroll } from '@/components/study/no-page-scroll'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
 import { notFound } from 'next/navigation'
@@ -55,6 +56,13 @@ export default async function StudyPage({ params }: StudyPageProps) {
     )
   }
 
+  // Fetch courses for sidebar
+  const { data: courses } = await supabase
+    .from('courses')
+    .select('id, title')
+    .eq('user_id', user.id)
+    .order('updated_at', { ascending: false })
+
   // Prepare user data for sidebar
   const userData = {
     name: user.email?.split('@')[0] || 'User',
@@ -63,9 +71,11 @@ export default async function StudyPage({ params }: StudyPageProps) {
   }
 
   return (
-    <SidebarProvider>
-      <DashboardSidebar variant="inset" user={userData} />
-      <SidebarInset>
+    <>
+      <NoPageScroll />
+      <SidebarProvider className="h-svh">
+        <DashboardSidebar variant="inset" user={userData} courses={courses || []} />
+        <SidebarInset>
         <header className="group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear z-20 relative">
           <div className="flex w-full items-center gap-1 px-4 lg:gap-2 lg:px-6">
             <SidebarTrigger className="-ml-1 relative z-30" />
@@ -76,7 +86,7 @@ export default async function StudyPage({ params }: StudyPageProps) {
             <h1 className="text-base font-medium">{material.file_name}</h1>
           </div>
         </header>
-        <div className="flex flex-1 flex-col h-[calc(100vh-3rem)] max-h-[calc(100vh-3rem)] min-h-0 overflow-hidden">
+        <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
           <div className="h-full max-h-full min-h-0 overflow-hidden">
             <StudyReader
               materialId={materialId}
@@ -89,5 +99,6 @@ export default async function StudyPage({ params }: StudyPageProps) {
         </div>
       </SidebarInset>
     </SidebarProvider>
+    </>
   )
 }

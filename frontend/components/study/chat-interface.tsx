@@ -1,7 +1,6 @@
 "use client"
 
 import { useRef, useEffect } from 'react'
-import { MathJaxContext } from 'better-react-mathjax'
 import { ConversationEmptyState } from '@/components/ai/conversation'
 import { Loader } from '@/components/ui/loader'
 import { Switch } from '@/components/ui/switch'
@@ -9,17 +8,6 @@ import { Label } from '@/components/ui/label'
 import { ChatMessage } from './chat-message'
 import { TutorPromptInput } from './tutor-prompt-input'
 import type { ChatMessage as ChatMessageType } from '@/types'
-
-// MathJax configuration
-const mathJaxConfig = {
-  tex: {
-    inlineMath: [["\\(", "\\)"]],
-    displayMath: [["\\[", "\\]"]],
-  },
-  options: {
-    skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"],
-  },
-}
 
 interface ChatInterfaceProps {
   messages: ChatMessageType[]
@@ -29,6 +17,8 @@ interface ChatInterfaceProps {
   contextInfo?: string
   showTools?: boolean
   onToggleTools?: (enabled: boolean) => void
+  onQuizComplete?: (quizId: string, answers: Record<string, 'A' | 'B' | 'C' | 'D'>) => void
+  submittingQuizId?: string | null
 }
 
 export function ChatInterface({
@@ -39,6 +29,8 @@ export function ChatInterface({
   contextInfo,
   showTools = false,
   onToggleTools,
+  onQuizComplete,
+  submittingQuizId = null,
 }: ChatInterfaceProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const isUserScrollingRef = useRef(false)
@@ -122,8 +114,7 @@ export function ChatInterface({
   }, [])
 
   return (
-    <MathJaxContext config={mathJaxConfig} hideUntilTypeset="first">
-      <div className="flex flex-col h-full w-full min-h-0 bg-[#f6f4f1]">
+    <div className="flex flex-col h-full w-full min-h-0 bg-[#f6f4f1]">
       {/* Tool Toggle Switch - Dezente Position oben rechts */}
       {onToggleTools && (
         <div className="flex items-center justify-end gap-2 px-4 pt-3 pb-2 flex-shrink-0">
@@ -185,17 +176,37 @@ export function ChatInterface({
             messages.map((message, index) => {
               // Check if this is the last message and it's streaming
               const isLastMessage = index === messages.length - 1
-              const isStreamingMessage = isLastMessage && isStreaming && message.role === "assistant" && (!message.content || message.content.trim() === "")
+              const messageContent = typeof message.content === 'string' ? message.content : (message.content?.toString() || '')
+              // Show streaming indicator ONLY if:
+              // 1. It's the last message
+              // 2. It's an assistant message
+              // 3. Content is empty AND (message has streaming-* ID OR isStreaming is true)
+              // This way, if content is available, it will be shown directly instead of the loading indicator
+              const isStreamingMessage = isLastMessage && message.role === "assistant" && 
+                (!messageContent || messageContent.trim() === "") && 
+                (message.id.startsWith('streaming-') || isStreaming)
+              
+              // Check if this message has a quiz and create callback
+              const quiz = message.quiz
+              const isQuizSubmitting = quiz && submittingQuizId === quiz.quiz_id
+              const handleQuizCompleteForMessage = quiz && onQuizComplete
+                ? (quizId: string, answers: Record<string, 'A' | 'B' | 'C' | 'D'>) => {
+                    onQuizComplete(quizId, answers)
+                  }
+                : undefined
               
               return (
                 <div key={message.id} className={index > 0 ? "mt-6" : ""}>
                   <ChatMessage
                     id={message.id}
                     role={message.role}
-                    content={message.content}
+                    content={messageContent}
                     isStreaming={isStreamingMessage}
                     toolCalls={message.toolCalls}
                     showTools={showTools}
+                    quiz={quiz}
+                    onQuizComplete={handleQuizCompleteForMessage}
+                    isQuizSubmitting={isQuizSubmitting}
                   />
                 </div>
               )
@@ -214,6 +225,5 @@ export function ChatInterface({
         />
       </div>
     </div>
-    </MathJaxContext>
   )
 }

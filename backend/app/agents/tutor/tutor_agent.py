@@ -20,6 +20,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from app.agents.base import BaseAgent, State
 from app.tools.page_analysis_tool import GetPageAnalysisTool
 from app.tools.course_material_tool import GetCourseMaterialSummaryTool
+from app.tools.quiz_tool import CreateQuizTool
 from app.services.observability import create_callback_handler, get_langfuse_client
 from app.core.config import settings
 
@@ -102,6 +103,15 @@ class StateAwareToolNode(ToolNode):
                 
                 # Inject state values for get_course_material_summary tool
                 elif tool_name == "get_course_material_summary":
+                    if "course_material_id" not in args or not args.get("course_material_id"):
+                        if input.get("material_id"):
+                            args["course_material_id"] = input["material_id"]
+                    if "user_id" not in args or not args.get("user_id"):
+                        if input.get("user_id"):
+                            args["user_id"] = input["user_id"]
+                
+                # Inject state values for create_quiz tool
+                elif tool_name == "create_quiz":
                     if "course_material_id" not in args or not args.get("course_material_id"):
                         if input.get("material_id"):
                             args["course_material_id"] = input["material_id"]
@@ -192,6 +202,15 @@ class StateAwareToolNode(ToolNode):
                         if input.get("user_id"):
                             args["user_id"] = input["user_id"]
                 
+                # Inject state values for create_quiz tool
+                elif tool_name == "create_quiz":
+                    if "course_material_id" not in args or not args.get("course_material_id"):
+                        if input.get("material_id"):
+                            args["course_material_id"] = input["material_id"]
+                    if "user_id" not in args or not args.get("user_id"):
+                        if input.get("user_id"):
+                            args["user_id"] = input["user_id"]
+                
                 # Create modified tool call
                 modified_tool_calls.append({
                     "id": tool_id,
@@ -252,9 +271,11 @@ class TutorAgent(BaseAgent):
         # Initialize tools
         self.page_analysis_tool = GetPageAnalysisTool()
         self.course_material_tool = GetCourseMaterialSummaryTool()
+        self.quiz_tool = CreateQuizTool()
         self.langchain_tools = [
             self.page_analysis_tool.to_langchain_tool(),
-            self.course_material_tool.to_langchain_tool()
+            self.course_material_tool.to_langchain_tool(),
+            self.quiz_tool.to_langchain_tool()
         ]
         
         # Bind tools to LLM
@@ -418,6 +439,119 @@ class TutorAgent(BaseAgent):
         # Compile graph
         self.compile_graph(workflow)
     
+    def _fix_incomplete_tool_calls(self, messages: list) -> list:
+        """
+        Validate and fix message ordering to comply with Gemini API requirements.
+        Gemini API requires strict ordering:
+        - User message (HumanMessage)
+        - Assistant with tool_calls (AIMessage with tool_calls) - MUST come immediately after HumanMessage or ToolMessage
+        - Tool responses (ToolMessage) - MUST come immediately after AIMessage with tool_calls
+        - (Optional) Assistant final response (AIMessage without tool_calls)
+        - User message (HumanMessage)
+        
+        This function:
+        1. Removes any AIMessage with tool_calls that doesn't have corresponding ToolMessages
+        2. Ensures ToolMessages come immediately after their AIMessage
+        3. Removes orphaned ToolMessages (without preceding AIMessage)
+        4. Ensures AIMessage with tool_calls only comes after HumanMessage or ToolMessage
+        
+        Args:
+            messages: List of messages to check
+            
+        Returns:
+            Fixed list of messages that comply with Gemini API requirements
+        """
+        if not messages:
+            return messages
+        
+        fixed_messages = []
+        i = 0
+        
+        while i < len(messages):
+            msg = messages[i]
+            
+            # Skip SystemMessage - it doesn't affect the turn order
+            if isinstance(msg, SystemMessage):
+                fixed_messages.append(msg)
+                i += 1
+                continue
+            
+            # Check if this is an AIMessage with tool_calls
+            if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+                # CRITICAL: Gemini requires AIMessage with tool_calls to come immediately after
+                # HumanMessage or ToolMessage. Check the previous non-SystemMessage.
+                prev_msg_index = len(fixed_messages) - 1
+                while prev_msg_index >= 0 and isinstance(fixed_messages[prev_msg_index], SystemMessage):
+                    prev_msg_index -= 1
+                
+                # Check if previous message is valid (HumanMessage or ToolMessage)
+                is_valid_previous = False
+                if prev_msg_index >= 0:
+                    prev_msg = fixed_messages[prev_msg_index]
+                    if isinstance(prev_msg, HumanMessage) or isinstance(prev_msg, ToolMessage):
+                        is_valid_previous = True
+                elif i > 0:
+                    # Check original messages list if fixed_messages is empty or only has SystemMessages
+                    for k in range(i - 1, -1, -1):
+                        if not isinstance(messages[k], SystemMessage):
+                            if isinstance(messages[k], HumanMessage) or isinstance(messages[k], ToolMessage):
+                                is_valid_previous = True
+                            break
+                
+                if not is_valid_previous:
+                    # Invalid: AIMessage with tool_calls not after HumanMessage or ToolMessage
+                    logger.warning(
+                        f"Invalid message order at index {i}: AIMessage with tool_calls must come immediately "
+                        f"after HumanMessage or ToolMessage. Removing to prevent API error."
+                    )
+                    i += 1
+                    continue
+                
+                # Collect all tool call IDs from this AIMessage
+                tool_call_ids = set()
+                for tool_call in msg.tool_calls:
+                    tool_call_id = tool_call.get("id") if isinstance(tool_call, dict) else getattr(tool_call, "id", None)
+                    if tool_call_id:
+                        tool_call_ids.add(tool_call_id)
+                
+                # Look ahead to find corresponding ToolMessages
+                # They should come immediately after the AIMessage
+                found_tool_messages = []
+                j = i + 1
+                while j < len(messages) and isinstance(messages[j], ToolMessage):
+                    tool_msg = messages[j]
+                    tool_call_id = getattr(tool_msg, "tool_call_id", None)
+                    if tool_call_id in tool_call_ids:
+                        found_tool_messages.append(tool_msg)
+                    j += 1
+                
+                # Check if all tool calls have corresponding ToolMessages
+                found_tool_call_ids = {getattr(tm, "tool_call_id", None) for tm in found_tool_messages}
+                
+                if found_tool_call_ids == tool_call_ids and len(found_tool_messages) == len(tool_call_ids):
+                    # All tool calls have responses - keep the AIMessage and ToolMessages
+                    fixed_messages.append(msg)
+                    fixed_messages.extend(found_tool_messages)
+                    i = j  # Skip past the ToolMessages
+                else:
+                    # Incomplete tool call pair - remove the AIMessage
+                    logger.warning(
+                        f"Incomplete tool call pair detected at index {i}: AIMessage has {len(tool_call_ids)} tool_calls, "
+                        f"but only {len(found_tool_messages)} ToolMessages found. Removing incomplete AIMessage to prevent API error."
+                    )
+                    i += 1  # Skip the incomplete AIMessage
+            elif isinstance(msg, ToolMessage):
+                # Orphaned ToolMessage (no preceding AIMessage with tool_calls)
+                # Remove it to prevent API errors
+                logger.warning(f"Orphaned ToolMessage detected at index {i}, removing to prevent API error.")
+                i += 1
+            else:
+                # Regular message (HumanMessage, AIMessage without tool_calls)
+                fixed_messages.append(msg)
+                i += 1
+        
+        return fixed_messages
+    
     def call_model(self, state: TutorState) -> TutorState:
         """
         Call LLM with current messages, injecting state context.
@@ -564,19 +698,45 @@ class TutorAgent(BaseAgent):
                     enhanced_content = f"{msg.content}\n\nCONTEXT:\n{context_str}"
                     if self.language == "de":
                         enhanced_content += (
-                            "\n\nWICHTIG: Wenn du das get_page_analysis Tool verwendest, werden folgende Argumente "
+                            "\n\nWICHTIG: Wenn du Tools verwendest, werden folgende Argumente "
                             "automatisch aus dem Kontext gefüllt:\n"
-                            f"- course_material_id: {state.get('material_id', 'unbekannt')}\n"
-                            f"- page_number: {state.get('current_page', 1)}\n"
-                            f"- user_id: {state.get('user_id', 'unbekannt')}"
+                            f"- get_page_analysis: course_material_id, page_number, user_id\n"
+                            f"- get_course_material_summary: course_material_id, user_id\n"
+                            f"- create_quiz: course_material_id, user_id\n"
+                            f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
+                            f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
+                        )
+                        # Add quiz-specific instructions
+                        enhanced_content += (
+                            "\n\nWICHTIG FÜR QUIZ-ERSTELLUNG:\n"
+                            "- Wenn du ein Quiz erstellen möchtest, sende NUR eine kurze Nachricht "
+                            "(z.B. 'Wir haben das Thema XY abgeschlossen, hier ist dein Quiz') "
+                            "und rufe dann das create_quiz Tool auf.\n"
+                            "- Sende KEINE lange Erklärung der aktuellen Folie, wenn du gleichzeitig ein Quiz erstellst.\n"
+                            "- Nach dem create_quiz Tool Call wird der Graph beendet - du sollst danach nicht mehr schreiben.\n"
+                            "- Das Quiz wird im Chat angezeigt und der Student kann es bearbeiten.\n"
+                            "- Erst nachdem der Student das Quiz abgeschlossen hat, kannst du Feedback geben."
                         )
                     else:
                         enhanced_content += (
-                            "\n\nIMPORTANT: When using the get_page_analysis tool, the following arguments "
+                            "\n\nIMPORTANT: When using tools, the following arguments "
                             "are automatically filled from context:\n"
-                            f"- course_material_id: {state.get('material_id', 'unknown')}\n"
-                            f"- page_number: {state.get('current_page', 1)}\n"
-                            f"- user_id: {state.get('user_id', 'unknown')}"
+                            f"- get_page_analysis: course_material_id, page_number, user_id\n"
+                            f"- get_course_material_summary: course_material_id, user_id\n"
+                            f"- create_quiz: course_material_id, user_id\n"
+                            f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
+                            f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
+                        )
+                        # Add quiz-specific instructions
+                        enhanced_content += (
+                            "\n\nIMPORTANT FOR QUIZ CREATION:\n"
+                            "- If you want to create a quiz, send ONLY a short message "
+                            "(e.g., 'We have completed topic XY, here is your quiz') "
+                            "and then call the create_quiz tool.\n"
+                            "- Do NOT send a long explanation of the current slide if you are creating a quiz at the same time.\n"
+                            "- After the create_quiz tool call, the graph will end - you should not write anything after that.\n"
+                            "- The quiz will be displayed in the chat and the student can work on it.\n"
+                            "- Only after the student completes the quiz can you provide feedback."
                         )
                     messages_for_llm[i] = SystemMessage(content=enhanced_content)
                     system_message_found = True
@@ -587,19 +747,45 @@ class TutorAgent(BaseAgent):
                 enhanced_content = f"{self.system_prompt}\n\nCONTEXT:\n{context_str}"
                 if self.language == "de":
                     enhanced_content += (
-                        "\n\nWICHTIG: Wenn du das get_page_analysis Tool verwendest, werden folgende Argumente "
+                        "\n\nWICHTIG: Wenn du Tools verwendest, werden folgende Argumente "
                         "automatisch aus dem Kontext gefüllt:\n"
-                        f"- course_material_id: {state.get('material_id', 'unbekannt')}\n"
-                        f"- page_number: {state.get('current_page', 1)}\n"
-                        f"- user_id: {state.get('user_id', 'unbekannt')}"
+                        f"- get_page_analysis: course_material_id, page_number, user_id\n"
+                        f"- get_course_material_summary: course_material_id, user_id\n"
+                        f"- create_quiz: course_material_id, user_id\n"
+                        f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
+                        f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
+                    )
+                    # Add quiz-specific instructions
+                    enhanced_content += (
+                        "\n\nWICHTIG FÜR QUIZ-ERSTELLUNG:\n"
+                        "- Wenn du ein Quiz erstellen möchtest, sende NUR eine kurze Nachricht "
+                        "(z.B. 'Wir haben das Thema XY abgeschlossen, hier ist dein Quiz') "
+                        "und rufe dann das create_quiz Tool auf.\n"
+                        "- Sende KEINE lange Erklärung der aktuellen Folie, wenn du gleichzeitig ein Quiz erstellst.\n"
+                        "- Nach dem create_quiz Tool Call wird der Graph beendet - du sollst danach nicht mehr schreiben.\n"
+                        "- Das Quiz wird im Chat angezeigt und der Student kann es bearbeiten.\n"
+                        "- Erst nachdem der Student das Quiz abgeschlossen hat, kannst du Feedback geben."
                     )
                 else:
                     enhanced_content += (
-                        "\n\nIMPORTANT: When using the get_page_analysis tool, the following arguments "
+                        "\n\nIMPORTANT: When using tools, the following arguments "
                         "are automatically filled from context:\n"
-                        f"- course_material_id: {state.get('material_id', 'unknown')}\n"
-                        f"- page_number: {state.get('current_page', 1)}\n"
-                        f"- user_id: {state.get('user_id', 'unknown')}"
+                        f"- get_page_analysis: course_material_id, page_number, user_id\n"
+                        f"- get_course_material_summary: course_material_id, user_id\n"
+                        f"- create_quiz: course_material_id, user_id\n"
+                        f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
+                        f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
+                    )
+                    # Add quiz-specific instructions
+                    enhanced_content += (
+                        "\n\nIMPORTANT FOR QUIZ CREATION:\n"
+                        "- If you want to create a quiz, send ONLY a short message "
+                        "(e.g., 'We have completed topic XY, here is your quiz') "
+                        "and then call the create_quiz tool.\n"
+                        "- Do NOT send a long explanation of the current slide if you are creating a quiz at the same time.\n"
+                        "- After the create_quiz tool call, the graph will end - you should not write anything after that.\n"
+                        "- The quiz will be displayed in the chat and the student can work on it.\n"
+                        "- Only after the student completes the quiz can you provide feedback."
                     )
                 messages_for_llm.insert(0, SystemMessage(content=enhanced_content))
         
@@ -626,39 +812,14 @@ class TutorAgent(BaseAgent):
             }
             config["callbacks"] = [callback_handler]
             config["metadata"] = metadata
-            logger.info(f"🟡 Langfuse: Sending LLM call with metadata: user_id={metadata.get('langfuse_user_id')}, session_id={metadata.get('langfuse_session_id')}, material_id={metadata.get('material_id')}, page={metadata.get('current_page')}")
+            # WICHTIG: run_name für eindeutige Zuordnung in Langfuse
+            config["run_name"] = "tutor-agent/llm-call"
+            logger.info(f"🟡 Langfuse: Sending LLM call (run_name: tutor-agent/llm-call) with metadata: user_id={metadata.get('langfuse_user_id')}, session_id={metadata.get('langfuse_session_id')}, material_id={metadata.get('material_id')}, page={metadata.get('current_page')}")
         
         # Validate message ordering before LLM call to prevent Gemini API errors
-        # Gemini requires: User -> Assistant (with tool_calls) -> ToolMessages -> (optional) Assistant -> User
-        # Check if last message before LLM call is valid
-        if messages_for_llm:
-            last_msg = messages_for_llm[-1]
-            # If last message is an AIMessage with tool_calls, it's invalid - should have ToolMessages after
-            if isinstance(last_msg, AIMessage) and hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
-                # #region agent log
-                try:
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(json.dumps({
-                            "sessionId": "debug-session",
-                            "runId": "pre-fix",
-                            "hypothesisId": "H3",
-                            "location": "tutor_agent.py:call_model(invalid_last_message)",
-                            "message": "Last message is AIMessage with tool_calls - this will cause API error",
-                            "data": {
-                                "toolCallCount": len(last_msg.tool_calls)
-                            },
-                            "timestamp": int(__import__("time").time() * 1000)
-                        }) + "\n")
-                except Exception:
-                    pass
-                # #endregion agent log
-                
-                logger.error(
-                    "Invalid message sequence: Last message is AIMessage with tool_calls. "
-                    "This will cause Gemini API error. Removing incomplete tool call."
-                )
-                # Remove the last message (incomplete AIMessage with tool_calls)
-                messages_for_llm = messages_for_llm[:-1]
+        # Apply comprehensive validation to entire message sequence
+        # This ensures all AIMessages with tool_calls have corresponding ToolMessages
+        messages_for_llm = self._fix_incomplete_tool_calls(messages_for_llm)
         
         # Call LLM with callbacks
         # Der CallbackHandler trackt automatisch Token-Usage, Model Parameters, etc.
@@ -679,12 +840,55 @@ class TutorAgent(BaseAgent):
             except Exception:
                 pass  # Nicht kritisch wenn Token-Usage nicht extrahiert werden kann
         
+        # Safety check: If response contains create_quiz tool call, ensure content is short
+        # This prevents the agent from sending long explanations when creating a quiz
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            has_create_quiz = any(
+                (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")) == "create_quiz"
+                for tc in response.tool_calls
+            )
+            
+            if has_create_quiz and hasattr(response, 'content') and response.content:
+                content_length = len(response.content)
+                # If content is longer than 200 characters, truncate it to a short message
+                if content_length > 200:
+                    logger.warning(
+                        f"Agent sent long message ({content_length} chars) with create_quiz tool call. "
+                        f"Truncating to prevent confusion. Original: {response.content[:100]}..."
+                    )
+                    # Keep only the first sentence or first 150 characters, whichever is shorter
+                    truncated = response.content[:150]
+                    # Try to end at a sentence boundary
+                    last_period = truncated.rfind('.')
+                    last_exclamation = truncated.rfind('!')
+                    last_question = truncated.rfind('?')
+                    last_sentence_end = max(last_period, last_exclamation, last_question)
+                    if last_sentence_end > 50:  # Only truncate at sentence if we have at least 50 chars
+                        truncated = truncated[:last_sentence_end + 1]
+                    else:
+                        truncated = truncated[:150] + "..."
+                    
+                    # Create new response with truncated content
+                    from langchain_core.messages import AIMessage
+                    response = AIMessage(
+                        content=truncated,
+                        tool_calls=response.tool_calls,
+                        response_metadata=getattr(response, 'response_metadata', {})
+                    )
+                    logger.info(f"Truncated message to: {truncated}")
+        
         # Return updated state (MessagesState will automatically add the message)
         return {"messages": [response]}
     
     def should_continue(self, state: TutorState) -> str:
         """
-        Determine if tools should be called.
+        Determine if tools should be called or if the graph should end.
+        
+        Special handling for create_quiz tool calls:
+        - After a create_quiz tool call completes, the graph should end
+        - This prevents the agent from generating a new message immediately
+        - The quiz widget will be displayed, and the agent will wait for user to complete the quiz
+        - Once the user completes the quiz, they can send a message to get feedback
         
         Args:
             state: Current agent state
@@ -698,8 +902,29 @@ class TutorAgent(BaseAgent):
         
         last_message = messages[-1]
         
-        # Check if last message has tool calls
+        # Check if last message has tool calls (agent wants to call tools)
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
             return "continue"
+        
+        # Check if we just completed a create_quiz tool call
+        # If the last message is a ToolMessage for create_quiz, end the graph
+        # This prevents the agent from generating a follow-up message immediately
+        if isinstance(last_message, ToolMessage):
+            # Look backwards to find the corresponding AIMessage with tool_calls
+            for i in range(len(messages) - 2, -1, -1):
+                prev_msg = messages[i]
+                if isinstance(prev_msg, AIMessage) and hasattr(prev_msg, 'tool_calls') and prev_msg.tool_calls:
+                    # Check if any of the tool calls was create_quiz
+                    tool_call_id = getattr(last_message, "tool_call_id", None)
+                    for tool_call in prev_msg.tool_calls:
+                        tool_call_id_from_call = tool_call.get("id") if isinstance(tool_call, dict) else getattr(tool_call, "id", None)
+                        tool_name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, "name", "")
+                        
+                        if tool_call_id == tool_call_id_from_call and tool_name == "create_quiz":
+                            # This is a create_quiz tool response - end the graph
+                            # The quiz widget will be displayed, agent waits for user to complete quiz
+                            logger.info("create_quiz tool call completed - ending graph to wait for user quiz completion")
+                            return "end"
+                    break
         
         return "end"

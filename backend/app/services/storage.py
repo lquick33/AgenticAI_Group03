@@ -336,6 +336,90 @@ def get_page_analysis(
         raise Exception(f"Failed to get page analysis: {str(e)}")
 
 
+def get_page_analyses_for_range(
+    course_material_id: str,
+    user_id: str,
+    start_page: int,
+    end_page: int
+) -> list[dict]:
+    """
+    Get page analyses for a specific page range.
+    
+    Args:
+        course_material_id: Course material ID
+        user_id: User ID for authorization (RLS)
+        start_page: Starting page number (1-indexed, inclusive)
+        end_page: Ending page number (1-indexed, inclusive)
+        
+    Returns:
+        List of page analysis records as dicts, each with:
+        - page_number: int
+        - summary: str
+        - key_terms: list[str]
+        - exam_questions: list[str]
+        - diagram_description: str
+        - raw_analysis: dict (optional)
+        
+    Raises:
+        ValueError: If course material not found or access denied
+        Exception: If database operation fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        # Validate course material and user authorization
+        material_response = client.table("course_materials").select(
+            "user_id"
+        ).eq("id", course_material_id).single().execute()
+        
+        if not material_response.data:
+            raise ValueError(
+                f"Course material not found: {course_material_id}"
+            )
+        
+        material_user_id = material_response.data["user_id"]
+        
+        if material_user_id != user_id:
+            raise ValueError(
+                f"Access denied: user_id {user_id} does not match course material owner {material_user_id}"
+            )
+        
+        # Query page analyses for the range
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"🟡 Querying page_analyses: material={course_material_id}, user={material_user_id}, pages={start_page}-{end_page}")
+        
+        response = client.table("page_analyses").select(
+            "page_number, summary, key_terms, exam_questions, diagram_description, raw_analysis"
+        ).eq(
+            "course_material_id", course_material_id
+        ).eq(
+            "user_id", material_user_id
+        ).gte(
+            "page_number", start_page
+        ).lte(
+            "page_number", end_page
+        ).order(
+            "page_number", desc=False
+        ).execute()
+        
+        result = response.data or []
+        logger.info(f"🟢 Query returned {len(result)} page analyses")
+        if result:
+            page_numbers = [r.get('page_number') for r in result]
+            logger.debug(f"Page numbers found: {page_numbers}")
+        else:
+            logger.warning(f"⚠️ No page analyses found for range {start_page}-{end_page}")
+        
+        return result
+    
+    except ValueError:
+        raise
+    except Exception as e:
+        raise Exception(f"Failed to get page analyses for range: {str(e)}")
+
+
 def get_page_analysis_id(
     course_material_id: str,
     page_number: int,
@@ -452,6 +536,31 @@ def update_course_material_summary(
         ).eq("id", material_id).execute()
     except Exception as e:
         raise Exception(f"Failed to update course material summary: {str(e)}")
+
+
+def update_course_material_filename(
+    material_id: str,
+    filename: str
+) -> None:
+    """
+    Update the file_name field in the course_materials table.
+    
+    This function updates the display name of a course material with a
+    professionally generated filename based on the lecture content.
+    
+    Args:
+        material_id: Course material ID
+        filename: New filename (without file extension)
+    """
+    client = get_supabase_client()
+    
+    try:
+        client.table("course_materials").update(
+            {"file_name": filename}
+        ).eq("id", material_id).execute()
+        logger.info(f"Updated filename for material {material_id} to: {filename}")
+    except Exception as e:
+        raise Exception(f"Failed to update course material filename: {str(e)}")
 
 
 def get_course_material_summary(

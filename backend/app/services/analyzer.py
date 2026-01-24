@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage
 
 from app.core.config import settings
 from app.models.schemas import SlideAnalysis
-from app.services.observability import create_callback_handler
+from app.services.observability import create_callback_handler, get_langfuse_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -151,8 +151,25 @@ async def analyze_pdf_page(
     llm = get_gemini_model(api_key)
     structured_llm = llm.with_structured_output(SlideAnalysis).with_config({"run_name": "pdf-llm-page-analysis"})
     
-    # Create prompt for analysis
-    analysis_prompt = """Analysiere diese Vorlesungsfolie gründlich und extrahiere strukturierte Informationen.
+    # Try to load prompt from Langfuse first
+    analysis_prompt = None
+    langfuse_client = get_langfuse_client()
+    
+    if langfuse_client:
+        try:
+            langfuse_prompt = langfuse_client.get_prompt(
+                "pdf-analyzer/page-analysis",
+                label="production"
+            )
+            # Compile prompt (even without variables, compile() returns the prompt text)
+            analysis_prompt = langfuse_prompt.compile()
+            logger.debug("✅ Using Langfuse prompt for pdf-analyzer/page-analysis")
+        except Exception as e:
+            logger.warning(f"Failed to load Langfuse prompt for page-analysis: {e}, using fallback")
+    
+    # Fallback prompt if Langfuse is not available or fails
+    if not analysis_prompt:
+        analysis_prompt = """Analysiere diese Vorlesungsfolie gründlich und extrahiere strukturierte Informationen.
 
 Gib eine prägnante Zusammenfassung des Inhalts, identifiziere die wichtigsten Fachbegriffe,
 formuliere genau 2 mögliche Prüfungsfragen basierend auf dem Inhalt, und beschreibe alle
@@ -381,4 +398,159 @@ pages = {pages_json}
             "error": f"Failed to generate material summary: {str(e)}",
         }
         return json.dumps(empty_summary, ensure_ascii=False)
+
+
+async def generate_material_filename(
+    page_one_summary: str,
+    api_key: Optional[str] = None,
+    material_id: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> str:
+    """
+    Generate a professional filename for a course material based on the summary of page 1.
+    
+    This function takes the summary from the first page of a lecture and generates
+    a clean, descriptive filename that replaces unprofessional names like
+    "00_AlgebraGrundwissen (1).pdf" with something like "Kapitel 0: Algebra-Grundwissen".
+    
+    Args:
+        page_one_summary: The summary text from page 1 analysis
+        api_key: Optional Google API key (uses settings if None)
+        material_id: Course material ID for Langfuse tracking (optional)
+        user_id: User ID for Langfuse tracking (optional)
+        
+    Returns:
+        A clean, professional filename (without file extension)
+        
+    Raises:
+        ValueError: If API key is missing or generation fails
+    """
+    import asyncio
+    
+    # Load API key if not provided
+    if api_key is None:
+        api_key = settings.GOOGLE_API_KEY
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY not found in settings")
+    
+    if not page_one_summary or not page_one_summary.strip():
+        # Fallback if no summary available
+        return "Vorlesungsmaterial"
+    
+    llm = get_gemini_model(api_key).with_config({"run_name": "pdf-llm-filename-generation"})
+    
+    # Try to load prompt from Langfuse first
+    user_prompt = None
+    langfuse_client = get_langfuse_client()
+    
+    if langfuse_client:
+        try:
+            langfuse_prompt = langfuse_client.get_prompt(
+                "pdf-analyzer/filename-generation",
+                label="production"
+            )
+            # Compile prompt with page_one_summary variable
+            user_prompt = langfuse_prompt.compile(page_one_summary=page_one_summary)
+            logger.debug("✅ Using Langfuse prompt for pdf-analyzer/filename-generation")
+        except Exception as e:
+            logger.warning(f"Failed to load Langfuse prompt for filename-generation: {e}, using fallback")
+    
+    # Fallback prompt if Langfuse is not available or fails
+    if not user_prompt:
+        system_instructions = (
+            "Du bist ein Assistent, der aus einer Zusammenfassung der ersten Seite einer Vorlesung "
+            "einen professionellen, aussagekräftigen Dateinamen generiert. "
+            "Der Dateiname soll das Thema/Kapitel der Vorlesung klar beschreiben."
+        )
+        
+        user_prompt = f"""
+Basierend auf der folgenden Zusammenfassung der ersten Seite einer Vorlesung, erstelle einen professionellen Dateinamen.
+
+Zusammenfassung der ersten Seite:
+{page_one_summary}
+
+WICHTIG: Die erste Seite einer Vorlesung enthält meistens die Kapitelnummer (z.B. "Kapitel 0", "Kapitel 1", "Chapter 2", etc.). 
+Extrahiere diese Kapitelnummer aus der Zusammenfassung und verwende sie für die Sortierung.
+
+Anforderungen an den Dateinamen:
+- Extrahiere die Kapitelnummer aus der Zusammenfassung (falls vorhanden)
+- Format: "Kapitel X: Thema" - verwende IMMER dieses Format, wenn eine Kapitelnummer erkennbar ist
+- Die Kapitelnummer ist wichtig für die Sortierung, daher muss sie im Format "Kapitel X:" enthalten sein
+- Falls keine Kapitelnummer erkennbar: nur das Thema (ohne "Kapitel X:")
+- Professionell und aussagekräftig
+- Keine Dateiendung (.pdf) anfügen
+- Keine Sonderzeichen wie Klammern, Unterstriche (außer Bindestriche)
+- Maximal 100 Zeichen
+
+Beispiele:
+- "Kapitel 0: Algebra-Grundwissen" (wenn die Zusammenfassung "Kapitel 0" oder "Chapter 0" erwähnt)
+- "Kapitel 1: Beweisverfahren" (wenn die Zusammenfassung "Kapitel 1" oder "Chapter 1" erwähnt)
+- "Einführung in die Lineare Algebra" (nur wenn keine Kapitelnummer erkennbar ist)
+
+Gib **nur** den Dateinamen zurück, ohne zusätzlichen Text oder Erklärungen.
+"""
+        user_prompt = system_instructions + "\n\n" + user_prompt
+    
+    message = HumanMessage(content=[{"type": "text", "text": user_prompt}])
+    
+    # Create Langfuse callback handler für automatisches Tracking
+    callback_handler = create_callback_handler()
+    
+    # Prepare config with callbacks and metadata
+    config = {}
+    if callback_handler:
+        metadata = {
+            "langfuse_user_id": user_id,
+            "langfuse_session_id": material_id,  # Use material_id as session
+            "material_id": material_id,
+            "agent_name": "PDFAnalyzer",
+            "operation": "filename_generation"
+        }
+        config["callbacks"] = [callback_handler]
+        config["metadata"] = metadata
+        logger.debug(f"🟡 Langfuse: Sending filename_generation LLM call with metadata: user_id={user_id}, material_id={material_id}")
+    
+    try:
+        loop = asyncio.get_event_loop()
+        raw_response = await loop.run_in_executor(
+            None, 
+            lambda: llm.invoke([message], config=config if config else None)
+        )
+        
+        if callback_handler:
+            logger.debug("🟢 Langfuse: Filename generation LLM call completed - data tracked by CallbackHandler")
+        
+        text = getattr(raw_response, "content", None)
+        if not isinstance(text, str):
+            # Some LangChain wrappers return a list; fall back sensibly
+            if isinstance(text, list) and text and isinstance(text[0], str):
+                text = text[0]
+            else:
+                # As a last resort, dump the whole object
+                text = str(raw_response)
+        
+        # Clean up the response - remove quotes, whitespace, and file extensions
+        filename = text.strip()
+        # Remove surrounding quotes if present
+        if filename.startswith('"') and filename.endswith('"'):
+            filename = filename[1:-1]
+        if filename.startswith("'") and filename.endswith("'"):
+            filename = filename[1:-1]
+        # Remove file extensions
+        filename = filename.replace(".pdf", "").replace(".PDF", "")
+        # Limit length
+        if len(filename) > 100:
+            filename = filename[:100].strip()
+        
+        # Fallback if result is empty
+        if not filename:
+            filename = "Vorlesungsmaterial"
+        
+        logger.info(f"Generated filename: {filename}")
+        return filename
+        
+    except Exception as e:
+        logger.error(f"Failed to generate filename: {str(e)}", exc_info=True)
+        # Return fallback filename on error
+        return "Vorlesungsmaterial"
 

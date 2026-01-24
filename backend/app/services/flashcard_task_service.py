@@ -132,6 +132,31 @@ class FlashcardTaskService:
         async with self._lock:
             return self._tasks.get(task_id)
     
+    async def get_active_task_for_material(
+        self,
+        course_material_id: str,
+        user_id: str,
+    ) -> Optional[FlashcardTask]:
+        """
+        Get the active (pending or running) task for a course material.
+        
+        Args:
+            course_material_id: Course material ID
+            user_id: User ID for authorization
+            
+        Returns:
+            Active task or None if not found
+        """
+        async with self._lock:
+            for task in self._tasks.values():
+                if (
+                    task.course_material_id == course_material_id
+                    and task.user_id == user_id
+                    and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+                ):
+                    return task
+            return None
+    
     async def cancel_task(self, task_id: str) -> bool:
         """
         Cancel a task.

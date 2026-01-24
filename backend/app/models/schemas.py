@@ -4,8 +4,8 @@ Pydantic Schemas
 Request/response models and data validation schemas for the API.
 """
 
-from typing import Optional
-from pydantic import BaseModel, Field
+from typing import Optional, Literal, Dict, List
+from pydantic import BaseModel, Field, field_validator
 
 
 class SlideAnalysis(BaseModel):
@@ -168,3 +168,176 @@ class FlashcardTaskStatusResponse(BaseModel):
     filename: Optional[str] = None
     created_at: float
     completed_at: Optional[float] = None
+
+
+class MaterialUpdateRequest(BaseModel):
+    """Request model for updating course material data."""
+    
+    file_name: Optional[str] = Field(None, description="New filename for the material")
+
+
+class MaterialResponse(BaseModel):
+    """Response model for course material data."""
+    
+    id: str
+    course_id: str
+    user_id: str
+    file_name: str
+    file_path: str
+    file_type: str
+    page_count: int
+    processing_status: str
+    error_message: Optional[str] = None
+    created_at: str
+    summary: Optional[str] = None
+
+
+# Quiz-related models
+
+class QuizQuestion(BaseModel):
+    """Model for a single quiz question."""
+    
+    id: str = Field(..., description="Unique question identifier (e.g., 'q1', 'q2')")
+    question: str = Field(..., description="The question text", min_length=1)
+    options: Dict[str, str] = Field(
+        ...,
+        description="Answer options as a dictionary with keys A, B, C, D",
+        min_length=4,
+        max_length=4
+    )
+    correct_answer: Literal["A", "B", "C", "D"] = Field(
+        ...,
+        description="The correct answer option (A, B, C, or D)"
+    )
+    difficulty: Literal["easy", "medium", "hard"] = Field(
+        ...,
+        description="Question difficulty level"
+    )
+    explanation: str = Field(
+        ...,
+        description="Explanation of the correct answer (shown after user answers)",
+        min_length=1
+    )
+    
+    @field_validator("options")
+    @classmethod
+    def validate_options(cls, v: Dict[str, str]) -> Dict[str, str]:
+        """Validate that options contain exactly A, B, C, D keys."""
+        required_keys = {"A", "B", "C", "D"}
+        actual_keys = set(v.keys())
+        
+        if actual_keys != required_keys:
+            missing = required_keys - actual_keys
+            extra = actual_keys - required_keys
+            error_msg = f"Options must contain exactly keys A, B, C, D"
+            if missing:
+                error_msg += f". Missing: {missing}"
+            if extra:
+                error_msg += f". Extra: {extra}"
+            raise ValueError(error_msg)
+        
+        # Validate that all option values are non-empty
+        for key, value in v.items():
+            if not value or not value.strip():
+                raise ValueError(f"Option {key} cannot be empty")
+        
+        return v
+    
+    @field_validator("correct_answer")
+    @classmethod
+    def validate_correct_answer(cls, v: Literal["A", "B", "C", "D"], info) -> Literal["A", "B", "C", "D"]:
+        """Validate that correct_answer exists in options."""
+        # Note: This validation happens after options validation
+        # We can't access options here directly, but Pydantic will validate the relationship
+        # The actual check happens in the agent's _validate_quiz method
+        return v
+    
+    @field_validator("explanation")
+    @classmethod
+    def validate_explanation(cls, v: str) -> str:
+        """Validate that explanation is not empty."""
+        if not v or not v.strip():
+            raise ValueError("Explanation cannot be empty")
+        return v.strip()
+
+
+class QuizData(BaseModel):
+    """Model for complete quiz data structure."""
+    
+    topic: str = Field(..., description="Topic name for this quiz")
+    questions: List[QuizQuestion] = Field(
+        ...,
+        description="List of quiz questions",
+        min_length=3,
+        max_length=8
+    )
+    metadata: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Metadata about question distribution (e.g., {'easy_count': 2, 'medium_count': 1, 'hard_count': 1})"
+    )
+
+
+class QuizCreate(BaseModel):
+    """Input model for creating a quiz."""
+    
+    start_page: int = Field(..., ge=1, description="Starting page number (1-indexed)")
+    end_page: int = Field(..., ge=1, description="Ending page number (1-indexed)")
+    course_material_id: str = Field(..., description="Course material ID (UUID)")
+    user_id: str = Field(..., description="User ID (UUID)")
+
+
+class QuizSubmit(BaseModel):
+    """Input model for submitting quiz answers."""
+    
+    quiz_id: str = Field(..., description="Quiz ID (UUID)")
+    answers: Dict[str, str] = Field(
+        ...,
+        description="User answers as a dictionary mapping question_id to answer (A, B, C, or D)"
+    )
+    user_id: str = Field(..., description="User ID (UUID)")
+
+
+class QuestionResult(BaseModel):
+    """Model for individual question result."""
+    
+    question_id: str
+    user_answer: Literal["A", "B", "C", "D"]
+    correct_answer: Literal["A", "B", "C", "D"]
+    correct: bool
+    explanation: Optional[str] = None
+
+
+class QuizResult(BaseModel):
+    """Response model for quiz submission results."""
+    
+    quiz_id: str
+    score: float = Field(..., ge=0.0, le=1.0, description="Score from 0.0 to 1.0")
+    correct_count: int
+    total_questions: int
+    question_results: List[QuestionResult]
+    completed_at: str
+    tutor_feedback: Optional[str] = Field(None, description="Tutor feedback message based on quiz results")
+
+
+class QuizToolResponse(BaseModel):
+    """Response model for quiz tool execution."""
+    
+    quiz_id: str = Field(..., description="Quiz ID (UUID)")
+    quiz_data: QuizData = Field(..., description="Quiz data with questions")
+    topic: str = Field(..., description="Topic name")
+    question_count: int = Field(..., description="Number of questions", ge=3, le=8)
+    start_page: int = Field(..., description="Starting page number", ge=1)
+    end_page: int = Field(..., description="Ending page number", ge=1)
+
+
+class QuizResponse(BaseModel):
+    """Response model for quiz data retrieval."""
+    
+    id: str
+    course_material_id: str
+    user_id: str
+    topic_name: str
+    start_page: int
+    end_page: int
+    quiz_data: QuizData
+    created_at: str

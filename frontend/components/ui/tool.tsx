@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { Loader } from "@/components/ui/loader"
 import { cn } from "@/lib/utils"
 
 export interface ToolCall {
@@ -25,31 +26,55 @@ export interface ToolProps extends React.ComponentProps<typeof Collapsible> {
   toolCall: ToolCall
 }
 
-const getStatusBadge = (state: ToolCall["state"] = "completed") => {
+const getStatusBadge = (state: ToolCall["state"], hasResult: boolean) => {
+  // Determine actual state: if no result, it should be "running" (waiting for response)
+  const actualState = hasResult ? (state || "completed") : "running"
+  
   const labels: Record<string, string> = {
     pending: "Pending",
-    running: "Running",
+    running: "Warte auf Antwort",
     completed: "Completed",
     error: "Error",
   }
 
   const icons: Record<string, React.ReactNode> = {
     pending: <CircleIcon className="size-4" />,
-    running: <ClockIcon className="size-4 animate-pulse" />,
+    running: <Loader size={16} className="text-blue-600" />,
     completed: <CheckCircleIcon className="size-4 text-green-600" />,
     error: <XCircleIcon className="size-4 text-red-600" />,
   }
 
   return (
     <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
-      {icons[state]}
-      {labels[state]}
+      {icons[actualState]}
+      {labels[actualState]}
     </Badge>
   )
 }
 
 export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
   const [isOpen, setIsOpen] = React.useState(false)
+  const [hasTimedOut, setHasTimedOut] = React.useState(false)
+  const hasResult = !!toolCall.result
+
+  // Timeout of 1 minute
+  React.useEffect(() => {
+    if (hasResult) {
+      setHasTimedOut(false)
+      return
+    }
+
+    const timeoutId = setTimeout(() => {
+      setHasTimedOut(true)
+    }, 60000) // 1 minute
+
+    return () => {
+      clearTimeout(timeoutId)
+    }
+  }, [hasResult])
+
+  // Determine actual state: if no result, it should be "running" (waiting for response)
+  const actualState = hasResult ? (toolCall.state || "completed") : "running"
 
   return (
     <Collapsible
@@ -62,7 +87,7 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
         <div className="flex items-center gap-2">
           <WrenchIcon className="size-4 text-muted-foreground" />
           <span className="font-medium text-sm">{toolCall.name}</span>
-          {getStatusBadge(toolCall.state)}
+          {getStatusBadge(toolCall.state, hasResult)}
         </div>
         <ChevronDownIcon
           className={cn(
@@ -85,6 +110,30 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
             </div>
           </div>
           
+          {/* Waiting State - Show when no result yet */}
+          {!hasResult && !hasTimedOut && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 rounded-md bg-blue-50 dark:bg-blue-950/20 p-3 border border-blue-200 dark:border-blue-900">
+                <Loader size={16} className="text-blue-600" />
+                <span className="text-xs text-blue-700 dark:text-blue-300">
+                  Warte auf Antwort...
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Timeout Message */}
+          {!hasResult && hasTimedOut && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 rounded-md bg-yellow-50 dark:bg-yellow-950/20 p-3 border border-yellow-200 dark:border-yellow-900">
+                <ClockIcon className="size-4 text-yellow-600" />
+                <span className="text-xs text-yellow-700 dark:text-yellow-300">
+                  Timeout erreicht - Warte weiterhin auf Antwort...
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Result Section */}
           {toolCall.result && (
             <div className="space-y-2">
