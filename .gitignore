@@ -18,6 +18,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend/lib/
 lib64/
 parts/
 sdist/
@@ -225,4 +226,4 @@ frontend/.vercel
 node_modules/
 **/node_modules/
 backend/node_modules/
-frontend/node_modules/
+frontend/node_modules/!frontend/lib/

@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     LANGFUSE_BASE_URL: str = "https://cloud.langfuse.com"  # EU region (default)
     LANGFUSE_ENABLED: bool = False  # Feature flag
     
+    # Google Cloud TTS (optional)
+    GOOGLE_CLOUD_PROJECT_ID: str | None = None
+    GOOGLE_APPLICATION_CREDENTIALS: str | None = None  # Path to service account JSON
+    TTS_LANGUAGE_CODE: str = "zh-CN"  # Chinese (Simplified)
+    TTS_VOICE_NAME: str | None = None  # Voice name (None = use default for language)
+    TTS_AUDIO_ENCODING: str = "MP3"
+    TTS_SPEAKING_RATE: float = 1.0  # Normal speed
+    
     model_config = SettingsConfigDict(
         # Try .env in current directory, then parent directory (project root)
         env_file=[
