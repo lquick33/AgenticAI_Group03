@@ -357,7 +357,7 @@ export async function getFlashcardsForMaterial(
 }
 
 /**
- * Download flashcards directly from database as CSV
+ * Download flashcards directly from database as .apkg (Anki deck)
  */
 export async function downloadFlashcardsFromDb(
   materialId: string,

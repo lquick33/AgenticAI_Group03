@@ -76,7 +76,7 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `flashcards_${materialId}.csv`
+      a.download = `flashcards_${materialId}.apkg`
       document.body.appendChild(a)
       a.click()
       window.URL.revokeObjectURL(url)
@@ -108,7 +108,7 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
       const blob = await downloadFlashcards(taskId, userId)
       
       // Get filename from status or use default
-      const filename = status.filename || `flashcards_${materialId}.csv`
+      const filename = status.filename || `flashcards_${materialId}.apkg`
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url

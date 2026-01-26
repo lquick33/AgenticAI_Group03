@@ -80,8 +80,8 @@ export function CongratulationsScreen({
     try {
       const blob = await downloadFlashcards(taskId, userId)
       
-      // Get filename from status or use default
-      const filename = status.filename || `flashcards_${materialId}.csv`
+      // Get filename from status or use default (.apkg format)
+      const filename = status.filename || `flashcards_${materialId}.apkg`
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -243,7 +243,7 @@ export function CongratulationsScreen({
             <p>
               Die Karteikarten können direkt in Anki importiert werden.
               <br />
-              Format: CSV mit Spalten: front, back, tags
+              Format: .apkg (Anki-Deck mit eingebetteten Bildern)
             </p>
           </div>
         </CardContent>

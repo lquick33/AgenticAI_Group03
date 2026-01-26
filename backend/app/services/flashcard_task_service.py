@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 from app.agents.flashcards import FlashcardGeneratorAgent
-from app.services.flashcard_service import build_anki_csv
+from app.services.flashcard_service import build_anki_apkg
 from app.services.storage import save_flashcards
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class FlashcardTask:
         self.processed_pages = 0
         self.cards_generated = 0
         self.error_message: Optional[str] = None
-        self.csv_bytes: Optional[bytes] = None
+        self.apkg_bytes: Optional[bytes] = None
         self.filename: Optional[str] = None
         self.created_at = time.time()
         self.completed_at: Optional[float] = None
@@ -230,14 +230,45 @@ class FlashcardTaskService:
                 logger.info(f"Saved {len(cards)} flashcards to database for task {task.task_id}")
             except Exception as e:
                 logger.warning(f"Failed to save flashcards to database: {str(e)}")
-                # Continue anyway - CSV generation should still work
+                # Continue anyway - APKG generation should still work
             
-            # Build CSV
-            task.csv_bytes = build_anki_csv(cards)
-            
-            # Generate filename
-            from app.services.storage import get_supabase_client
+            # Generate filename first (needed for deck name)
+            from app.services.storage import get_supabase_client, get_all_page_analyses_for_material
             client = get_supabase_client()
+            
+            # Fetch ALL flashcards from DB for this material (not just newly generated ones)
+            # This ensures the .apkg includes all cards, even from previous runs
+            page_analyses = get_all_page_analyses_for_material(task.course_material_id, task.user_id)
+            page_analysis_ids = [pa.get("id") for pa in page_analyses if pa.get("id")]
+            
+            if page_analysis_ids:
+                all_cards_response = (
+                    client.table("flashcards")
+                    .select("front, back, source_page_analysis_id")
+                    .eq("user_id", task.user_id)
+                    .in_("source_page_analysis_id", page_analysis_ids)
+                    .execute()
+                )
+                
+                if all_cards_response.data:
+                    # Convert DB format to the format expected by build_anki_apkg
+                    all_cards = []
+                    for card in all_cards_response.data:
+                        # Get page number from page_analysis
+                        page_num = None
+                        for pa in page_analyses:
+                            if pa.get("id") == card.get("source_page_analysis_id"):
+                                page_num = pa.get("page_number")
+                                break
+                        
+                        all_cards.append({
+                            "front": card.get("front", ""),
+                            "back": card.get("back", ""),
+                            "tags": [f"page:{page_num}"] if page_num else []
+                        })
+                    
+                    cards = all_cards
+                    logger.info(f"Using {len(cards)} cards from database for .apkg generation")
             
             material_response = (
                 client.table("course_materials")
@@ -261,7 +292,11 @@ class FlashcardTaskService:
             import re
             safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
             safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
-            task.filename = f"flashcards_{safe_course_title}_{safe_file_name}.csv"
+            
+            # Build .apkg with embedded images
+            deck_name = f"{course_title} - {file_name.replace('.pdf', '')}"
+            task.apkg_bytes = build_anki_apkg(cards, deck_name=deck_name)
+            task.filename = f"flashcards_{safe_course_title}_{safe_file_name}.apkg"
             
             task.status = TaskStatus.COMPLETED
             task.progress = 1.0
@@ -302,6 +337,16 @@ class FlashcardTaskService:
         
         if not page_analyses:
             return []
+        
+        # Get all snippets for this material to avoid DB calls in loop
+        from app.services.snippet_service import get_snippets_for_material, get_snippet_public_url
+        logger.info(f"🔍 Getting snippets for material {course_material_id}, user {user_id}")
+        snippets = get_snippets_for_material(course_material_id, user_id)
+        logger.info(f"🔍 Found {len(snippets)} snippets total")
+        if snippets:
+            logger.info(f"🔍 Snippet page numbers: {[s.get('page_number') for s in snippets]}")
+        snippets_by_page = {s["page_number"]: s for s in snippets}
+        logger.info(f"🔍 snippets_by_page dict keys: {list(snippets_by_page.keys())}")
         
         all_cards = []
         
@@ -349,6 +394,37 @@ class FlashcardTaskService:
                 except Exception as e:
                     logger.warning(f"Error getting messages for page {page_number}: {e}")
             
+            # Check for snippets and get URL if available
+            snippet_image_url = None
+            logger.info(f"🔍 Checking for snippets for page {page_number}...")
+            logger.info(f"🔍 snippets_by_page keys: {list(snippets_by_page.keys())}")
+            
+            if page_number in snippets_by_page:
+                snippet = snippets_by_page[page_number]
+                logger.info(f"✅ Snippet found in dict for page {page_number}: {snippet}")
+                image_path = snippet.get("image_path")
+                logger.info(f"🔍 image_path from snippet: {image_path}")
+                
+                if image_path:
+                    try:
+                        logger.info(f"🔍 Calling get_snippet_public_url with: {image_path}")
+                        snippet_image_url = get_snippet_public_url(image_path)
+                        logger.info(f"✅ URL generated successfully! Length: {len(snippet_image_url) if snippet_image_url else 0}")
+                        logger.info(f"✅ Found snippet for page {page_number}, URL: {snippet_image_url[:100] if snippet_image_url else 'None'}...")
+                        logger.info(f"📸 snippet_image_url is not None: {snippet_image_url is not None}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to get snippet URL for page {page_number}: {e}", exc_info=True)
+                        snippet_image_url = None
+                else:
+                    logger.warning(f"⚠️ Snippet found but image_path is None or empty for page {page_number}")
+            else:
+                logger.debug(f"No snippet found for page {page_number} in snippets_by_page")
+            
+            # Log before passing to _generate_cards_for_page
+            logger.info(f"🔍 About to call _generate_cards_for_page with snippet_image_url: {snippet_image_url is not None}")
+            if snippet_image_url:
+                logger.info(f"🔍 snippet_image_url value: {snippet_image_url[:100]}...")
+            
             # Generate cards for this page (async with timeout)
             try:
                 cards = await asyncio.wait_for(
@@ -360,6 +436,7 @@ class FlashcardTaskService:
                         course_material_id,
                         page_number,
                         task.user_id,
+                        snippet_image_url,  # ✅ Pass snippet URL!
                     ),
                     timeout=60.0  # 60 second timeout per card generation
                 )

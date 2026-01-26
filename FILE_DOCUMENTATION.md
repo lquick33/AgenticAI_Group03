@@ -2984,30 +2984,42 @@ cards = agent.generate_flashcards(
 
 ### `backend/app/services/flashcard_service.py`
 
-**Purpose**: Service functions for flashcard operations, including CSV export for Anki import.
+**Purpose**: Service functions for flashcard operations, including Anki .apkg export with embedded images.
 
 **Key Components**:
-- **build_anki_csv()**: 
-  - Converts flashcard list to Anki-compatible CSV format
-  - Format: 3 columns (front, back, tags) separated by pipe (`|`) delimiter
-  - Tags are space-separated strings
-  - UTF-8 encoding with BOM for Excel compatibility
-  - Proper CSV escaping for special characters and newlines
+- **build_anki_apkg()**: 
+  - Converts flashcard list to Anki .apkg package with embedded images
+  - Uses `genanki` library to create proper Anki deck format
+  - Extracts `<img src="...">` URLs from card back fields
+  - Downloads images from Supabase storage
+  - Replaces URLs with local filenames in card content
+  - Embeds images directly into the .apkg file
+  - Images are automatically placed in Anki's `collection.media` on import
+  - No URL authentication issues - images work offline
+- **Helper Functions**:
+  - `_create_anki_model()`: Creates genanki Model with Front/Back fields
+  - `_extract_image_urls()`: Regex extraction of image URLs from HTML
+  - `_extract_page_number_from_tags()`: Gets page number from tags like "page:3"
+  - `_generate_image_filename()`: Creates unique filenames like `snippet_page_3_a1b2c3d4.png`
+  - `_extract_image_path_from_url()`: Parses Supabase storage paths from URLs
 
 **Dependencies**: 
-- Python `csv` and `io` modules
+- `genanki` - Anki deck generation library
+- `app.services.snippet_service.download_snippet_image` - Downloads images from storage
+- Python `hashlib`, `tempfile`, `re` modules
 
 **Usage**: 
 ```python
-from app.services.flashcard_service import build_anki_csv
+from app.services.flashcard_service import build_anki_apkg
 
-csv_bytes = build_anki_csv(cards)
-# Returns bytes ready for HTTP response
+apkg_bytes = build_anki_apkg(cards, deck_name="My Deck")
+# Returns .apkg bytes ready for HTTP response
 ```
 
 **Related Files**: 
-- `backend/app/agents/flashcards/flashcard_agent.py` - Generates cards
-- `backend/app/api/endpoints.py` - Uses this for CSV export
+- `backend/app/agents/flashcards/flashcard_agent.py` - Generates cards with image URLs
+- `backend/app/api/endpoints.py` - Uses this for .apkg export
+- `backend/app/services/snippet_service.py` - Downloads snippet images
 
 ---
 
@@ -3998,5 +4010,57 @@ The component automatically renders math when the content contains:
 **Related Files**: 
 - `frontend/components/study/chat-interface.tsx` - Receives quiz callbacks
 - `frontend/lib/api/study.ts` - submitQuiz function
+
+---
+
+### `backend/app/services/snippet_service.py`
+
+**Purpose**: Service for managing slide snippets (user-created image crops from PDF slides) and downloading them for Anki export.
+
+**Storage**: All snippets are stored in the `course_materials` bucket with path structure:
+`{user_id}/snippets/{course_material_id}/page_{page_number}_{timestamp}.png`
+
+**Key Components**:
+- **create_snippet()**: 
+  - Uploads image to Supabase Storage (`course_materials` bucket)
+  - Creates/updates record in `slide_snippets` table
+  - Handles upsert for replacing existing snippets on the same page
+  - Cleans up old images when overwriting
+- **get_snippets_for_material()**: 
+  - Retrieves all snippets for a course material by user
+  - Returns list ordered by page number
+- **get_snippet_public_url()**: 
+  - Generates signed URL for a snippet image from `course_materials` bucket
+  - Note: For APKG generation, `download_snippet_image()` is used instead
+  - Falls back to signed URL from `course_materials` bucket (10-year expiration)
+- **download_snippet_image()**: 
+  - Downloads snippet image bytes from Supabase Storage
+  - Used by `build_anki_apkg()` to embed images directly in .apkg files
+  - Tries `snippets` bucket first, fallback to `course_materials`
+- **delete_snippet()**: 
+  - Deletes snippet record and associated image file
+
+**Dependencies**: 
+- `app.services.storage.get_supabase_client` - Supabase client
+- `app.core.config.settings` - SUPABASE_URL for constructing public URLs
+
+**Usage**: 
+```python
+from app.services.snippet_service import (
+    create_snippet,
+    get_snippets_for_material,
+    get_snippet_public_url,
+    download_snippet_image,
+    delete_snippet
+)
+
+# Download image for embedding in .apkg
+image_bytes = download_snippet_image(snippet["image_path"])
+```
+
+**Related Files**: 
+- `backend/app/services/flashcard_service.py` - Uses `download_snippet_image()` for .apkg generation
+- `backend/app/api/endpoints.py` - Snippet CRUD endpoints
+- `backend/supabase/migrations/20260126000000_add_slide_snippets.sql` - Table definition
 
 ---
