@@ -21,6 +21,7 @@ from app.agents.base import BaseAgent, State
 from app.tools.page_analysis_tool import GetPageAnalysisTool
 from app.tools.course_material_tool import GetCourseMaterialSummaryTool
 from app.tools.quiz_tool import CreateQuizTool
+from app.tools.page_image_tool import GetPageImageTool
 from app.services.observability import create_callback_handler, get_langfuse_client
 from app.core.config import settings
 
@@ -119,6 +120,18 @@ class StateAwareToolNode(ToolNode):
                         if input.get("user_id"):
                             args["user_id"] = input["user_id"]
                 
+                # Inject state values for get_page_image tool
+                elif tool_name == "get_page_image":
+                    if "course_material_id" not in args or not args.get("course_material_id"):
+                        if input.get("material_id"):
+                            args["course_material_id"] = input["material_id"]
+                    if "user_id" not in args or not args.get("user_id"):
+                        if input.get("user_id"):
+                            args["user_id"] = input["user_id"]
+                    if "page_number" not in args or args.get("page_number") is None:
+                        if input.get("current_page"):
+                            args["page_number"] = input["current_page"]
+                
                 # Create modified tool call
                 modified_tool_calls.append({
                     "id": tool_id,
@@ -211,6 +224,18 @@ class StateAwareToolNode(ToolNode):
                         if input.get("user_id"):
                             args["user_id"] = input["user_id"]
                 
+                # Inject state values for get_page_image tool
+                elif tool_name == "get_page_image":
+                    if "course_material_id" not in args or not args.get("course_material_id"):
+                        if input.get("material_id"):
+                            args["course_material_id"] = input["material_id"]
+                    if "user_id" not in args or not args.get("user_id"):
+                        if input.get("user_id"):
+                            args["user_id"] = input["user_id"]
+                    if "page_number" not in args or args.get("page_number") is None:
+                        if input.get("current_page"):
+                            args["page_number"] = input["current_page"]
+                
                 # Create modified tool call
                 modified_tool_calls.append({
                     "id": tool_id,
@@ -272,10 +297,12 @@ class TutorAgent(BaseAgent):
         self.page_analysis_tool = GetPageAnalysisTool()
         self.course_material_tool = GetCourseMaterialSummaryTool()
         self.quiz_tool = CreateQuizTool()
+        self.page_image_tool = GetPageImageTool()
         self.langchain_tools = [
             self.page_analysis_tool.to_langchain_tool(),
             self.course_material_tool.to_langchain_tool(),
-            self.quiz_tool.to_langchain_tool()
+            self.quiz_tool.to_langchain_tool(),
+            self.page_image_tool.to_langchain_tool()
         ]
         
         # Bind tools to LLM
@@ -703,6 +730,7 @@ class TutorAgent(BaseAgent):
                             f"- get_page_analysis: course_material_id, page_number, user_id\n"
                             f"- get_course_material_summary: course_material_id, user_id\n"
                             f"- create_quiz: course_material_id, user_id\n"
+                            f"- get_page_image: course_material_id, page_number, user_id\n"
                             f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
                             f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
                         )
@@ -724,6 +752,7 @@ class TutorAgent(BaseAgent):
                             f"- get_page_analysis: course_material_id, page_number, user_id\n"
                             f"- get_course_material_summary: course_material_id, user_id\n"
                             f"- create_quiz: course_material_id, user_id\n"
+                            f"- get_page_image: course_material_id, page_number, user_id\n"
                             f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
                             f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
                         )
@@ -752,6 +781,7 @@ class TutorAgent(BaseAgent):
                         f"- get_page_analysis: course_material_id, page_number, user_id\n"
                         f"- get_course_material_summary: course_material_id, user_id\n"
                         f"- create_quiz: course_material_id, user_id\n"
+                        f"- get_page_image: course_material_id, page_number, user_id\n"
                         f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
                         f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
                     )
@@ -773,6 +803,7 @@ class TutorAgent(BaseAgent):
                         f"- get_page_analysis: course_material_id, page_number, user_id\n"
                         f"- get_course_material_summary: course_material_id, user_id\n"
                         f"- create_quiz: course_material_id, user_id\n"
+                        f"- get_page_image: course_material_id, page_number, user_id\n"
                         f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
                         f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
                     )
@@ -821,6 +852,42 @@ class TutorAgent(BaseAgent):
         # This ensures all AIMessages with tool_calls have corresponding ToolMessages
         messages_for_llm = self._fix_incomplete_tool_calls(messages_for_llm)
         
+        # Handle multimodal tool responses (e.g. get_page_image)
+        # Gemini needs the image data in a specific format within the ToolMessage
+        for i, msg in enumerate(messages_for_llm):
+            if isinstance(msg, ToolMessage):
+                try:
+                    # Check if content is a JSON string containing image_data
+                    if isinstance(msg.content, str) and "image_data" in msg.content:
+                        content_json = json.loads(msg.content)
+                        if isinstance(content_json, dict) and content_json.get("status") == "success" and "image_data" in content_json:
+                            image_data = content_json["image_data"]
+                            page_num = content_json.get("page_number", "unknown")
+                            
+                            # Create multimodal content
+                            multimodal_content = [
+                                {
+                                    "type": "text", 
+                                    "text": f"Here is the visual snapshot of page {page_num}. Please analyze it to answer the user's question."
+                                },
+                                {
+                                    "type": "image_url", 
+                                    "image_url": {"url": image_data}
+                                }
+                            ]
+                            
+                            # Replace the message with a new ToolMessage containing multimodal content
+                            messages_for_llm[i] = ToolMessage(
+                                tool_call_id=msg.tool_call_id,
+                                content=multimodal_content,
+                                name=msg.name,
+                                artifact=msg.artifact
+                            )
+                            logger.info(f"Enhanced ToolMessage {msg.tool_call_id} with multimodal image content")
+                except Exception as e:
+                    # If parsing fails or not the expected format, keep original message
+                    pass
+
         # Call LLM with callbacks
         # Der CallbackHandler trackt automatisch Token-Usage, Model Parameters, etc.
         response = self.llm.invoke(messages_for_llm, config=config)

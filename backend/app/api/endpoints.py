@@ -1916,18 +1916,30 @@ async def send_chat_message(
                                         
                                         # Send tool response event
                                         # Validate tool response content before sending (only for non-error responses)
+                                        tool_response_content = tool_content
                                         if not is_error_response:
                                             try:
                                                 # Try to parse as JSON to validate structure
                                                 if tool_content:
-                                                    json.loads(tool_content)
+                                                    parsed_json = json.loads(tool_content)
+                                                    
+                                                    # Check if this is a get_page_image response with large image data
+                                                    # We truncate the image data for the frontend to prevent stream issues
+                                                    if isinstance(parsed_json, dict) and "image_data" in parsed_json:
+                                                        # Create a copy to modify for frontend display
+                                                        frontend_json = parsed_json.copy()
+                                                        image_data = frontend_json.get("image_data", "")
+                                                        if image_data and len(image_data) > 100:
+                                                            frontend_json["image_data"] = f"{image_data[:50]}...[truncated]...{image_data[-20:]}"
+                                                            tool_response_content = json.dumps(frontend_json)
+                                                            logger.info(f"Truncated large image data in tool response for frontend (original length: {len(image_data)})")
                                             except json.JSONDecodeError:
                                                 logger.warning(f"Tool response is not valid JSON: {tool_content[:200]}")
                                         
                                         tool_response_event = {
                                             "type": "tool_response",
                                             "tool_call_id": tool_call_id,
-                                            "result": tool_content,
+                                            "result": tool_response_content,
                                             "message_id": generate_message_id()
                                         }
                                         yield f"data: {json.dumps(tool_response_event)}\n\n"

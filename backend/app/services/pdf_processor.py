@@ -11,7 +11,7 @@ from typing import List
 from pdf2image import convert_from_bytes
 from PIL import Image
 
-from app.services.analyzer import analyze_pdf_page, generate_material_summary, generate_material_filename
+from app.services.analyzer import analyze_pdf_page, generate_material_summary, generate_material_filename, image_bytes_to_base64
 from app.services.storage import (
     update_processing_status,
     save_page_analysis,
@@ -39,6 +39,47 @@ def pil_image_to_bytes(image: Image.Image, format: str = "JPEG") -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format=format)
     return buffer.getvalue()
+
+
+def extract_page_image(pdf_bytes: bytes, page_number: int) -> str:
+    """
+    Extract a specific page from a PDF as a base64 encoded image string.
+    
+    Args:
+        pdf_bytes: Raw PDF file bytes
+        page_number: Page number to extract (1-indexed)
+        
+    Returns:
+        Base64 data URI string of the page image
+        
+    Raises:
+        ValueError: If page extraction fails
+    """
+    try:
+        # Convert specific page to image
+        # first_page and last_page are 1-indexed
+        images = convert_from_bytes(
+            pdf_bytes,
+            first_page=page_number,
+            last_page=page_number,
+            dpi=300,
+            fmt='jpeg'
+        )
+        
+        if not images:
+            raise ValueError(f"Page {page_number} not found in PDF")
+            
+        # Get the single image
+        image = images[0]
+        
+        # Convert to bytes
+        image_bytes = pil_image_to_bytes(image)
+        
+        # Convert to base64 data URI
+        return image_bytes_to_base64(image_bytes)
+        
+    except Exception as e:
+        raise ValueError(f"Failed to extract page {page_number}: {str(e)}")
 
 
 async def process_single_page(
