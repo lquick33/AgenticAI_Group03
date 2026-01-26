@@ -6,12 +6,15 @@ for course materials and page analyses.
 """
 
 import json
+import logging
 from typing import Optional, List
 
 from supabase import create_client, Client
 
 from app.core.config import settings
 from app.models.schemas import SlideAnalysis
+
+logger = logging.getLogger(__name__)
 
 
 # Initialize Supabase client (singleton)
@@ -587,6 +590,60 @@ def update_course_material_filename(
         logger.info(f"Updated filename for material {material_id} to: {filename}")
     except Exception as e:
         raise Exception(f"Failed to update course material filename: {str(e)}")
+
+
+def get_course_material_filename(material_id: str, user_id: str) -> Optional[str]:
+    """
+    Get the current filename of a course material.
+    
+    Args:
+        material_id: Course material ID
+        user_id: User ID for authorization
+        
+    Returns:
+        Current filename or None if not found
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("course_materials").select("file_name").eq("id", material_id).eq("user_id", user_id).single().execute()
+        if response.data:
+            return response.data.get("file_name")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to get course material filename: {str(e)}")
+        return None
+
+
+def get_course_materials_for_naming(
+    course_id: str,
+    user_id: str,
+    exclude_material_id: Optional[str] = None
+) -> List[dict]:
+    """
+    Get existing course materials to detect naming patterns.
+    
+    Args:
+        course_id: Course ID
+        user_id: User ID for authorization
+        exclude_material_id: Material ID to exclude from results (the one being renamed)
+        
+    Returns:
+        List of material dicts with file_name field
+    """
+    client = get_supabase_client()
+    
+    try:
+        query = client.table("course_materials").select("id, file_name").eq("course_id", course_id).eq("user_id", user_id)
+        
+        if exclude_material_id:
+            query = query.neq("id", exclude_material_id)
+        
+        response = query.order("created_at", ascending=True).execute()
+        return response.data if response.data else []
+    except Exception as e:
+        logger.warning(f"Failed to get course materials for naming pattern: {str(e)}")
+        return []
 
 
 def get_course_material_summary(

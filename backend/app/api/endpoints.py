@@ -333,6 +333,7 @@ async def upload_pdf(
             material_id=material_id,
             file_bytes=file_bytes,
             user_id=user_id,
+            course_id=actual_course_id,
             max_concurrent=5  # Process 5 pages in parallel
         )
         

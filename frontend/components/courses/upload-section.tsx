@@ -16,12 +16,13 @@ import {
 interface UploadSectionProps {
   courseId: string
   userId: string
+  onUploadSuccess?: () => void
 }
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB
 const MAX_FILES = 20
 
-export function UploadSection({ courseId, userId }: UploadSectionProps) {
+export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSectionProps) {
   const [files, setFiles] = useState<FileUploadItem[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -183,6 +184,10 @@ export function UploadSection({ courseId, userId }: UploadSectionProps) {
         )
       )
 
+      // Call onUploadSuccess callback immediately after successful upload
+      // The material is already in the database at this point
+      onUploadSuccess?.()
+
       // Simulate processing progress
       const processingInterval = setInterval(() => {
         setUploadProgress((prev) => ({
@@ -261,6 +266,7 @@ export function UploadSection({ courseId, userId }: UploadSectionProps) {
 
       if (allCompleted) {
         toast.success('Alle Dateien erfolgreich hochgeladen!')
+        // Refresh router for server-side state sync (non-blocking, since we already updated UI)
         setTimeout(() => {
           router.refresh()
         }, 2000)

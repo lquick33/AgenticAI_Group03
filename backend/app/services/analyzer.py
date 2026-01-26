@@ -8,7 +8,8 @@ Extracted and adapted from PoC to work with in-memory image bytes.
 import base64
 import io
 import json
-from typing import Optional, Sequence
+import re
+from typing import Optional, Sequence, List
 
 from PIL import Image
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -400,11 +401,95 @@ pages = {pages_json}
         return json.dumps(empty_summary, ensure_ascii=False)
 
 
+def detect_naming_pattern(existing_filenames: List[str]) -> Optional[dict]:
+    """
+    Detect naming pattern from existing filenames.
+    
+    Examples:
+    - ["Kapitel 1: Algebra", "Kapitel 2: Analysis"] -> pattern: "Kapitel {n}: {topic}"
+    - ["Chapter 1", "Chapter 2"] -> pattern: "Chapter {n}"
+    - ["Vorlesung 1", "Vorlesung 2"] -> pattern: "Vorlesung {n}"
+    
+    Returns:
+        Dict with pattern info: {"type": "kapitel"|"chapter"|"vorlesung"|None, "format": "Kapitel {n}: {topic}", "next_number": int}
+        or None if no clear pattern
+    """
+    if not existing_filenames or len(existing_filenames) < 1:
+        return None
+    
+    # Try to detect patterns
+    patterns = [
+        (r"^Kapitel\s+(\d+)(?:\s*:\s*(.+))?$", "Kapitel {n}: {topic}"),
+        (r"^Chapter\s+(\d+)(?:\s*:\s*(.+))?$", "Chapter {n}: {topic}"),
+        (r"^Vorlesung\s+(\d+)(?:\s*:\s*(.+))?$", "Vorlesung {n}: {topic}"),
+        (r"^Kapitel\s+(\d+)$", "Kapitel {n}"),
+        (r"^Chapter\s+(\d+)$", "Chapter {n}"),
+    ]
+    
+    for pattern_regex, pattern_format in patterns:
+        matches = []
+        for filename in existing_filenames:
+            match = re.match(pattern_regex, filename.strip(), re.IGNORECASE)
+            if match:
+                matches.append(match)
+        
+        # If most filenames match this pattern, use it
+        if len(matches) >= len(existing_filenames) * 0.7:  # 70% match threshold
+            # Extract highest chapter number
+            numbers = [int(m.group(1)) for m in matches]
+            max_num = max(numbers) if numbers else 0
+            
+            return {
+                "type": pattern_format.split()[0].lower(),
+                "format": pattern_format,
+                "next_number": max_num + 1
+            }
+    
+    return None
+
+
+def extract_topic_from_summary(page_one_summary: str) -> str:
+    """
+    Extract a topic/title from page 1 summary for use in filename.
+    
+    This is a simplified extraction - takes first sentence or key phrase.
+    For better results, could use LLM, but this keeps it fast.
+    """
+    if not page_one_summary:
+        return "Vorlesungsmaterial"
+    
+    # Try to extract topic from summary
+    # Remove common prefixes
+    summary = page_one_summary.strip()
+    
+    # Take first sentence (up to 50 chars) or first line
+    lines = summary.split('\n')
+    first_line = lines[0].strip() if lines else summary
+    
+    # Limit length
+    if len(first_line) > 50:
+        first_line = first_line[:50].strip()
+        # Try to cut at sentence end
+        for punct in ['.', ':', ';']:
+            idx = first_line.rfind(punct)
+            if idx > 10:  # At least 10 chars
+                first_line = first_line[:idx].strip()
+                break
+    
+    # Clean up
+    first_line = first_line.replace('\n', ' ').replace('\r', ' ')
+    first_line = ' '.join(first_line.split())  # Normalize whitespace
+    
+    return first_line if first_line else "Vorlesungsmaterial"
+
+
 async def generate_material_filename(
     page_one_summary: str,
     api_key: Optional[str] = None,
     material_id: Optional[str] = None,
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    course_id: Optional[str] = None,
+    existing_pattern: Optional[dict] = None
 ) -> str:
     """
     Generate a professional filename for a course material based on the summary of page 1.
@@ -418,6 +503,8 @@ async def generate_material_filename(
         api_key: Optional Google API key (uses settings if None)
         material_id: Course material ID for Langfuse tracking (optional)
         user_id: User ID for Langfuse tracking (optional)
+        course_id: Course ID for pattern detection (optional)
+        existing_pattern: Detected naming pattern from existing materials (optional)
         
     Returns:
         A clean, professional filename (without file extension)
@@ -426,6 +513,22 @@ async def generate_material_filename(
         ValueError: If API key is missing or generation fails
     """
     import asyncio
+    
+    # If pattern exists, use it
+    if existing_pattern:
+        next_num = existing_pattern["next_number"]
+        format_str = existing_pattern["format"]
+        
+        if "{topic}" in format_str:
+            # Extract topic from summary
+            topic = extract_topic_from_summary(page_one_summary)
+            filename = format_str.replace("{n}", str(next_num)).replace("{topic}", topic)
+            logger.info(f"Generated filename using pattern: {filename}")
+            return filename
+        else:
+            filename = format_str.replace("{n}", str(next_num))
+            logger.info(f"Generated filename using pattern: {filename}")
+            return filename
     
     # Load API key if not provided
     if api_key is None:
