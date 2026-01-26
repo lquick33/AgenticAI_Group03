@@ -1,8 +1,9 @@
 """
 Tool for text-to-speech conversion.
 
-This tool converts text (primarily Chinese) to audio files using Google Cloud TTS.
-Can be used by agents or called directly for flashcard audio generation.
+This tool converts text to audio files using Google Cloud TTS.
+Supports multiple languages through the language_code parameter.
+Can be used by agents or called directly for audio generation.
 """
 
 import json
@@ -11,21 +12,21 @@ from typing import Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.services.tts_service import generate_chinese_audio, contains_chinese
+from app.services.tts_service import generate_audio
 
 logger = logging.getLogger(__name__)
 
 
 class TextToSpeechInput(BaseModel):
     """Input schema for the TextToSpeech tool."""
-    text: str = Field(..., description="Text to convert to speech (Chinese characters supported)")
+    text: str = Field(..., description="Text to convert to speech (supports any language)")
     voice_name: Optional[str] = Field(
         None,
-        description="Optional voice name (default: zh-CN-Wavenet-C). Leave empty to use default."
+        description="Optional voice name (e.g., 'en-US-Wavenet-D', 'zh-CN-Wavenet-C', 'es-ES-Wavenet-B'). Leave empty to use default voice for the language."
     )
     language_code: Optional[str] = Field(
         None,
-        description="Optional language code (default: zh-CN). Leave empty to use default."
+        description="Optional language code (e.g., 'en-US', 'zh-CN', 'es-ES', 'fr-FR', 'de-DE'). Default: from settings (typically 'zh-CN')."
     )
     speaking_rate: Optional[float] = Field(
         None,
@@ -39,8 +40,9 @@ class TextToSpeechTool:
     """
     Tool for converting text to speech using Google Cloud TTS.
     
-    This tool can be used by agents to generate audio files from text,
-    particularly useful for Chinese language learning flashcards.
+    This tool can be used by agents to generate audio files from text in any language
+    supported by Google Cloud Text-to-Speech API. Useful for language learning,
+    accessibility, and any application requiring text-to-speech conversion.
     """
     
     def __init__(self):
@@ -48,11 +50,11 @@ class TextToSpeechTool:
         self.name = "text_to_speech"
         self.description = (
             "Konvertiert Text in Audio-Dateien (Text-to-Speech) mit Google Cloud TTS. "
-            "Besonders nützlich für chinesische Sprachlern-Karteikarten. "
+            "Unterstützt mehrere Sprachen (z.B. Deutsch, Englisch, Chinesisch, Spanisch, Französisch). "
             "Gibt Audio-Daten als Base64-kodierte MP3-Datei zurück. "
-            "Parameter: text (der zu konvertierende Text), "
-            "voice_name (optional, Standard: zh-CN-Wavenet-C), "
-            "language_code (optional, Standard: zh-CN), "
+            "Parameter: text (der zu konvertierende Text in beliebiger Sprache), "
+            "voice_name (optional, z.B. 'de-DE-Wavenet-B', 'en-US-Wavenet-D', 'zh-CN-Wavenet-C'), "
+            "language_code (optional, z.B. 'de-DE', 'en-US', 'zh-CN', 'es-ES', Standard: aus Einstellungen), "
             "speaking_rate (optional, 0.25-4.0, Standard: 1.0)."
         )
     
@@ -85,14 +87,9 @@ class TextToSpeechTool:
                 }
                 return json.dumps(error_response, ensure_ascii=False)
             
-            # Check if text contains Chinese (optional validation)
-            if not contains_chinese(text):
-                logger.warning(f"Text does not contain Chinese characters: {text[:50]}...")
-                # Still proceed - TTS can work with non-Chinese text too
-            
             # Generate audio
-            logger.info(f"Generating TTS audio for text: {text[:50]}...")
-            audio_bytes = generate_chinese_audio(
+            logger.info(f"Generating TTS audio for text: {text[:50]}... (language: {language_code or 'default'})")
+            audio_bytes = generate_audio(
                 text=text,
                 voice_name=voice_name,
                 language_code=language_code,

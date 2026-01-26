@@ -2,7 +2,7 @@
 Text-to-Speech Service
 
 Service for generating audio files from text using Google Cloud Text-to-Speech API.
-Primarily designed for Chinese language learning flashcards.
+Supports multiple languages through Google Cloud TTS.
 """
 
 import logging
@@ -62,20 +62,23 @@ def get_tts_client() -> Optional[texttospeech.TextToSpeechClient]:
         return None
 
 
-def generate_chinese_audio(
+def generate_audio(
     text: str,
     voice_name: Optional[str] = None,
     language_code: Optional[str] = None,
     speaking_rate: Optional[float] = None
 ) -> Optional[bytes]:
     """
-    Generate audio file from Chinese text using Google Cloud TTS.
+    Generate audio file from text using Google Cloud TTS.
+    
+    Supports any language supported by Google Cloud Text-to-Speech API.
+    Language is determined by the language_code parameter (e.g., "en-US", "zh-CN", "es-ES", "fr-FR").
     
     Args:
-        text: Chinese text to convert to speech
-        voice_name: Voice name (default: from settings)
-        language_code: Language code (default: "zh-CN" from settings)
-        speaking_rate: Speaking rate (default: 1.0 from settings)
+        text: Text to convert to speech (any language)
+        voice_name: Voice name (default: from settings, or Google's default for language)
+        language_code: Language code (default: from settings, typically "zh-CN")
+        speaking_rate: Speaking rate (default: 1.0 from settings, range: 0.25 to 4.0)
         
     Returns:
         Audio file bytes (MP3 format), or None if generation fails
@@ -150,6 +153,10 @@ def generate_chinese_audio(
         return None
 
 
+# Backward compatibility alias
+generate_chinese_audio = generate_audio
+
+
 def contains_chinese(text: str) -> bool:
     """
     Check if text contains Chinese characters.
@@ -192,14 +199,14 @@ def generate_flashcard_audio(
     # Generate character audio
     if character and contains_chinese(character):
         logger.info(f"Generating character audio for card {card_id}: {character}")
-        result["character_audio"] = generate_chinese_audio(character)
+        result["character_audio"] = generate_audio(character)
     else:
         logger.debug(f"Skipping character audio (no Chinese text): {character}")
     
     # Generate sentence audio
     if sentence and contains_chinese(sentence):
         logger.info(f"Generating sentence audio for card {card_id}: {sentence[:50]}...")
-        result["sentence_audio"] = generate_chinese_audio(sentence)
+        result["sentence_audio"] = generate_audio(sentence)
     else:
         logger.debug(f"Skipping sentence audio (no Chinese text): {sentence[:50] if sentence else 'empty'}...")
     
