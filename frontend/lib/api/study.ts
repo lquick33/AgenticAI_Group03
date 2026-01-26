@@ -42,6 +42,70 @@ export function parseSSEChunk(chunk: string): {
 }
 
 /**
+ * Helper to process streaming responses
+ */
+function processStreamResponse(
+  response: Response,
+  onChunk: (chunk: any) => void,
+  onComplete?: () => void,
+  onError?: (error: Error) => void
+): { close: () => void; done: Promise<void> } {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('No response body')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let isClosed = false
+
+  const donePromise = (async () => {
+    try {
+      while (!isClosed) {
+        const { done, value } = await reader.read()
+
+        if (done) {
+          if (!isClosed) {
+            isClosed = true
+            onComplete?.()
+          }
+          break
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.trim()) {
+            if (line.trim() === 'data: [DONE]') {
+              if (!isClosed) {
+                isClosed = true
+                onComplete?.()
+              }
+              return
+            }
+            const chunk = parseSSEChunk(line)
+            if (chunk) onChunk(chunk)
+          }
+        }
+      }
+    } catch (error) {
+      if (!isClosed) {
+        isClosed = true
+        onError?.(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+  })()
+
+  return {
+    close: () => {
+      isClosed = true
+      reader.cancel()
+    },
+    done: donePromise
+  }
+}
+
+/**
  * Initiate a chat session for a study page
  */
 export async function initiateChat(
@@ -53,10 +117,7 @@ export async function initiateChat(
   onComplete?: () => void,
   isInitialOpen: boolean = false
 ): Promise<{ close: () => void }> {
-  // #region agent log
   const requestUrl = `${API_URL}/api/chat/initiate`;
-  fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'study.ts:57',message:'initiateChat: Request start',data:{apiUrl:API_URL,requestUrl,method:'POST',materialId,pageNumber,userId,isInitialOpen},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
   // Use fetch with POST and stream the response
   let response: Response;
   try {
@@ -73,105 +134,17 @@ export async function initiateChat(
     }),
     })
   } catch (fetchError) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'study.ts:68',message:'initiateChat: Fetch error (network)',data:{error:fetchError instanceof Error ? fetchError.message : String(fetchError),errorType:fetchError instanceof Error ? fetchError.constructor.name : typeof fetchError,requestUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
     throw fetchError;
   }
 
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'study.ts:71',message:'initiateChat: Response received',data:{status:response.status,statusText:response.statusText,ok:response.ok,headers:Object.fromEntries(response.headers.entries())},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-  // #endregion
 
   if (!response.ok) {
-    // #region agent log
     const errorData = await response.json().catch(() => ({ detail: 'Request failed' }));
-    fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'study.ts:72',message:'initiateChat: Response error',data:{status:response.status,errorData},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     throw new Error(errorData.detail || `HTTP ${response.status}`)
   }
 
-  // Create a simple EventSource-like interface using ReadableStream
-  const reader = response.body?.getReader()
-  const decoder = new TextDecoder()
-
-  if (!reader) {
-    throw new Error('No response body')
-  }
-
-  let buffer = ''
-  let isClosed = false
-
-  const processStream = async () => {
-    try {
-      console.log('[initiateChat] Starting stream processing...')
-      while (true) {
-        const { done, value } = await reader.read()
-
-        if (done) {
-          console.log('[initiateChat] Stream done')
-          if (!isClosed) {
-            isClosed = true
-            onComplete?.()
-          }
-          break
-        }
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (line.trim()) {
-            console.log('[initiateChat] Received line:', line.substring(0, 100))
-            if (line === 'data: [DONE]' || line.trim() === 'data: [DONE]') {
-              console.log('[initiateChat] Stream complete')
-              if (!isClosed) {
-                isClosed = true
-                onComplete?.()
-              }
-              return
-            }
-            const chunk = parseSSEChunk(line)
-            if (chunk) {
-              console.log('[initiateChat] Parsed chunk:', chunk)
-              onChunk(chunk)
-            }
-          }
-        }
-      }
-    } catch (error) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'study.ts:124',message:'initiateChat: Stream error',data:{error:error instanceof Error ? error.message : String(error),errorType:error instanceof Error ? error.constructor.name : typeof error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
-      console.error('[initiateChat] Stream error:', error)
-      if (!isClosed) {
-        isClosed = true
-        onError?.(error instanceof Error ? error : new Error('Stream error'))
-      }
-    }
-  }
-
-  // Start processing stream (don't await, but handle errors)
-  processStream().catch((error) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'study.ts:134',message:'initiateChat: Unhandled stream error',data:{error:error instanceof Error ? error.message : String(error),errorType:error instanceof Error ? error.constructor.name : typeof error},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
-    console.error('[initiateChat] Unhandled stream error:', error)
-    if (!isClosed) {
-      isClosed = true
-      onError?.(error instanceof Error ? error : new Error('Stream error'))
-    }
-  })
-
-  // Return a close function for cleanup
-  return {
-    close: () => {
-      console.log('[initiateChat] Closing stream')
-      isClosed = true
-      reader.cancel()
-    },
-  }
+  const controller = processStreamResponse(response, onChunk, onComplete, onError)
+  return { close: controller.close }
 }
 
 /**
@@ -211,37 +184,18 @@ export function sendMessage(
           throw new Error(error.detail || `HTTP ${response.status}`)
         }
 
-        const reader = response.body?.getReader()
-        const decoder = new TextDecoder()
-
-        if (!reader) {
-          throw new Error('No response body')
-        }
-
-        let buffer = ''
-
-        while (true) {
-          const { done, value } = await reader.read()
-          
-          if (done) {
-            onComplete?.()
-            resolve()
-            break
+        const controller = processStreamResponse(
+          response, 
+          onChunk, 
+          onComplete, 
+          (err) => {
+            onError?.(err)
+            reject(err)
           }
-
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split('\n')
-          buffer = lines.pop() || ''
-
-          for (const line of lines) {
-            if (line.trim()) {
-              const chunk = parseSSEChunk(line)
-              if (chunk) {
-                onChunk(chunk)
-              }
-            }
-          }
-        }
+        )
+        
+        await controller.done
+        resolve()
       })
       .catch((error) => {
         onError?.(error)
@@ -277,31 +231,19 @@ export async function getStudySession(
   materialId: string,
   userId: string
 ): Promise<{ lastPage: number; messages: ChatMessage[] }> {
-  // #region agent log
   const requestUrl = `${API_URL}/api/study/session?material_id=${encodeURIComponent(materialId)}&user_id=${encodeURIComponent(userId)}`;
-  fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'study.ts:255',message:'getStudySession: Request start',data:{apiUrl:API_URL,requestUrl,method:'GET',materialId,userId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
   let response: Response;
   try {
     response = await fetch(requestUrl, {
       method: 'GET',
     })
   } catch (fetchError) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'study.ts:260',message:'getStudySession: Fetch error (network)',data:{error:fetchError instanceof Error ? fetchError.message : String(fetchError),errorType:fetchError instanceof Error ? fetchError.constructor.name : typeof fetchError,requestUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
     throw fetchError;
   }
 
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'study.ts:260',message:'getStudySession: Response received',data:{status:response.status,statusText:response.statusText,ok:response.ok},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
 
   if (!response.ok) {
-    // #region agent log
     const errorData = await response.json().catch(() => ({ detail: 'Request failed' }));
-    fetch('http://127.0.0.1:7242/ingest/97b4ec6b-d4ac-4054-b0d3-ee4550153462',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'study.ts:263',message:'getStudySession: Response error',data:{status:response.status,errorData},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
     throw new Error(errorData.detail || `HTTP ${response.status}`)
   }
 
