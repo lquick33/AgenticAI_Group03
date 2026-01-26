@@ -479,7 +479,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
                         <Button
                           variant="default"
                           size="sm"
-                          className="text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                          className="text-white disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                           style={{ backgroundColor: '#B47EDE' }}
                           onMouseEnter={(e) => {
                             if (!loadingFlashcards[material.id] && !isGenerating[material.id]) {
@@ -595,6 +595,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
           <DialogFooter>
             <Button
               variant="outline"
+              className="cursor-pointer"
               onClick={() => {
                 setShowDeleteDialog(false)
                 setMaterialIdForDeletion(null)
@@ -606,6 +607,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
             </Button>
             <Button
               variant="destructive"
+              className="cursor-pointer"
               onClick={handleDeleteMaterial}
               disabled={isDeleting}
             >
