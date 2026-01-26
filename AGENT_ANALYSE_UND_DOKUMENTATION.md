@@ -310,36 +310,127 @@ START → generate (generate_node) → END
 
 #### Zweck und Verantwortlichkeiten
 
-Der **FlashcardGeneratorAgent** generiert Anki-kompatible Flashcards aus Vorlesungsmaterialien. Er ist **kein LangGraph-Agent**, sondern eine einfache Klasse mit strukturierten LLM-Calls.
+Der **FlashcardGeneratorAgent** generiert Anki-kompatible Flashcards aus Vorlesungsmaterialien. Er ist ein **LangGraph-Agent** mit State-Persistenz und Resumability.
+
+#### State Schema
+
+```python
+class FlashcardState(MessagesState):
+    course_material_id: str
+    user_id: str
+    course_id: str
+    page_analyses: List[Dict[str, Any]]
+    snippets_by_page: Dict[int, Dict[str, Any]]
+    current_page_index: int = 0
+    processed_page_indices: List[int] = []
+    skipped_page_indices: List[int] = []
+    all_cards: List[Dict[str, Any]] = []
+    current_page_analysis: Optional[Dict[str, Any]] = None
+    current_page_messages: List[Dict[str, Any]] = []
+    current_snippet_url: Optional[str] = None
+    save_to_db: bool = False
+    task_id: Optional[str] = None
+```
+
+#### Graph-Struktur
+
+```
+START
+  ↓
+initialize_node (load page_analyses, snippets)
+  ↓
+check_more_pages (conditional)
+  ├─→ yes: process_page_node
+  │     ↓
+  │   skip_decision_node
+  │     ↓ (conditional)
+  │   ├─→ skip: update_progress_node → check_more_pages (loop)
+  │   └─→ generate: get_context_node
+  │         ↓
+  │       generate_cards_node
+  │         ↓
+  │       update_progress_node → check_more_pages (loop)
+  └─→ no: save_cards_node → END
+```
+
+**Nodes**:
+1. **`initialize_node`**: Lädt alle Seitenanalysen und Snippets aus der Datenbank
+2. **`process_page_node`**: Setzt Kontext für aktuelle Seite
+3. **`skip_decision_node`**: LLM entscheidet ob Seite übersprungen werden soll
+4. **`get_context_node`**: Ruft Konversationsnachrichten und Snippet-URL ab
+5. **`generate_cards_node`**: Generiert Flashcards für aktuelle Seite
+6. **`update_progress_node`**: Aktualisiert State und inkrementiert Index
+7. **`save_cards_node`**: Speichert Flashcards in Datenbank (wenn `save_to_db=True`)
 
 #### Funktionsweise
 
-**Zwei-Phasen-Ansatz**:
+**LangGraph-basierter Workflow**:
 
-1. **Skip-Decision** (`_should_skip_page`):
-   - Entscheidet ob Seite übersprungen werden soll (Titel, TOC, Intro)
-   - Nutzt `llm.with_structured_output(PageSkipDecision)`
-   - Prompt aus Langfuse: `flashcard-agent/skip-decision`
-
-2. **Card-Generation** (`_generate_cards_for_page`):
-   - Generiert 1-2 Flashcards pro Seite
-   - Nutzt `llm.with_structured_output(FlashcardGenerationResult)`
-   - Prompt aus Langfuse: `flashcard-agent/card-generation`
-   - Input:
-     - Seitenanalyse (summary, key_terms, exam_questions, diagram_description)
-     - Konversationskontext (letzte 3 Q&A-Paare)
+1. **Initialisierung**: Lädt alle Seitenanalysen und Snippets vorab
+2. **Seitenverarbeitung (Loop)**:
+   - Für jede Seite:
+     - **Skip-Decision**: LLM entscheidet ob Seite übersprungen werden soll
+       - Nutzt `llm.with_structured_output(PageSkipDecision)`
+       - Prompt aus Langfuse: `flashcard-agent/skip-decision`
+     - **Context-Abruf**: Ruft Konversationsnachrichten und Snippet-URL ab
+     - **Card-Generation**: Generiert 1-2 Flashcards pro Seite
+       - Nutzt `llm.with_structured_output(FlashcardGenerationResult)`
+       - Prompt aus Langfuse: `flashcard-agent/card-generation`
+       - Input:
+         - Seitenanalyse (summary, key_terms, exam_questions, diagram_description)
+         - Konversationskontext (letzte 3 Q&A-Paare)
+         - Optional: Snippet-Image-URL (für Vision-Input)
+3. **Speicherung**: Optional: Speichert Flashcards in Datenbank
+4. **Rückgabe**: Liste von Flashcard-Dicts mit `front`, `back`, `tags`, `source_page_analysis_id`
 
 #### Hauptmethode: `generate_flashcards`
 
-**Workflow**:
+**API-Signatur** (rückwärtskompatibel):
+```python
+def generate_flashcards(
+    self,
+    course_material_id: str,
+    user_id: str,
+    course_id: str,
+    save_to_db: bool = False,
+    task_id: Optional[str] = None,
+    thread_id: Optional[str] = None,  # Neu: Für Resumability
+) -> List[Dict[str, Any]]
+```
 
-1. Ruft alle Seitenanalysen für Material ab (`get_all_page_analyses_for_material`)
-2. Für jede Seite:
-   - Prüft ob Seite übersprungen werden soll
-   - Ruft Konversationsnachrichten für Seite ab (`get_messages_for_page`)
-   - Generiert Flashcards
-3. Optional: Speichert Flashcards in Datenbank (`save_flashcards`)
-4. Rückgabe: Liste von Flashcard-Dicts mit `front`, `back`, `tags`, `source_page_analysis_id`
+**Workflow**:
+1. Erstellt initialen State mit Parametern
+2. Generiert oder verwendet `thread_id` für Checkpointing
+3. Ruft Graph mit `graph.invoke()` auf
+4. State wird nach jedem Node automatisch gespeichert (Checkpointer)
+5. Rückgabe: `all_cards` aus finalem State
+
+#### Resumability
+
+**Checkpointing**:
+- State wird nach jedem Node automatisch gespeichert
+- Bei Fehler kann Task mit gleichem `thread_id` fortgesetzt werden
+- Verhindert Datenverlust bei langen Tasks (100+ Seiten)
+
+**Beispiel**:
+```python
+# Erste Ausführung
+agent = FlashcardGeneratorAgent(checkpointer=MemorySaver())
+cards = agent.generate_flashcards(
+    course_material_id="mat-1",
+    user_id="user-1",
+    course_id="course-1",
+    thread_id="task-123"  # Eindeutige Thread-ID
+)
+
+# Bei Fehler: Resume mit gleichem thread_id
+cards = agent.generate_flashcards(
+    course_material_id="mat-1",
+    user_id="user-1",
+    course_id="course-1",
+    thread_id="task-123"  # Gleiche Thread-ID → Resume von Checkpoint
+)
+```
 
 #### Konversationskontext
 
@@ -353,8 +444,20 @@ Der **FlashcardGeneratorAgent** generiert Anki-kompatible Flashcards aus Vorlesu
 #### Observability
 
 - **Langfuse Integration**:
-  - Operation: `skip_decision` oder `card_generation`
+  - **Graph-Level**: Span `flashcard-generator-agent/graph-execution`
+  - **Node-Level**: Metadata für jeden Node
+  - **LLM-Calls**: Operation `skip_decision` oder `card_generation`
   - Metadata: `user_id`, `session_id` (material_id), `material_id`, `course_id`, `page_number`
+
+#### Vorteile der LangGraph-Implementierung
+
+1. **State Persistence**: Automatisches Checkpointing nach jedem Node
+2. **Resumability**: Kann von Checkpoint fortgesetzt werden
+3. **Bessere Observability**: Node-Level Tracing in Langfuse
+4. **Konsistente Architektur**: Gleiches Pattern wie TutorAgent, QuizGeneratorAgent
+5. **Graph-Visualisierung**: Kann in LangGraph Studio visualisiert werden
+6. **Fehlerbehandlung**: Graceful degradation auf Node-Level
+7. **Zukunftserweiterungen**: Einfach Tools, Conditional Logic, Streaming hinzufügen
 
 ---
 
@@ -899,9 +1002,9 @@ metadata = {
 
 | Agent | Type | Graph | Tools | Memory | Observability |
 |-------|------|-------|-------|--------|--------------|
-| TutorAgent | LangGraph | ReAct-Loop | 3 | Checkpointer | Langfuse |
+| TutorAgent | LangGraph | ReAct-Loop | 4 | Checkpointer | Langfuse |
 | QuizGeneratorAgent | LangGraph | Linear | 0 | Checkpointer | Langfuse |
-| FlashcardGeneratorAgent | Class | - | 0 | - | Langfuse |
+| FlashcardGeneratorAgent | LangGraph | Loop | 0 | Checkpointer | Langfuse |
 
 ### Tool-Übersichtstabelle
 
@@ -917,7 +1020,7 @@ metadata = {
 |-------|--------------|-----------|-------------------|
 | TutorAgent | TutorState | MessagesState | current_page, material_id, user_id, course_material_summary |
 | QuizGeneratorAgent | QuizGeneratorState | MessagesState | page_analyses, topic, start_page, end_page, quiz_data |
-| FlashcardGeneratorAgent | - | - | - (kein State, einfache Klasse) |
+| FlashcardGeneratorAgent | FlashcardState | MessagesState | page_analyses, snippets_by_page, current_page_index, all_cards, processed_page_indices, skipped_page_indices |
 
 ---
 

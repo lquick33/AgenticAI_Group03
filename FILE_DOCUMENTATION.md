@@ -3072,21 +3072,38 @@ from app.services.session_storage import (
 
 ### `backend/app/agents/flashcards/flashcard_agent.py`
 
-**Purpose**: Agent for generating Anki-compatible flashcards from lecture materials and conversation history.
+**Purpose**: LangGraph-based agent for generating Anki-compatible flashcards from lecture materials and conversation history. Refactored to use LangGraph for state persistence and resumability.
 
 **Key Components**:
+- **FlashcardState Schema**: 
+  - Extends `MessagesState` from LangGraph
+  - Contains page processing data, progress tracking, results, and current page context
+  - Fields: `page_analyses`, `snippets_by_page`, `current_page_index`, `all_cards`, `processed_page_indices`, `skipped_page_indices`, etc.
 - **FlashcardGeneratorAgent Class**: 
+  - Extends `BaseAgent` (consistent with TutorAgent, QuizGeneratorAgent)
+  - Uses LangGraph for state management and execution flow
   - Processes page analyses and conversation messages to create educational flashcards
-  - Uses LLM with structured output (Pydantic models) for page filtering and card generation
   - Skips intro/title/table of contents pages automatically
-  - Generates 1-4 cards per page based on content complexity and conversation issues
+  - Generates 1-2 cards per page based on content complexity and conversation issues
+  - **State Persistence**: Uses checkpointer for automatic state saving after each node
+  - **Resumability**: Can resume failed tasks from last checkpoint using `thread_id`
   - **Langfuse Prompt Management**: Loads prompts dynamically from Langfuse with fallback to hardcoded versions
+- **Graph Nodes**:
+  - `initialize_node`: Loads all page analyses and snippets from database
+  - `process_page_node`: Sets up current page context
+  - `skip_decision_node`: LLM decides if page should be skipped
+  - `get_context_node`: Fetches conversation messages and snippet URL
+  - `generate_cards_node`: Generates flashcards for current page
+  - `update_progress_node`: Updates state and increments index
+  - `save_cards_node`: Saves flashcards to database if requested
+- **Conditional Routing**:
+  - `check_more_pages`: Routes to continue processing or finish
+  - `should_skip_routing`: Routes to skip or generate based on skip decision
 - **Methods**:
+  - `_build_graph()`: Builds LangGraph workflow with all nodes and edges
   - `_get_skip_decision_prompt()`: Loads skip-decision prompt from Langfuse or uses fallback
   - `_get_card_generation_prompt()`: Loads card-generation prompt from Langfuse or uses fallback
-  - `_should_skip_page()`: Determines if a page should be skipped using LLM decision
-  - `_generate_cards_for_page()`: Generates flashcards for a single page with conversation context
-  - `generate_flashcards()`: Main entry point that processes all pages and returns card list
+  - `generate_flashcards()`: Main entry point that invokes graph and returns card list
 - **LLM Integration**: Uses Gemini model with structured output for consistent JSON responses
 - **Conversation Context**: Analyzes user questions and assistant responses to identify understanding problems
 - **Prompt Management**: 
@@ -3094,24 +3111,53 @@ from app.services.session_storage import (
   - Prompts use variables ({{summary}}, {{key_terms}}, etc.) that are compiled at runtime
   - Automatic fallback to hardcoded prompts if Langfuse is unavailable or prompts cannot be loaded
   - Prompts can be updated in Langfuse UI without code changes
+- **Observability**:
+  - Graph-level tracing: `flashcard-generator-agent/graph-execution` span in Langfuse
+  - Node-level metadata for each processing step
+  - LLM call tracking with operation type (`skip_decision`, `card_generation`)
 
 **Dependencies**: 
+- `app.agents.base` - BaseAgent abstract base class
 - `app.models.schemas` - PageSkipDecision, FlashcardGenerationResult, Flashcard models
-- `app.services.storage` - get_all_page_analyses_for_material, get_messages_for_page
+- `app.services.storage` - get_all_page_analyses_for_material, get_messages_for_page, save_flashcards
 - `app.services.analyzer` - get_gemini_model
-- `app.services.observability` - get_langfuse_client (for prompt management)
+- `app.services.observability` - get_langfuse_client, create_callback_handler
+- `langgraph` - StateGraph, MessagesState, START, END
+- `langgraph.checkpoint` - BaseCheckpointSaver (MemorySaver for development)
 
 **Usage**: 
 ```python
 from app.agents.flashcards import FlashcardGeneratorAgent
+from langgraph.checkpoint.memory import MemorySaver
 
-agent = FlashcardGeneratorAgent()
+# Create agent with checkpointer for state persistence
+checkpointer = MemorySaver()
+agent = FlashcardGeneratorAgent(checkpointer=checkpointer)
+
+# Generate flashcards (backward compatible API)
 cards = agent.generate_flashcards(
     course_material_id="...",
     user_id="...",
     course_id="...",
     save_to_db=False
 )
+
+# With resumability support
+cards = agent.generate_flashcards(
+    course_material_id="...",
+    user_id="...",
+    course_id="...",
+    save_to_db=False,
+    thread_id="unique-task-id"  # For resumability
+)
+```
+
+**Graph Flow**:
+```
+START → initialize → check_more_pages → process_page → skip_decision
+                                                      ├─→ skip: update_progress → check_more_pages (loop)
+                                                      └─→ generate: get_context → generate_cards → update_progress → check_more_pages (loop)
+                                                                                                                      └─→ done: save_cards → END
 ```
 
 **Related Files**: 

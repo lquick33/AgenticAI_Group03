@@ -202,13 +202,35 @@ class FlashcardTaskService:
                 task.completed_at = time.time()
                 return
             
-            # Generate flashcards asynchronously with progress updates
-            cards = await self._generate_flashcards_async(
-                agent=agent,
+            # Generate flashcards using the graph-based agent with progress tracking
+            # The agent now handles all page processing internally with state persistence
+            
+            def progress_callback(current_page_index, total_pages, processed_pages, skipped_pages, cards_generated, progress):
+                """Update task progress from graph state."""
+                try:
+                    task.processed_pages = processed_pages
+                    task.progress = progress
+                    task.cards_generated = cards_generated
+                    # total_pages already set before graph execution, but update if needed
+                    if total_pages > 0 and task.total_pages != total_pages:
+                        task.total_pages = total_pages
+                    logger.debug(
+                        f"Progress update for task {task.task_id}: "
+                        f"{processed_pages}/{total_pages} pages ({progress*100:.1f}%), "
+                        f"{cards_generated} cards generated"
+                    )
+                except Exception as e:
+                    # Don't let callback errors crash the generation
+                    logger.warning(f"Error updating task progress in callback: {e}")
+            
+            cards = await asyncio.to_thread(
+                agent.generate_flashcards_with_progress,
                 course_material_id=task.course_material_id,
                 user_id=task.user_id,
                 course_id=task.course_id,
-                task=task,
+                save_to_db=False,  # We'll save manually after generation
+                task_id=task.task_id,
+                progress_callback=progress_callback,
             )
             
             if task._cancelled:
@@ -313,142 +335,9 @@ class FlashcardTaskService:
             task.error_message = str(e)
             task.completed_at = time.time()
     
-    async def _generate_flashcards_async(
-        self,
-        agent: FlashcardGeneratorAgent,
-        course_material_id: str,
-        user_id: str,
-        course_id: str,
-        task: FlashcardTask,
-    ) -> list:
-        """
-        Generate flashcards asynchronously with progress updates.
-        
-        This wraps the synchronous generate_flashcards method and adds
-        async/await support with progress tracking.
-        """
-        from app.services.storage import (
-            get_all_page_analyses_for_material,
-            get_messages_for_page,
-        )
-        
-        # Get all page analyses
-        page_analyses = get_all_page_analyses_for_material(course_material_id, user_id)
-        
-        if not page_analyses:
-            return []
-        
-        # Get all snippets for this material to avoid DB calls in loop
-        from app.services.snippet_service import get_snippets_for_material, get_snippet_public_url
-        logger.info(f"🔍 Getting snippets for material {course_material_id}, user {user_id}")
-        snippets = get_snippets_for_material(course_material_id, user_id)
-        logger.info(f"🔍 Found {len(snippets)} snippets total")
-        if snippets:
-            logger.info(f"🔍 Snippet page numbers: {[s.get('page_number') for s in snippets]}")
-        snippets_by_page = {s["page_number"]: s for s in snippets}
-        logger.info(f"🔍 snippets_by_page dict keys: {list(snippets_by_page.keys())}")
-        
-        all_cards = []
-        
-        # Process each page with progress updates
-        for idx, page_analysis in enumerate(page_analyses):
-            if task._cancelled:
-                break
-            
-            page_number = page_analysis.get("page_number", 0)
-            page_id = page_analysis.get("id")
-            
-            # Update progress
-            task.processed_pages = idx + 1
-            task.progress = (idx + 1) / len(page_analyses)
-            
-            # Check if page should be skipped (async with timeout)
-            try:
-                should_skip, reason = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        agent._should_skip_page,
-                        page_analysis,
-                        task.user_id,
-                        task.course_material_id,
-                        task.course_id,
-                        page_number
-                    ),
-                    timeout=30.0  # 30 second timeout per skip decision
-                )
-                
-                if should_skip:
-                    logger.debug(f"Skipping page {page_number}: {reason}")
-                    continue
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout checking if page {page_number} should be skipped, skipping it")
-                continue
-            except Exception as e:
-                logger.warning(f"Error checking if page {page_number} should be skipped: {e}, continuing")
-                continue
-            
-            # Get messages for this page
-            messages = []
-            if page_id:
-                try:
-                    messages = get_messages_for_page(page_id, user_id)
-                except Exception as e:
-                    logger.warning(f"Error getting messages for page {page_number}: {e}")
-            
-            # Check for snippets and get URL if available
-            snippet_image_url = None
-            logger.info(f"🔍 Checking for snippets for page {page_number}...")
-            logger.info(f"🔍 snippets_by_page keys: {list(snippets_by_page.keys())}")
-            
-            if page_number in snippets_by_page:
-                snippet = snippets_by_page[page_number]
-                logger.info(f"✅ Snippet found in dict for page {page_number}: {snippet}")
-                image_path = snippet.get("image_path")
-                logger.info(f"🔍 image_path from snippet: {image_path}")
-                
-                if image_path:
-                    try:
-                        logger.info(f"🔍 Calling get_snippet_public_url with: {image_path}")
-                        snippet_image_url = get_snippet_public_url(image_path)
-                        logger.info(f"✅ URL generated successfully! Length: {len(snippet_image_url) if snippet_image_url else 0}")
-                        logger.info(f"✅ Found snippet for page {page_number}, URL: {snippet_image_url[:100] if snippet_image_url else 'None'}...")
-                        logger.info(f"📸 snippet_image_url is not None: {snippet_image_url is not None}")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to get snippet URL for page {page_number}: {e}", exc_info=True)
-                        snippet_image_url = None
-                else:
-                    logger.warning(f"⚠️ Snippet found but image_path is None or empty for page {page_number}")
-            else:
-                logger.debug(f"No snippet found for page {page_number} in snippets_by_page")
-            
-            # Log before passing to _generate_cards_for_page
-            logger.info(f"🔍 About to call _generate_cards_for_page with snippet_image_url: {snippet_image_url is not None}")
-            if snippet_image_url:
-                logger.info(f"🔍 snippet_image_url value: {snippet_image_url[:100]}...")
-            
-            # Generate cards for this page (async with timeout)
-            try:
-                cards = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        agent._generate_cards_for_page,
-                        page_analysis,
-                        messages,
-                        course_id,
-                        course_material_id,
-                        page_number,
-                        task.user_id,
-                        snippet_image_url,  # ✅ Pass snippet URL!
-                    ),
-                    timeout=60.0  # 60 second timeout per card generation
-                )
-                all_cards.extend(cards)
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout generating cards for page {page_number}, skipping")
-                continue
-            except Exception as e:
-                logger.warning(f"Error generating cards for page {page_number}: {e}, continuing")
-                continue
-        
-        return all_cards
+    # Note: _generate_flashcards_async method removed
+    # The agent now handles all page processing internally via LangGraph
+    # Progress tracking can be added in the future by checking graph state
 
 
 # Global task service instance
