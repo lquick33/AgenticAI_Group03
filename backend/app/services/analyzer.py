@@ -9,6 +9,7 @@ import base64
 import io
 import json
 import re
+from collections import Counter
 from typing import Optional, Sequence, List
 
 from PIL import Image
@@ -405,19 +406,22 @@ def detect_naming_pattern(existing_filenames: List[str]) -> Optional[dict]:
     """
     Detect naming pattern from existing filenames.
     
+    First tries hardcoded patterns, then falls back to first-word detection.
+    
     Examples:
     - ["Kapitel 1: Algebra", "Kapitel 2: Analysis"] -> pattern: "Kapitel {n}: {topic}"
+    - ["Lecture 1", "Lecture 2"] -> pattern: "Lecture {n}"
     - ["Chapter 1", "Chapter 2"] -> pattern: "Chapter {n}"
     - ["Vorlesung 1", "Vorlesung 2"] -> pattern: "Vorlesung {n}"
     
     Returns:
-        Dict with pattern info: {"type": "kapitel"|"chapter"|"vorlesung"|None, "format": "Kapitel {n}: {topic}", "next_number": int}
+        Dict with pattern info: {"type": "kapitel"|"chapter"|"vorlesung"|"lecture"|..., "format": "Kapitel {n}: {topic}", "next_number": int}
         or None if no clear pattern
     """
     if not existing_filenames or len(existing_filenames) < 1:
         return None
     
-    # Try to detect patterns
+    # First, try hardcoded patterns (existing logic for backward compatibility)
     patterns = [
         (r"^Kapitel\s+(\d+)(?:\s*:\s*(.+))?$", "Kapitel {n}: {topic}"),
         (r"^Chapter\s+(\d+)(?:\s*:\s*(.+))?$", "Chapter {n}: {topic}"),
@@ -444,6 +448,71 @@ def detect_naming_pattern(existing_filenames: List[str]) -> Optional[dict]:
                 "format": pattern_format,
                 "next_number": max_num + 1
             }
+    
+    # Fallback: Detect pattern by first word
+    # Extract first word from each filename
+    first_words = []
+    for filename in existing_filenames:
+        filename = filename.strip()
+        if not filename:
+            continue
+        # Split by space and get first word
+        parts = filename.split()
+        if parts:
+            first_word = parts[0]
+            first_words.append(first_word)
+    
+    if not first_words:
+        return None
+    
+    # Find most common first word
+    word_counts = Counter(first_words)
+    most_common_word, count = word_counts.most_common(1)[0]
+    
+    # Check if this word appears in >= 70% of filenames
+    if count < len(existing_filenames) * 0.7:
+        return None
+    
+    # Check if filenames with this first word follow a pattern
+    # Pattern: FirstWord Number or FirstWord Number: Topic
+    pattern_with_topic = re.compile(rf"^{re.escape(most_common_word)}\s+(\d+)(?:\s*:\s*(.+))?$", re.IGNORECASE)
+    pattern_without_topic = re.compile(rf"^{re.escape(most_common_word)}\s+(\d+)$", re.IGNORECASE)
+    
+    matches_with_topic = []
+    matches_without_topic = []
+    
+    for filename in existing_filenames:
+        filename = filename.strip()
+        match_topic = pattern_with_topic.match(filename)
+        match_no_topic = pattern_without_topic.match(filename)
+        
+        if match_topic:
+            matches_with_topic.append(match_topic)
+        elif match_no_topic:
+            matches_without_topic.append(match_no_topic)
+    
+    # Determine which pattern format to use
+    total_matches = len(matches_with_topic) + len(matches_without_topic)
+    
+    if total_matches >= len(existing_filenames) * 0.7:
+        # Extract numbers from matches
+        numbers = []
+        for match in matches_with_topic + matches_without_topic:
+            numbers.append(int(match.group(1)))
+        
+        max_num = max(numbers) if numbers else 0
+        
+        # Use format with topic if most matches have topic
+        if len(matches_with_topic) > len(matches_without_topic):
+            format_str = f"{most_common_word} {{n}}: {{topic}}"
+        else:
+            format_str = f"{most_common_word} {{n}}"
+        
+        return {
+            "type": most_common_word.lower(),
+            "format": format_str,
+            "next_number": max_num + 1
+        }
     
     return None
 
