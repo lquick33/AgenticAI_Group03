@@ -11,11 +11,49 @@ import uuid
 from enum import Enum
 from typing import Any, Dict, Optional
 
+from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.memory import MemorySaver
+
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_apkg
 from app.services.storage import save_flashcards
+from app.services.db_migration_helper import get_postgres_connection_string
 
 logger = logging.getLogger(__name__)
+
+# Singleton checkpointer instance
+_checkpointer = None
+
+
+def _get_checkpointer():
+    """
+    Get or create checkpointer instance for flashcard agent.
+    
+    Tries to use PostgresSaver for persistent checkpointing.
+    Falls back to MemorySaver if database connection is unavailable.
+    
+    Returns:
+        BaseCheckpointSaver instance (PostgresSaver or MemorySaver)
+    """
+    global _checkpointer
+    if _checkpointer is None:
+        try:
+            conn_string = get_postgres_connection_string()
+            _checkpointer = PostgresSaver.from_conn_string(conn_string)
+            # Setup database tables (idempotent - safe to call multiple times)
+            try:
+                _checkpointer.setup()
+                logger.info("PostgresSaver tables initialized successfully")
+            except Exception as setup_error:
+                # If setup fails (e.g., tables already exist), log warning but continue
+                # PostgresSaver may auto-create tables on first use in some versions
+                logger.warning(f"PostgresSaver.setup() failed (may be normal if tables exist): {setup_error}")
+            logger.info("Using PostgresSaver for flashcard agent checkpointing")
+        except (ValueError, Exception) as e:
+            logger.warning(f"Failed to initialize PostgresSaver, falling back to MemorySaver: {e}")
+            _checkpointer = MemorySaver()
+            logger.info("Using MemorySaver for flashcard agent checkpointing (fallback)")
+    return _checkpointer
 
 
 class TaskStatus(str, Enum):
@@ -185,8 +223,9 @@ class FlashcardTaskService:
             task.status = TaskStatus.RUNNING
             logger.info(f"Starting flashcard generation task {task.task_id}")
             
-            # Initialize agent
-            agent = FlashcardGeneratorAgent()
+            # Initialize agent with checkpointer for state persistence
+            checkpointer = _get_checkpointer()
+            agent = FlashcardGeneratorAgent(checkpointer=checkpointer)
             
             # Get page count for progress tracking
             from app.services.storage import get_all_page_analyses_for_material

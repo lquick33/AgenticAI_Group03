@@ -5,6 +5,7 @@ python-multipart>=0.0.6  # Required for file uploads (UploadFile)
 
 # AI Orchestration & Framework
 langgraph>=0.0.20
+langgraph-checkpoint-postgres>=3.0.0  # For PostgresSaver in flashcard_task_service
 langchain>=0.1.0
 langchain-openai>=0.0.5
 langchain-google-genai>=0.0.6
@@ -26,7 +27,8 @@ genanki>=0.13.0
 
 # Database & Storage
 supabase>=2.0.0
-psycopg2-binary>=2.9.9
+psycopg2-binary>=2.9.9  # For db_migration_helper.py
+psycopg-binary>=3.0.0  # Required by langgraph-checkpoint-postgres
 
 # Data Validation & Serialization
 pydantic>=2.5.0
