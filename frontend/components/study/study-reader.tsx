@@ -1,16 +1,13 @@
 "use client"
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
 import dynamic from 'next/dynamic'
 import { Panel, Group, Separator as PanelResizeHandle } from 'react-resizable-panels'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { toast } from 'sonner'
 import { ChatInterface } from './chat-interface'
 import { CongratulationsScreen } from './congratulations-screen'
 import { useChatSession } from '@/hooks/use-chat-session'
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // Dynamically import PDF Viewer with SSR disabled
 const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default: mod.PdfViewer })), {
@@ -52,51 +49,6 @@ export function StudyReader({
     handlePageChange,
     handleQuizComplete
   } = useChatSession(materialId, userId, pageCount)
-
-  const [hasSnippet, setHasSnippet] = useState(false)
-
-  // Check for existing snippet when page changes
-  useEffect(() => {
-    const checkSnippet = async () => {
-      try {
-        const response = await fetch(`${API_URL}/api/study/snippets/${materialId}?user_id=${userId}`)
-        if (response.ok) {
-          const snippets = await response.json()
-          const snippetExists = snippets.some((s: any) => s.page_number === currentPage)
-          setHasSnippet(snippetExists)
-        }
-      } catch (error) {
-        console.error('Failed to check snippets:', error)
-      }
-    }
-    checkSnippet()
-  }, [currentPage, materialId, userId])
-
-  const handleSaveSnippet = async (blob: Blob) => {
-    try {
-      const formData = new FormData()
-      formData.append('file', blob)
-      formData.append('course_material_id', materialId)
-      formData.append('page_number', currentPage.toString())
-      formData.append('user_id', userId)
-
-      const response = await fetch(`${API_URL}/api/study/snippets`, {
-        method: 'POST',
-        body: formData,
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }))
-        throw new Error(errorData.detail || 'Failed to save snippet')
-      }
-      
-      setHasSnippet(true)
-      toast.success('Snippet erfolgreich gespeichert')
-    } catch (error) {
-      console.error('Error saving snippet:', error)
-      toast.error(error instanceof Error ? error.message : 'Fehler beim Speichern des Snippets')
-    }
-  }
 
   const handlePreviousPage = () => {
     if (currentPage > 1) {
@@ -155,12 +107,7 @@ export function StudyReader({
               </div>
             </div>
             <div className="flex-1 overflow-auto p-4">
-              <PdfViewer 
-                file={pdfUrl} 
-                pageNumber={currentPage} 
-                onSaveSnippet={handleSaveSnippet}
-                hasSnippet={hasSnippet}
-              />
+              <PdfViewer file={pdfUrl} pageNumber={currentPage} />
             </div>
           </div>
         </Panel>

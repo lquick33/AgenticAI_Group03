@@ -117,6 +117,11 @@ export class EventQueue {
     const retryable: ToolResponseEvent[] = []
     
     for (const queued of pending) {
+      // Only process tool_response events
+      if (queued.event.type !== 'tool_response') {
+        continue
+      }
+      
       const waitTime = now - queued.timestamp
       
       // Timeout: Event wartet zu lange
