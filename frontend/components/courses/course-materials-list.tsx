@@ -526,7 +526,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
                           style={{ backgroundColor: '#B47EDE' }}
                           disabled
                         >
-                          <Download className="mr-2 h-4 w-4" />
+                          <Play className="mr-2 h-4 w-4" />
                           Flashcards
                         </Button>
                       </>
@@ -568,6 +568,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
           <DialogFooter>
             <Button
               variant="outline"
+              className="cursor-pointer"
               onClick={() => {
                 setShowConfirmDialog(false)
                 setMaterialIdForGeneration(null)
@@ -576,6 +577,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
               Abbrechen
             </Button>
             <Button
+              className="cursor-pointer"
               onClick={() => {
                 if (materialIdForGeneration) {
                   handleGenerateFlashcards(materialIdForGeneration)
