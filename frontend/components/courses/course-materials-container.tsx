@@ -219,6 +219,7 @@ export function CourseMaterialsContainer({
           materials={materials}
           courseId={courseId}
           userId={userId}
+          onMaterialDeleted={refreshMaterials}
         />
       </div>
     </>

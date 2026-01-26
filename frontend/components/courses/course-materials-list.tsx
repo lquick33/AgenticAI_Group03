@@ -2,9 +2,15 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
-import { BookOpen, Download, Loader2 } from 'lucide-react'
+import { BookOpen, Download, Loader2, MoreVertical, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import {
   Table,
   TableBody,
@@ -34,14 +40,16 @@ import {
 } from '@/lib/api/study'
 import { EditableFilename } from '@/components/courses/editable-filename'
 import { toast } from 'sonner'
+import { deleteMaterial } from '@/lib/api/materials'
 
 interface CourseMaterialsListProps {
   materials: CourseMaterial[]
   courseId: string
   userId: string
+  onMaterialDeleted?: () => void
 }
 
-export function CourseMaterialsList({ materials, courseId, userId }: CourseMaterialsListProps) {
+export function CourseMaterialsList({ materials, courseId, userId, onMaterialDeleted }: CourseMaterialsListProps) {
   const [localMaterials, setLocalMaterials] = useState<CourseMaterial[]>(materials)
   const [flashcardsStatus, setFlashcardsStatus] = useState<Record<string, boolean>>({})
   const [loadingFlashcards, setLoadingFlashcards] = useState<Record<string, boolean>>({})
@@ -51,6 +59,10 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
   const [taskIds, setTaskIds] = useState<Record<string, string>>({})
   const [taskStatuses, setTaskStatuses] = useState<Record<string, FlashcardTaskStatus>>({})
   const [pollingIntervals, setPollingIntervals] = useState<Record<string, NodeJS.Timeout>>({})
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [materialIdForDeletion, setMaterialIdForDeletion] = useState<string | null>(null)
+  const [materialNameForDeletion, setMaterialNameForDeletion] = useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
   const startPollingRef = useRef<((materialId: string, taskId: string) => void) | null>(null)
 
   // Update local materials when props change
@@ -350,6 +362,71 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
     )
   }
 
+  const handleDeleteClick = (materialId: string, materialName: string) => {
+    setMaterialIdForDeletion(materialId)
+    setMaterialNameForDeletion(materialName)
+    setShowDeleteDialog(true)
+  }
+
+  const handleDeleteMaterial = async () => {
+    if (!materialIdForDeletion) return
+
+    setIsDeleting(true)
+    try {
+      await deleteMaterial(materialIdForDeletion, userId)
+      
+      // Optimistically remove from UI
+      setLocalMaterials((prev) => prev.filter((m) => m.id !== materialIdForDeletion))
+      
+      // Clean up any related state
+      setFlashcardsStatus((prev) => {
+        const newStatus = { ...prev }
+        delete newStatus[materialIdForDeletion]
+        return newStatus
+      })
+      setLoadingFlashcards((prev) => {
+        const newStatus = { ...prev }
+        delete newStatus[materialIdForDeletion]
+        return newStatus
+      })
+      setIsGenerating((prev) => {
+        const newStatus = { ...prev }
+        delete newStatus[materialIdForDeletion]
+        return newStatus
+      })
+      
+      // Clear any polling intervals for this material
+      if (pollingIntervals[materialIdForDeletion]) {
+        clearInterval(pollingIntervals[materialIdForDeletion])
+        setPollingIntervals((prev) => {
+          const newIntervals = { ...prev }
+          delete newIntervals[materialIdForDeletion]
+          return newIntervals
+        })
+      }
+      
+      toast.success('Material gelöscht', {
+        description: 'Das Material wurde erfolgreich gelöscht.',
+      })
+      
+      // Refresh parent container if callback provided
+      if (onMaterialDeleted) {
+        onMaterialDeleted()
+      }
+      
+      setShowDeleteDialog(false)
+      setMaterialIdForDeletion(null)
+      setMaterialNameForDeletion(null)
+    } catch (error) {
+      console.error('Error deleting material:', error)
+      toast.error('Fehler beim Löschen', {
+        description: error instanceof Error ? error.message : 'Das Material konnte nicht gelöscht werden.',
+      })
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
   if (localMaterials.length === 0) {
     return (
       <div className="rounded-lg border p-6">
@@ -450,6 +527,24 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
                         </Button>
                       </>
                     )}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0 cursor-pointer focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus:ring-offset-0 focus-visible:ring-offset-0 !ring-offset-0">
+                          <span className="sr-only">Mehr Optionen</span>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="bg-white">
+                        <DropdownMenuItem
+                          className="text-destructive hover:bg-destructive hover:text-destructive-foreground focus:bg-destructive focus:text-destructive-foreground cursor-pointer"
+                          onClick={() => handleDeleteClick(material.id, material.file_name)}
+                          disabled={isDeleting}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Löschen
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </TableCell>
               </TableRow>
@@ -484,6 +579,44 @@ export function CourseMaterialsList({ materials, courseId, userId }: CourseMater
               }}
             >
               Weiter
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <DialogContent className="bg-white">
+          <DialogHeader>
+            <DialogTitle>Material löschen</DialogTitle>
+            <DialogDescription>
+              Bist du dir sicher, dass du "{materialNameForDeletion}" löschen möchtest? Diese Aktion kann nicht rückgängig gemacht werden. Alle zugehörigen Daten (Flashcards, Anki-Decks, etc.) werden ebenfalls gelöscht.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowDeleteDialog(false)
+                setMaterialIdForDeletion(null)
+                setMaterialNameForDeletion(null)
+              }}
+              disabled={isDeleting}
+            >
+              Abbrechen
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteMaterial}
+              disabled={isDeleting}
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Wird gelöscht...
+                </>
+              ) : (
+                'Löschen'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
