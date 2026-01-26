@@ -2834,7 +2834,7 @@ async def download_flashcards_from_db(
         safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
         safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
         
-        deck_name = f"{course_title} - {file_name.replace('.pdf', '')}"
+        deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
         apkg_bytes = build_anki_apkg(cards_for_apkg, deck_name=deck_name)
         filename = f"flashcards_{safe_course_title}_{safe_file_name}.apkg"
         

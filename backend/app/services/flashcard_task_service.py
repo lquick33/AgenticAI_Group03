@@ -355,7 +355,7 @@ class FlashcardTaskService:
             safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
             
             # Build .apkg with embedded images
-            deck_name = f"{course_title} - {file_name.replace('.pdf', '')}"
+            deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
             task.apkg_bytes = build_anki_apkg(cards, deck_name=deck_name)
             task.filename = f"flashcards_{safe_course_title}_{safe_file_name}.apkg"
             
