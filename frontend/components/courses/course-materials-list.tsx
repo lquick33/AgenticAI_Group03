@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Link from 'next/link'
-import { BookOpen, Download, Loader2, MoreVertical, Trash2 } from 'lucide-react'
+import { BookOpen, Download, Loader2, MoreVertical, Play, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -503,7 +503,11 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
                             </>
                           ) : (
                             <>
-                              <Download className="mr-2 h-4 w-4" />
+                              {flashcardsStatus[material.id] ? (
+                                <Download className="mr-2 h-4 w-4" />
+                              ) : (
+                                <Play className="mr-2 h-4 w-4" />
+                              )}
                               Flashcards
                             </>
                           )}
