@@ -33,24 +33,24 @@ def get_tts_client() -> Optional[texttospeech.TextToSpeechClient]:
     
     # Check if credentials are configured
     # TTS can work with service account file or default credentials (from environment)
-    if not settings.GOOGLE_APPLICATION_CREDENTIALS:
-        # Try to use default credentials from environment (e.g., GOOGLE_APPLICATION_CREDENTIALS env var)
-        # This allows using gcloud auth or other credential methods
-        logger.debug("No explicit service account path configured, trying default credentials")
+    # Check both settings and environment variable (standard Google Cloud pattern)
+    credentials_path = settings.GOOGLE_APPLICATION_CREDENTIALS or os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
     
     try:
         # Try to use service account credentials if provided
-        if settings.GOOGLE_APPLICATION_CREDENTIALS:
-            credentials_path = settings.GOOGLE_APPLICATION_CREDENTIALS
+        if credentials_path:
             if os.path.exists(credentials_path):
                 credentials = service_account.Credentials.from_service_account_file(
                     credentials_path
                 )
                 _tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
-                logger.info("Google Cloud TTS client initialized with service account credentials")
+                logger.info(f"Google Cloud TTS client initialized with service account credentials from: {credentials_path}")
                 return _tts_client
             else:
                 logger.warning(f"Service account credentials file not found: {credentials_path}")
+        else:
+            # Try to use default credentials from environment (e.g., gcloud auth)
+            logger.debug("No explicit service account path configured, trying default credentials")
         
         # Fallback: use default credentials (e.g., from environment or gcloud)
         _tts_client = texttospeech.TextToSpeechClient()
