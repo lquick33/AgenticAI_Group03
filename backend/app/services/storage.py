@@ -78,6 +78,32 @@ def upload_pdf_to_storage(
         raise Exception(f"Failed to upload PDF to storage: {str(e)}")
 
 
+def download_file_from_storage(
+    path: str,
+    bucket_name: str = "course_materials"
+) -> bytes:
+    """
+    Download a file from Supabase Storage.
+    
+    Args:
+        path: Storage path of the file
+        bucket_name: Storage bucket name (default: "course_materials")
+        
+    Returns:
+        File content as bytes
+        
+    Raises:
+        Exception: If download fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.storage.from_(bucket_name).download(path)
+        return response
+    except Exception as e:
+        raise Exception(f"Failed to download file from storage: {str(e)}")
+
+
 def create_course_material(
     course_id: str,
     filename: str,

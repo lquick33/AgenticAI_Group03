@@ -1,0 +1,494 @@
+/**
+ * API Client Functions for Study Session
+ * 
+ * Handles communication with the backend API for:
+ * - Chat initiation and messaging
+ * - Page analysis retrieval
+ * - SSE streaming
+ */
+
+import type { ChatMessage, PageAnalysisData, ToolCall, QuizResult } from '@/types'
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
+/**
+ * Parse SSE chunk to extract message data
+ * Supports both delta events, regular message chunks, and tool call events
+ */
+export function parseSSEChunk(chunk: string): { 
+  node?: string
+  messages?: Array<{ role: string; content: string }>
+  type?: string
+  delta?: string
+  content?: string
+  role?: string
+  error?: string
+  tool_calls?: ToolCall[]
+  tool_call_id?: string
+  result?: string
+  message_id?: string
+} | null {
+  if (chunk.trim() === '' || chunk === 'data: [DONE]') {
+    return null
+  }
+
+  try {
+    const data = chunk.replace(/^data: /, '')
+    return JSON.parse(data)
+  } catch (error) {
+    console.error('Error parsing SSE chunk:', error)
+    return null
+  }
+}
+
+/**
+ * Helper to process streaming responses
+ */
+function processStreamResponse(
+  response: Response,
+  onChunk: (chunk: any) => void,
+  onComplete?: () => void,
+  onError?: (error: Error) => void
+): { close: () => void; done: Promise<void> } {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('No response body')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let isClosed = false
+
+  const donePromise = (async () => {
+    try {
+      while (!isClosed) {
+        const { done, value } = await reader.read()
+
+        if (done) {
+          if (!isClosed) {
+            isClosed = true
+            onComplete?.()
+          }
+          break
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.trim()) {
+            if (line.trim() === 'data: [DONE]') {
+              if (!isClosed) {
+                isClosed = true
+                onComplete?.()
+              }
+              return
+            }
+            const chunk = parseSSEChunk(line)
+            if (chunk) onChunk(chunk)
+          }
+        }
+      }
+    } catch (error) {
+      if (!isClosed) {
+        isClosed = true
+        onError?.(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+  })()
+
+  return {
+    close: () => {
+      isClosed = true
+      reader.cancel()
+    },
+    done: donePromise
+  }
+}
+
+/**
+ * Initiate a chat session for a study page
+ */
+export async function initiateChat(
+  materialId: string,
+  pageNumber: number,
+  userId: string,
+  onChunk: (chunk: { node?: string; messages?: Array<{ role: string; content: string }>; error?: string; type?: string; tool_calls?: ToolCall[]; message_id?: string }) => void,
+  onError?: (error: Error) => void,
+  onComplete?: () => void,
+  isInitialOpen: boolean = false
+): Promise<{ close: () => void }> {
+  const requestUrl = `${API_URL}/api/chat/initiate`;
+  // Use fetch with POST and stream the response
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      material_id: materialId,
+      page_number: pageNumber,
+      user_id: userId,
+      is_initial_open: isInitialOpen,
+    }),
+    })
+  } catch (fetchError) {
+    throw fetchError;
+  }
+
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ detail: 'Request failed' }));
+    throw new Error(errorData.detail || `HTTP ${response.status}`)
+  }
+
+  const controller = processStreamResponse(response, onChunk, onComplete, onError)
+  return { close: controller.close }
+}
+
+/**
+ * Send a message in an existing chat session
+ */
+export function sendMessage(
+  materialId: string,
+  message: string,
+  userId: string,
+  onChunk: (chunk: { node?: string; messages?: Array<{ role: string; content: string }>; error?: string; type?: string; tool_calls?: ToolCall[]; message_id?: string }) => void,
+  onError?: (error: Error) => void,
+  onComplete?: () => void,
+  pageNumber?: number
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const body: Record<string, any> = {
+      material_id: materialId,
+      message,
+      user_id: userId,
+    }
+    
+    // Include page_number if provided
+    if (pageNumber !== undefined) {
+      body.page_number = pageNumber
+    }
+    
+    fetch(`${API_URL}/api/chat/message`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+          throw new Error(error.detail || `HTTP ${response.status}`)
+        }
+
+        const controller = processStreamResponse(
+          response, 
+          onChunk, 
+          onComplete, 
+          (err) => {
+            onError?.(err)
+            reject(err)
+          }
+        )
+        
+        await controller.done
+        resolve()
+      })
+      .catch((error) => {
+        onError?.(error)
+        reject(error)
+      })
+  })
+}
+
+/**
+ * Get page analysis data
+ */
+export async function getPageAnalysis(
+  courseMaterialId: string,
+  pageNumber: number,
+  userId: string
+): Promise<PageAnalysisData> {
+  const response = await fetch(
+    `${API_URL}/api/page-analysis?course_material_id=${courseMaterialId}&page_number=${pageNumber}&user_id=${userId}`
+  )
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * Load persisted study session (last page and chat history)
+ */
+export async function getStudySession(
+  materialId: string,
+  userId: string
+): Promise<{ lastPage: number; messages: ChatMessage[] }> {
+  const requestUrl = `${API_URL}/api/study/session?material_id=${encodeURIComponent(materialId)}&user_id=${encodeURIComponent(userId)}`;
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, {
+      method: 'GET',
+    })
+  } catch (fetchError) {
+    throw fetchError;
+  }
+
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ detail: 'Request failed' }));
+    throw new Error(errorData.detail || `HTTP ${response.status}`)
+  }
+
+  const data = await response.json()
+
+  // Backend already returns messages in ChatMessage shape (id, role, content, timestamp)
+  return {
+    lastPage: data.lastPage ?? 1,
+    messages: (data.messages || []) as ChatMessage[],
+  }
+}
+
+/**
+ * Flashcard generation task status
+ */
+export interface FlashcardTaskStatus {
+  task_id: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  progress: number
+  total_pages: number
+  processed_pages: number
+  cards_generated: number
+  error_message?: string
+  filename?: string
+  created_at: number
+  completed_at?: number
+}
+
+/**
+ * Start flashcard generation as a background task
+ */
+export async function generateFlashcards(
+  materialId: string,
+  userId: string
+): Promise<{ task_id: string; status: string; message: string }> {
+  const url = `${API_URL}/api/flashcards/generate?course_material_id=${encodeURIComponent(materialId)}&user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'POST',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * Get flashcard generation task status
+ */
+export async function getFlashcardTaskStatus(
+  taskId: string,
+  userId: string
+): Promise<FlashcardTaskStatus> {
+  const url = `${API_URL}/api/flashcards/status/${encodeURIComponent(taskId)}?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * Download generated flashcard CSV file
+ */
+export async function downloadFlashcards(
+  taskId: string,
+  userId: string
+): Promise<Blob> {
+  const url = `${API_URL}/api/flashcards/download/${encodeURIComponent(taskId)}?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.blob()
+}
+
+/**
+ * Get flashcards for a course material from database
+ */
+export async function getFlashcardsForMaterial(
+  materialId: string,
+  userId: string
+): Promise<{ flashcards: any[]; count: number }> {
+  const url = `${API_URL}/api/flashcards/${encodeURIComponent(materialId)}?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * Download flashcards directly from database as .apkg (Anki deck)
+ */
+export async function downloadFlashcardsFromDb(
+  materialId: string,
+  userId: string
+): Promise<Blob> {
+  const url = `${API_URL}/api/flashcards/${encodeURIComponent(materialId)}/download?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.blob()
+}
+
+/**
+ * Cancel flashcard generation task
+ */
+export async function cancelFlashcardTask(
+  taskId: string,
+  userId: string
+): Promise<{ success: boolean; message: string }> {
+  const url = `${API_URL}/api/flashcards/cancel/${encodeURIComponent(taskId)}?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'POST',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * Get active flashcard generation task for a course material
+ * Returns null if no active task exists
+ */
+export async function getActiveFlashcardTask(
+  materialId: string,
+  userId: string
+): Promise<FlashcardTaskStatus | null> {
+  const url = `${API_URL}/api/flashcards/active/${encodeURIComponent(materialId)}?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
+  })
+
+  if (!response.ok) {
+    // If 404, no active task exists (this is fine)
+    if (response.status === 404) {
+      return null
+    }
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  const data = await response.json()
+  // If response is null, return null
+  if (data === null) {
+    return null
+  }
+
+  return data as FlashcardTaskStatus
+}
+
+/**
+ * Export flashcards for a course material as CSV (legacy - now uses background tasks)
+ * @deprecated Use generateFlashcards + getFlashcardTaskStatus + downloadFlashcards instead
+ */
+export async function exportFlashcards(
+  materialId: string,
+  userId: string
+): Promise<Blob> {
+  // Start generation task
+  const { task_id } = await generateFlashcards(materialId, userId)
+  
+  // Poll for completion
+  const pollInterval = 2000 // 2 seconds
+  const maxWaitTime = 600000 // 10 minutes
+  const startTime = Date.now()
+  
+  while (Date.now() - startTime < maxWaitTime) {
+    await new Promise(resolve => setTimeout(resolve, pollInterval))
+    
+    const status = await getFlashcardTaskStatus(task_id, userId)
+    
+    if (status.status === 'completed') {
+      return downloadFlashcards(task_id, userId)
+    }
+    
+    if (status.status === 'failed' || status.status === 'cancelled') {
+      throw new Error(status.error_message || 'Flashcard generation failed')
+    }
+    
+    // Continue polling if still running
+  }
+  
+  throw new Error('Flashcard generation timed out')
+}
+
+/**
+ * Submit quiz answers
+ */
+export async function submitQuiz(
+  quizId: string,
+  answers: Record<string, 'A' | 'B' | 'C' | 'D'>,
+  userId: string
+): Promise<QuizResult> {
+  const response = await fetch(`${API_URL}/api/quiz/submit`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      quiz_id: quizId,
+      answers,
+      user_id: userId,
+    }),
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}

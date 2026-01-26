@@ -14,7 +14,7 @@ from typing import Optional, AsyncGenerator
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body
 from fastapi.responses import StreamingResponse
-from pdf2image import convert_from_bytes
+from pdf2image import convert_from_bytes, pdfinfo_from_bytes
 from PIL import Image
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -40,6 +40,11 @@ from app.models.schemas import (
     QuizResponse,
 )
 from app.services.pdf_processor import process_pdf_background
+from app.services.snippet_service import (
+    create_snippet,
+    get_snippets_for_material,
+    delete_snippet
+)
 from app.services.storage import (
     upload_pdf_to_storage,
     create_course_material,
@@ -53,7 +58,7 @@ from app.services.storage import (
     update_course_material_filename,
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
-from app.services.flashcard_service import build_anki_csv
+from app.services.flashcard_service import build_anki_apkg
 from app.services.flashcard_task_service import get_flashcard_task_service
 from app.services.observability import get_langfuse_client
 from app.services.session_storage import (
@@ -269,23 +274,18 @@ async def upload_pdf(
         
         logger.info(f"PDF file read: {len(file_bytes)} bytes")
         
-        # Convert PDF to images
+        # Get page count using pdfinfo (faster than converting to images)
         try:
-            logger.info("Converting PDF to images...")
-            images = convert_from_bytes(
-                file_bytes,
-                dpi=300,
-                fmt='jpeg'
-            )
-            logger.info(f"Converted {len(images)} pages to images")
+            logger.info("Getting PDF info...")
+            info = pdfinfo_from_bytes(file_bytes)
+            page_count = info["Pages"]
+            logger.info(f"PDF has {page_count} pages")
         except Exception as e:
-            logger.error(f"Failed to convert PDF: {str(e)}", exc_info=True)
+            logger.error(f"Failed to get PDF info: {str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to convert PDF to images: {str(e)}"
+                detail=f"Failed to read PDF info: {str(e)}"
             )
-        
-        page_count = len(images)
         
         if page_count == 0:
             raise HTTPException(
@@ -323,20 +323,8 @@ async def upload_pdf(
                 detail=f"Failed to create course material record: {str(e)}"
             )
         
-        # Get page count for response (quick check without full processing)
-        try:
-            logger.info("Getting page count from PDF...")
-            images = convert_from_bytes(
-                file_bytes,
-                dpi=300,
-                fmt='jpeg'
-            )
-            page_count = len(images)
-            logger.info(f"PDF has {page_count} pages")
-        except Exception as e:
-            logger.error(f"Failed to get page count: {str(e)}", exc_info=True)
-            # Continue anyway, background task will handle it
-            page_count = 0
+        # Page count is already determined above
+
         
         # Start background processing task
         logger.info(f"Starting background processing task for material {material_id}")
@@ -1916,18 +1904,30 @@ async def send_chat_message(
                                         
                                         # Send tool response event
                                         # Validate tool response content before sending (only for non-error responses)
+                                        tool_response_content = tool_content
                                         if not is_error_response:
                                             try:
                                                 # Try to parse as JSON to validate structure
                                                 if tool_content:
-                                                    json.loads(tool_content)
+                                                    parsed_json = json.loads(tool_content)
+                                                    
+                                                    # Check if this is a get_page_image response with large image data
+                                                    # We truncate the image data for the frontend to prevent stream issues
+                                                    if isinstance(parsed_json, dict) and "image_data" in parsed_json:
+                                                        # Create a copy to modify for frontend display
+                                                        frontend_json = parsed_json.copy()
+                                                        image_data = frontend_json.get("image_data", "")
+                                                        if image_data and len(image_data) > 100:
+                                                            frontend_json["image_data"] = f"{image_data[:50]}...[truncated]...{image_data[-20:]}"
+                                                            tool_response_content = json.dumps(frontend_json)
+                                                            logger.info(f"Truncated large image data in tool response for frontend (original length: {len(image_data)})")
                                             except json.JSONDecodeError:
                                                 logger.warning(f"Tool response is not valid JSON: {tool_content[:200]}")
                                         
                                         tool_response_event = {
                                             "type": "tool_response",
                                             "tool_call_id": tool_call_id,
-                                            "result": tool_content,
+                                            "result": tool_response_content,
                                             "message_id": generate_message_id()
                                         }
                                         yield f"data: {json.dumps(tool_response_event)}\n\n"
@@ -2531,19 +2531,19 @@ async def download_flashcards(
                 detail=f"Task is not completed yet. Current status: {task.status}",
             )
         
-        if not task.csv_bytes or not task.filename:
+        if not task.apkg_bytes or not task.filename:
             raise HTTPException(
                 status_code=500,
-                detail="Task completed but CSV file is missing",
+                detail="Task completed but APKG file is missing",
             )
         
-        # Return CSV file
+        # Return APKG file
         return StreamingResponse(
-            io.BytesIO(task.csv_bytes),
-            media_type="text/csv",
+            io.BytesIO(task.apkg_bytes),
+            media_type="application/zip",
             headers={
                 "Content-Disposition": f'attachment; filename="{task.filename}"',
-                "Content-Type": "text/csv; charset=utf-8"
+                "Content-Type": "application/zip"
             }
         )
         
@@ -2755,18 +2755,18 @@ async def download_flashcards_from_db(
     user_id: str = Query(..., description="User ID (UUID)")
 ) -> StreamingResponse:
     """
-    Download flashcards for a course material as CSV from Supabase.
+    Download flashcards for a course material as Anki .apkg file from Supabase.
     
     This endpoint loads flashcards directly from the database and generates
-    a CSV file on-the-fly. This allows users to download flashcards at any time
-    without needing the original task.
+    an .apkg file on-the-fly with embedded images. This allows users to download
+    flashcards at any time without needing the original task.
     
     Args:
         course_material_id: Course material ID (UUID)
         user_id: User ID (UUID) for authorization
         
     Returns:
-        StreamingResponse with CSV file
+        StreamingResponse with .apkg file
         
     Raises:
         HTTPException: If flashcards not found, access denied, or download fails
@@ -2820,31 +2820,31 @@ async def download_flashcards_from_db(
                 detail="No flashcards found for this material. Please generate flashcards first.",
             )
         
-        # Convert to format expected by build_anki_csv
-        cards_for_csv = []
+        # Convert to format expected by build_anki_apkg
+        cards_for_apkg = []
         for card in flashcards:
-            cards_for_csv.append({
+            cards_for_apkg.append({
                 "front": card.get("front", ""),
                 "back": card.get("back", ""),
                 "tags": []  # Tags are not stored separately in DB, but that's okay
             })
         
-        # Build CSV
-        csv_bytes = build_anki_csv(cards_for_csv)
-        
-        # Generate filename
+        # Build .apkg with embedded images
         import re
         safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
         safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
-        filename = f"flashcards_{safe_course_title}_{safe_file_name}.csv"
         
-        # Return CSV file
+        deck_name = f"{course_title} - {file_name.replace('.pdf', '')}"
+        apkg_bytes = build_anki_apkg(cards_for_apkg, deck_name=deck_name)
+        filename = f"flashcards_{safe_course_title}_{safe_file_name}.apkg"
+        
+        # Return APKG file
         return StreamingResponse(
-            io.BytesIO(csv_bytes),
-            media_type="text/csv",
+            io.BytesIO(apkg_bytes),
+            media_type="application/zip",
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Type": "text/csv; charset=utf-8"
+                "Content-Type": "application/zip"
             }
         )
         
@@ -3297,4 +3297,88 @@ async def get_quiz_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get quiz: {str(e)}"
+        )
+
+
+@router.post("/study/snippets")
+async def upload_snippet(
+    file: UploadFile = File(...),
+    course_material_id: str = Form(...),
+    page_number: int = Form(...),
+    user_id: str = Form(...)
+):
+    """
+    Upload a new slide snippet.
+    """
+    try:
+        logger.info(f"Uploading snippet: material_id={course_material_id}, page={page_number}, user_id={user_id}")
+        
+        # Validate user
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found"
+            )
+            
+        # Read file
+        file_bytes = await file.read()
+        logger.info(f"Read {len(file_bytes)} bytes from file")
+        
+        # Create snippet
+        snippet = create_snippet(
+            file_bytes=file_bytes,
+            course_material_id=course_material_id,
+            page_number=page_number,
+            user_id=user_id
+        )
+        
+        logger.info(f"Snippet created successfully: {snippet.get('id', 'unknown')}")
+        return snippet
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading snippet: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to upload snippet: {str(e)}"
+        )
+
+
+@router.get("/study/snippets/{material_id}")
+async def get_snippets(
+    material_id: str,
+    user_id: str = Query(...)
+):
+    """
+    Get all snippets for a material.
+    """
+    try:
+        snippets = get_snippets_for_material(material_id, user_id)
+        return snippets
+    except Exception as e:
+        logger.error(f"Error fetching snippets: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch snippets: {str(e)}"
+        )
+
+
+@router.delete("/study/snippets/{snippet_id}")
+async def remove_snippet(
+    snippet_id: str,
+    user_id: str = Query(...)
+):
+    """
+    Delete a snippet.
+    """
+    try:
+        delete_snippet(snippet_id, user_id)
+        return {"status": "success"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error deleting snippet: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete snippet: {str(e)}"
         )
