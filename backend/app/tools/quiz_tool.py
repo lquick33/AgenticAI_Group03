@@ -58,7 +58,8 @@ class CreateQuizTool:
             "Das Quiz wird automatisch generiert und enthält 3-5 Verständnisfragen "
             "(bei komplexen Themen können es auch mehr sein, max. 8). "
             "Parameter: start_page (Startseite des Themas), end_page (Endseite des Themas). "
-            "Das Tool gibt die Quiz-ID und Quiz-Daten zurück, die im Chat angezeigt werden können."
+            "Das Tool gibt die Quiz-ID und Quiz-Daten zurück, die im Chat angezeigt werden können. "
+            "MUSS aufgerufen werden, um das Quiz tatsächlich zu generieren - eine Textantwort reicht nicht aus."
         )
         
         # Initialize quiz agent if not provided

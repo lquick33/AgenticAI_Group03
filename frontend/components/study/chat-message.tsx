@@ -55,7 +55,15 @@ export function ChatMessage({
   if (role === "user" && !contentString) return null
 
   const hasTools = showTools && toolCalls && toolCalls.length > 0
-  const hasQuiz = role === "assistant" && quiz && quiz.questions && quiz.questions.length > 0
+  // Verbesserte Quiz-Validierung mit detaillierteren Checks
+  const hasQuiz = role === "assistant" && 
+    quiz && 
+    quiz.quiz_id && 
+    quiz.topic && 
+    quiz.questions && 
+    Array.isArray(quiz.questions) && 
+    quiz.questions.length > 0 &&
+    quiz.questions.every(q => q.id && q.question && q.options && q.correct_answer)
 
   return (
     <div

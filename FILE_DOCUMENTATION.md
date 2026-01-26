@@ -51,6 +51,35 @@ This file documents the purpose and key components of files added to the Lernkom
 
 ---
 
+### Database Schema Change: Remove Quiz Unique Constraint (2026-01-26)
+
+**Purpose**: Removed the unique constraint on `(course_material_id, start_page, end_page, user_id)` from the `quizzes` table to allow multiple quizzes per page range.
+
+**Key Changes**:
+- **Removed Constraint**: `quizzes_course_material_id_start_page_end_page_user_id_key` - This constraint prevented creating multiple quizzes for the same page range
+- **Added Performance Index**: `idx_quizzes_material_pages_user` - Non-unique index on `(course_material_id, start_page, end_page, user_id)` for query performance
+
+**Reason**: 
+- Agents should be able to create multiple quizzes for the same page range (e.g., different topics or difficulty levels)
+- The table already uses UUID as primary key (`id`), ensuring uniqueness
+- All code queries use `id` (UUID) for lookups, not the constraint combination
+
+**SQL Executed**:
+```sql
+ALTER TABLE quizzes DROP CONSTRAINT IF EXISTS quizzes_course_material_id_start_page_end_page_user_id_key;
+CREATE INDEX IF NOT EXISTS idx_quizzes_material_pages_user ON quizzes(course_material_id, start_page, end_page, user_id);
+```
+
+**Code Impact**: 
+- **No code changes required** - All existing functions (`save_quiz()`, `get_quiz()`, `QuizCreationLock`) continue to work as before
+- `save_quiz()` uses UUID-based inserts
+- `get_quiz()` uses `id` (UUID) for queries
+- `QuizCreationLock` uses `material_id:user_id` as lock key (not page range)
+
+**Execution Method**: Applied directly via Supabase MCP tools (no migration file needed)
+
+---
+
 ### `supabase/migrations/README.md`
 
 **Purpose**: Documentation file explaining the migration structure, execution methods, and schema overview.

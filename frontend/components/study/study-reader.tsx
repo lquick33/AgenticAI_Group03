@@ -45,7 +45,6 @@ export function StudyReader({
     }
     return false
   })
-  const [toolCallsByMessage, setToolCallsByMessage] = useState<Map<string, ToolCall[]>>(new Map())
   const [submittingQuizId, setSubmittingQuizId] = useState<string | null>(null)
   const streamControllerRef = useRef<{ close: () => void } | null>(null)
   const messageIdCounter = useRef(0)
@@ -129,6 +128,110 @@ export function StudyReader({
     }
   }, [userId, generateMessageId])
 
+  // Helper: Bereinige JSON-String von Markdown-Code-Blöcken
+  const cleanJsonString = useCallback((str: string): string => {
+    // Entferne Markdown-Code-Blöcke (```json ... ``` oder ``` ... ```)
+    let cleaned = str.trim()
+    
+    // Entferne führende/abschließende Markdown-Code-Blöcke
+    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, '')
+    cleaned = cleaned.replace(/\n?```\s*$/i, '')
+    
+    // Entferne führende/abschließende Leerzeichen und Newlines
+    cleaned = cleaned.trim()
+    
+    return cleaned
+  }, [])
+
+  // Quiz-Verarbeitung zentralisieren
+  const processQuizToolResponse = useCallback((
+    toolCallId: string,
+    result: string,
+    messageId: string,
+    currentMessages: ChatMessage[]
+  ): ChatMessage[] => {
+    const messageIndex = currentMessages.findIndex(m => m.id === messageId)
+    if (messageIndex < 0) return currentMessages
+    
+    const updated = [...currentMessages]
+    const message = updated[messageIndex]
+    
+    if (!message.toolCalls) return currentMessages
+    
+    const toolCall = message.toolCalls.find(tc => tc.id === toolCallId)
+    if (!toolCall || toolCall.name !== 'create_quiz') {
+      // Nicht ein Quiz-Tool, normale Verarbeitung
+      updated[messageIndex] = {
+        ...message,
+        toolCalls: message.toolCalls.map(tc => 
+          tc.id === toolCallId
+            ? { ...tc, result, state: 'completed' as const }
+            : tc
+        ),
+      }
+      return updated
+    }
+    
+    // Quiz-Tool Response verarbeiten
+    try {
+      // WICHTIG: Bereinige JSON-String vor Parsing (entferne Markdown-Code-Blöcke)
+      const cleanedResult = cleanJsonString(result)
+      const resultData = JSON.parse(cleanedResult)
+      
+      // Error-Handling
+      if (resultData.error) {
+        const errorMessage = resultData.error || 'Quiz-Erstellung fehlgeschlagen'
+        console.error('[StudyReader] Quiz creation failed:', errorMessage, resultData)
+        
+        updated[messageIndex] = {
+          ...message,
+          toolCalls: message.toolCalls.map(tc => 
+            tc.id === toolCallId
+              ? { ...tc, result, state: 'completed' as const, error: errorMessage }
+              : tc
+          ),
+        }
+        return updated
+      }
+      
+      // Erfolgreiche Quiz-Erstellung - verwende parseQuizToolResponse für strikte Validierung
+      // (diese Funktion prüft bereits alle Felder)
+      const validatedData = parseQuizToolResponse(cleanedResult)
+      
+      updated[messageIndex] = {
+        ...message,
+        toolCalls: message.toolCalls.map(tc => 
+          tc.id === toolCallId
+            ? { ...tc, result, state: 'completed' as const }
+            : tc
+        ),
+        quiz: {
+          quiz_id: validatedData.quiz_id,
+          topic: validatedData.topic || validatedData.quiz_data.topic,
+          questions: validatedData.quiz_data.questions || []
+        }
+      }
+      
+      console.log('[StudyReader] Quiz added to message:', validatedData.quiz_id)
+      return updated
+      
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : 'Failed to parse quiz result'
+      console.error('[StudyReader] Failed to parse/validate quiz result:', errorMessage, e)
+      console.error('[StudyReader] Raw result (first 500 chars):', result.substring(0, 500))
+      
+      updated[messageIndex] = {
+        ...message,
+        toolCalls: message.toolCalls.map(tc => 
+          tc.id === toolCallId
+            ? { ...tc, result, state: 'completed' as const, error: errorMessage }
+            : tc
+        ),
+      }
+      return updated
+    }
+  }, [cleanJsonString])
+
   // Stop any running typewriter animation
   const stopTypewriter = useCallback(() => {
     if (typewriterRef.current.intervalId) {
@@ -182,8 +285,11 @@ export function StudyReader({
         const index = prev.findIndex((m) => m.id === msgId)
         if (index >= 0) {
           const updated = [...prev]
+          // KRITISCH: Spread-Operator ...updated[index] ist ESSENTIELL!
+          // Ohne Spread würde quiz, toolCalls und andere Properties verloren gehen,
+          // die evtl. Millisekunden vorher durch den Stream hinzugefügt wurden
           updated[index] = {
-            ...updated[index],
+            ...updated[index], // SPREAD IST WICHTIG - behält alle Properties (quiz, toolCalls, etc.)
             content: fullText.slice(0, typewriterRef.current.currentIndex),
           }
           return updated
@@ -284,7 +390,8 @@ export function StudyReader({
             console.log('[StudyReader] Tool call received:', chunk.tool_calls.map(tc => ({ id: tc.id, name: tc.name })))
             
             // Add to event queue for ordering validation
-            eventQueueRef.current.add(chunk)
+            // WICHTIG: Prüfe auf retryable Events und verarbeite sie sofort
+            const retryableEvents = eventQueueRef.current.add(chunk)
             
             setMessages((prev) => {
               const lastStreamingIndex = prev.findLastIndex(
@@ -299,20 +406,29 @@ export function StudyReader({
                   state: tc.result ? (tc.state || 'completed') : 'running' as const
                 }))
                 
-                setToolCallsByMessage((prevMap) => {
-                  const newMap = new Map(prevMap)
-                  const existing = newMap.get(messageId) || []
-                  newMap.set(messageId, [...existing, ...toolCallsWithState])
-                  return newMap
-                })
-                
-                // Also update the message with tool calls
-                const updated = [...prev]
-                const currentToolCalls = toolCallsByMessage.get(messageId) || []
+                // Atomar: Update message mit neuen Tool Calls
+                let updated = [...prev]
                 updated[lastStreamingIndex] = {
                   ...updated[lastStreamingIndex],
-                  toolCalls: [...currentToolCalls, ...toolCallsWithState],
+                  toolCalls: [...(updated[lastStreamingIndex].toolCalls || []), ...toolCallsWithState],
                 }
+                
+                // Verarbeite retryable Events sofort
+                if (retryableEvents.length > 0) {
+                  console.log('[StudyReader] Processing', retryableEvents.length, 'retryable tool responses')
+                  retryableEvents.forEach(retryEvent => {
+                    if (retryEvent.type === 'tool_response' && retryEvent.tool_call_id && retryEvent.result) {
+                      // Verarbeite wie normales tool_response Event
+                      updated = processQuizToolResponse(
+                        retryEvent.tool_call_id,
+                        retryEvent.result,
+                        messageId,
+                        updated
+                      )
+                    }
+                  })
+                }
+                
                 return updated
               }
               return prev
@@ -325,7 +441,6 @@ export function StudyReader({
             // Validate event order: tool_call should come before tool_response
             if (!eventQueueRef.current.validateOrder(chunk)) {
               console.warn('[StudyReader] Tool response received before corresponding tool call, queuing...')
-              // Add to queue and process later
               eventQueueRef.current.add(chunk)
               return
             }
@@ -345,93 +460,14 @@ export function StudyReader({
               
               if (lastStreamingIndex >= 0) {
                 const messageId = prev[lastStreamingIndex].id
-                const updated = [...prev]
                 
-                // Find the tool call with matching ID and update it with result
-                if (updated[lastStreamingIndex].toolCalls) {
-                  console.log('[StudyReader] Available tool calls:', updated[lastStreamingIndex].toolCalls!.map(tc => ({ id: tc.id, name: tc.name })))
-                  const toolCall = updated[lastStreamingIndex].toolCalls!.find(tc => tc.id === chunk.tool_call_id)
-                  
-                  console.log('[StudyReader] Matching tool call found:', toolCall ? { id: toolCall.id, name: toolCall.name } : 'NOT FOUND')
-                  
-                  // Check if this is a create_quiz tool call
-                  if (toolCall && toolCall.name === 'create_quiz' && chunk.result) {
-                    try {
-                      // Check if result is an error response
-                      const resultData = JSON.parse(chunk.result)
-                      if (resultData.error) {
-                        // Tool returned an error - mark tool call as completed with error
-                        const errorMessage = resultData.error || 'Quiz-Erstellung fehlgeschlagen'
-                        console.error('[StudyReader] Quiz creation failed:', errorMessage, resultData)
-                        
-                        updated[lastStreamingIndex] = {
-                          ...updated[lastStreamingIndex],
-                          toolCalls: updated[lastStreamingIndex].toolCalls!.map(tc => 
-                            tc.id === chunk.tool_call_id
-                              ? { 
-                                  ...tc, 
-                                  result: chunk.result, 
-                                  state: 'completed' as const,
-                                  error: errorMessage
-                                }
-                              : tc
-                          ),
-                        }
-                      } else {
-                        // Quiz was created successfully - use validated parsing function
-                        const validatedData = parseQuizToolResponse(chunk.result)
-                        
-                        // Quiz was created successfully, add quiz data to message
-                        updated[lastStreamingIndex] = {
-                          ...updated[lastStreamingIndex],
-                          toolCalls: updated[lastStreamingIndex].toolCalls!.map(tc => 
-                            tc.id === chunk.tool_call_id
-                              ? { ...tc, result: chunk.result, state: 'completed' as const }
-                              : tc
-                          ),
-                          quiz: {
-                            quiz_id: validatedData.quiz_id,
-                            topic: validatedData.topic || validatedData.quiz_data.topic,
-                            questions: validatedData.quiz_data.questions || []
-                          }
-                        }
-                        console.log('[StudyReader] Quiz added to message:', validatedData.quiz_id, '- Quiz is ready for user interaction')
-                      }
-                    } catch (e) {
-                      // Parsing or validation failed - show error and mark tool call as completed (error state)
-                      const errorMessage = e instanceof Error ? e.message : 'Failed to parse quiz result'
-                      console.error('[StudyReader] Failed to parse/validate quiz result:', errorMessage, e)
-                      
-                      // Show user-friendly error (you may want to use a toast library here)
-                      // For now, we'll log it and mark the tool call as completed with error
-                      updated[lastStreamingIndex] = {
-                        ...updated[lastStreamingIndex],
-                        toolCalls: updated[lastStreamingIndex].toolCalls!.map(tc => 
-                          tc.id === chunk.tool_call_id
-                            ? { 
-                                ...tc, 
-                                result: chunk.result, 
-                                state: 'completed' as const,
-                                error: errorMessage
-                              }
-                            : tc
-                        ),
-                      }
-                    }
-                  } else {
-                    // Not a create_quiz tool, update normally
-                    updated[lastStreamingIndex] = {
-                      ...updated[lastStreamingIndex],
-                      toolCalls: updated[lastStreamingIndex].toolCalls!.map(tc => 
-                        tc.id === chunk.tool_call_id
-                          ? { ...tc, result: chunk.result, state: 'completed' as const }
-                          : tc
-                      ),
-                    }
-                  }
-                }
-                
-                return updated
+                // Verwende zentrale Quiz-Verarbeitungsfunktion
+                return processQuizToolResponse(
+                  chunk.tool_call_id,
+                  chunk.result,
+                  messageId,
+                  prev
+                )
               }
               return prev
             })
@@ -648,13 +684,16 @@ export function StudyReader({
                   newId,
                   typewriterRunning: !!typewriterRef.current.intervalId,
                   fullTextLength: fullText?.length || 0,
-                  finalContentLength: finalContent.length
+                  finalContentLength: finalContent.length,
+                  hasQuiz: !!msg.quiz,
+                  hasToolCalls: !!msg.toolCalls
                 })
                 
+                // WICHTIG: Behalte alle Felder beim Finalisieren
                 return {
-                  ...msg,
+                  ...msg,  // Spread behält quiz, toolCalls, etc.
                   id: newId,
-                  content: finalContent, // Set full content immediately
+                  content: finalContent,
                 }
               }
               return msg
@@ -848,7 +887,8 @@ export function StudyReader({
             // Handle tool call events
             if (chunk.type === 'tool_call' && chunk.tool_calls) {
               // Add to event queue for ordering validation
-              eventQueueRef.current.add(chunk)
+              // WICHTIG: Prüfe auf retryable Events und verarbeite sie sofort
+              const retryableEvents = eventQueueRef.current.add(chunk)
               
               setMessages((prev) => {
                 const lastStreamingIndex = prev.findLastIndex(
@@ -863,19 +903,29 @@ export function StudyReader({
                     state: tc.result ? (tc.state || 'completed') : 'running' as const
                   }))
                   
-                  setToolCallsByMessage((prevMap) => {
-                    const newMap = new Map(prevMap)
-                    const existing = newMap.get(messageId) || []
-                    newMap.set(messageId, [...existing, ...toolCallsWithState])
-                    return newMap
-                  })
-                  
-                  const updated = [...prev]
-                  const currentToolCalls = toolCallsByMessage.get(messageId) || []
+                  // Atomar: Update message mit neuen Tool Calls
+                  let updated = [...prev]
                   updated[lastStreamingIndex] = {
                     ...updated[lastStreamingIndex],
-                    toolCalls: [...currentToolCalls, ...toolCallsWithState],
+                    toolCalls: [...(updated[lastStreamingIndex].toolCalls || []), ...toolCallsWithState],
                   }
+                  
+                  // Verarbeite retryable Events sofort
+                  if (retryableEvents.length > 0) {
+                    console.log('[StudyReader] Processing', retryableEvents.length, 'retryable tool responses (sendMessage)')
+                    retryableEvents.forEach(retryEvent => {
+                      if (retryEvent.type === 'tool_response' && retryEvent.tool_call_id && retryEvent.result) {
+                        // Verarbeite wie normales tool_response Event
+                        updated = processQuizToolResponse(
+                          retryEvent.tool_call_id,
+                          retryEvent.result,
+                          messageId,
+                          updated
+                        )
+                      }
+                    })
+                  }
+                  
                   return updated
                 }
                 return prev
@@ -888,7 +938,6 @@ export function StudyReader({
               // Validate event order: tool_call should come before tool_response
               if (!eventQueueRef.current.validateOrder(chunk)) {
                 console.warn('[StudyReader] Tool response received before corresponding tool call, queuing...')
-                // Add to queue and process later
                 eventQueueRef.current.add(chunk)
                 return
               }
@@ -902,21 +951,15 @@ export function StudyReader({
                 )
                 
                 if (lastStreamingIndex >= 0) {
-                  const updated = [...prev]
+                  const messageId = prev[lastStreamingIndex].id
                   
-                  // Find the tool call with matching ID and update it with result
-                  if (updated[lastStreamingIndex].toolCalls) {
-                    updated[lastStreamingIndex] = {
-                      ...updated[lastStreamingIndex],
-                      toolCalls: updated[lastStreamingIndex].toolCalls!.map(toolCall => 
-                        toolCall.id === chunk.tool_call_id
-                          ? { ...toolCall, result: chunk.result, state: 'completed' as const }
-                          : toolCall
-                      ),
-                    }
-                  }
-                  
-                  return updated
+                  // WICHTIG: Verwende dieselbe zentrale Quiz-Verarbeitungsfunktion
+                  return processQuizToolResponse(
+                    chunk.tool_call_id,
+                    chunk.result,
+                    messageId,
+                    prev
+                  )
                 }
                 return prev
               })
@@ -1114,13 +1157,16 @@ export function StudyReader({
                     newId,
                     typewriterRunning: !!typewriterRef.current.intervalId,
                     fullTextLength: fullText?.length || 0,
-                    finalContentLength: finalContent.length
+                    finalContentLength: finalContent.length,
+                    hasQuiz: !!msg.quiz,
+                    hasToolCalls: !!msg.toolCalls
                   })
                   
+                  // WICHTIG: Behalte alle Felder beim Finalisieren
                   return {
-                    ...msg,
+                    ...msg,  // Spread behält quiz, toolCalls, etc.
                     id: newId,
-                    content: finalContent, // Set full content immediately
+                    content: finalContent,
                   }
                 }
                 return msg

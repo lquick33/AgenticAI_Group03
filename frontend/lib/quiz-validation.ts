@@ -87,18 +87,46 @@ export function parseQuizToolResponse(jsonString: string): QuizToolResponse {
     throw new Error(`Quiz creation failed: ${parsed.error}`)
   }
   
-  // Validate structure
-  if (!isValidQuizToolResponse(parsed)) {
-    const missingFields: string[] = []
-    if (!parsed.quiz_id) missingFields.push('quiz_id')
-    if (!parsed.quiz_data) missingFields.push('quiz_data')
-    if (!parsed.topic) missingFields.push('topic')
-    if (!parsed.question_count) missingFields.push('question_count')
-    if (!parsed.start_page) missingFields.push('start_page')
-    if (!parsed.end_page) missingFields.push('end_page')
-    
+  // Detaillierte Validierung mit spezifischen Fehlermeldungen
+  const missingFields: string[] = []
+  const invalidFields: string[] = []
+  
+  if (!parsed.quiz_id || typeof parsed.quiz_id !== 'string' || parsed.quiz_id.length === 0) {
+    missingFields.push('quiz_id')
+  }
+  
+  if (!parsed.quiz_data) {
+    missingFields.push('quiz_data')
+  } else if (!isValidQuizData(parsed.quiz_data)) {
+    invalidFields.push('quiz_data')
+  }
+  
+  if (!parsed.topic || typeof parsed.topic !== 'string' || parsed.topic.length === 0) {
+    missingFields.push('topic')
+  }
+  
+  if (typeof parsed.question_count !== 'number' || parsed.question_count < 3 || parsed.question_count > 8) {
+    invalidFields.push('question_count')
+  }
+  
+  if (typeof parsed.start_page !== 'number' || parsed.start_page < 1) {
+    invalidFields.push('start_page')
+  }
+  
+  if (typeof parsed.end_page !== 'number' || parsed.end_page < 1) {
+    invalidFields.push('end_page')
+  }
+  
+  if (missingFields.length > 0 || invalidFields.length > 0) {
+    const errorParts: string[] = []
+    if (missingFields.length > 0) {
+      errorParts.push(`Missing fields: ${missingFields.join(', ')}`)
+    }
+    if (invalidFields.length > 0) {
+      errorParts.push(`Invalid fields: ${invalidFields.join(', ')}`)
+    }
     throw new Error(
-      `Invalid quiz tool response structure. Missing or invalid fields: ${missingFields.join(', ')}`
+      `Invalid quiz tool response structure. ${errorParts.join('; ')}`
     )
   }
   
