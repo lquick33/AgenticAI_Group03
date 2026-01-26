@@ -158,7 +158,17 @@ export function CourseMaterialsContainer({
                 setPollingCount(pollingMaterialsRef.current.size)
               }
             } else if (data.processing_status !== 'processing' && data.processing_status !== 'uploading') {
-              // Processing complete, remove from polling
+              // Processing complete - check if status has changed
+              const statusChanged = !currentMaterial || 
+                currentMaterial.processing_status === 'processing' || 
+                currentMaterial.processing_status === 'uploading'
+              
+              if (statusChanged) {
+                // Status changed to completed/error - refresh UI to show updated status
+                refreshMaterials()
+              }
+              
+              // Remove from polling
               pollingMaterialsRef.current.delete(id)
               setPollingCount(pollingMaterialsRef.current.size)
             }
