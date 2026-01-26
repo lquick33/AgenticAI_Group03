@@ -201,72 +201,79 @@ async def process_pdf_background(
             for page_num, image in enumerate(images, start=1)
         ]
         
-        # Process all pages in parallel (with semaphore limiting concurrency)
+        # Process pages in parallel, handling completions as they arrive
         logger.info(f"Processing {page_count} pages with max {max_concurrent} concurrent requests")
-        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Analyze results
+        # Track results and filename generation status
+        results = {}  # page_number -> (success, error_message)
         pages_analyzed = 0
         errors = []
-        page_1_success = False
+        filename_generated = False  # Flag to track if filename has been generated
         
-        for result in results:
-            if isinstance(result, Exception):
-                # Task raised an exception
-                error_msg = f"Task exception: {str(result)}"
-                errors.append(error_msg)
-                logger.error(error_msg, exc_info=True)
-            else:
+        # Process pages as they complete (not waiting for all to finish)
+        for coro in asyncio.as_completed(tasks):
+            try:
+                result = await coro
+                # process_single_page always returns a tuple (page_number, success, error_msg)
                 page_num, success, error_msg = result
+                results[page_num] = (success, error_msg)
+                
                 if success:
                     pages_analyzed += 1
-                    if page_num == 1:
-                        page_1_success = True
+                    
+                    # Generate filename immediately when page 1 completes
+                    if page_num == 1 and not filename_generated:
+                        filename_generated = True
+                        try:
+                            logger.info(f"Page 1 analyzed, generating filename immediately for material {material_id}")
+                            
+                            # Get page 1 analysis
+                            page_one_analysis = get_page_analysis(
+                                course_material_id=material_id,
+                                page_number=1,
+                                user_id=user_id
+                            )
+                            
+                            if page_one_analysis and page_one_analysis.get("summary"):
+                                page_one_summary = page_one_analysis.get("summary")
+                                
+                                # Get existing materials to detect pattern
+                                existing_materials = get_course_materials_for_naming(
+                                    course_id=course_id,
+                                    user_id=user_id,
+                                    exclude_material_id=material_id
+                                )
+                                existing_filenames = [m.get("file_name", "") for m in existing_materials if m.get("file_name")]
+                                
+                                # Detect pattern
+                                naming_pattern = detect_naming_pattern(existing_filenames)
+                                
+                                # Generate filename
+                                new_filename = await generate_material_filename(
+                                    page_one_summary=page_one_summary,
+                                    api_key=None,
+                                    material_id=material_id,
+                                    user_id=user_id,
+                                    course_id=course_id,
+                                    existing_pattern=naming_pattern
+                                )
+                                
+                                # Update filename immediately
+                                update_course_material_filename(material_id, new_filename)
+                                logger.info(f"Immediate filename generation: Updated material {material_id} to: {new_filename}")
+                            else:
+                                logger.warning(f"Page 1 analysis missing summary for material {material_id}, will retry at end")
+                                filename_generated = False  # Allow fallback to retry
+                        except Exception as filename_error:
+                            logger.warning(f"Immediate filename generation failed: {filename_error}", exc_info=True)
+                            filename_generated = False  # Allow fallback to retry
                 else:
                     errors.append(error_msg)
-        
-        # Generate filename early if page 1 is ready
-        if page_1_success:
-            try:
-                logger.info(f"Page 1 analyzed, generating filename early for material {material_id}")
-                
-                # Get page 1 analysis
-                page_one_analysis = get_page_analysis(
-                    course_material_id=material_id,
-                    page_number=1,
-                    user_id=user_id
-                )
-                
-                if page_one_analysis and page_one_analysis.get("summary"):
-                    page_one_summary = page_one_analysis.get("summary")
-                    
-                    # Get existing materials to detect pattern
-                    existing_materials = get_course_materials_for_naming(
-                        course_id=course_id,
-                        user_id=user_id,
-                        exclude_material_id=material_id
-                    )
-                    existing_filenames = [m.get("file_name", "") for m in existing_materials if m.get("file_name")]
-                    
-                    # Detect pattern
-                    naming_pattern = detect_naming_pattern(existing_filenames)
-                    
-                    # Generate filename
-                    new_filename = await generate_material_filename(
-                        page_one_summary=page_one_summary,
-                        api_key=None,
-                        material_id=material_id,
-                        user_id=user_id,
-                        course_id=course_id,
-                        existing_pattern=naming_pattern
-                    )
-                    
-                    # Update filename immediately
-                    update_course_material_filename(material_id, new_filename)
-                    logger.info(f"Early filename generation: Updated material {material_id} to: {new_filename}")
-            except Exception as filename_error:
-                logger.warning(f"Early filename generation failed: {filename_error}", exc_info=True)
-                # Continue - will retry at end if processing succeeds
+            except Exception as e:
+                # Handle exceptions from as_completed iteration (shouldn't happen, but safety check)
+                error_msg = f"Error processing page result: {str(e)}"
+                errors.append(error_msg)
+                logger.error(error_msg, exc_info=True)
         
         # Update final status
         if pages_analyzed == page_count:
@@ -319,8 +326,8 @@ async def process_pdf_background(
         logger.info(f"Background processing completed for material {material_id}: {status}")
         
         # Generate and update filename based on page 1 summary if processing completed successfully
-        # Only run if filename wasn't already generated early (fallback)
-        if status == "completed" and pages_analyzed > 0:
+        # Only run if filename wasn't already generated immediately after page 1 (fallback)
+        if status == "completed" and pages_analyzed > 0 and not filename_generated:
             try:
                 # Check if filename was already generated (doesn't match original upload filename pattern)
                 current_filename = get_course_material_filename(material_id, user_id)
