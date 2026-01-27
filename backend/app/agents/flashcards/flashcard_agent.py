@@ -163,6 +163,8 @@ class FlashcardGeneratorAgent(BaseAgent):
         )
         
         # Get context then generate cards
+        # All classifications go to the same generate_cards node, which uses
+        # classification from state to select the appropriate prompt
         workflow.add_edge("get_context", "generate_cards")
         workflow.add_edge("generate_cards", "update_progress")
         
@@ -617,6 +619,14 @@ Respond with a JSON object matching this structure:
         diagram_description = page_analysis.get("diagram_description", "")
         page_number = page_analysis.get("page_number", 0)
         
+        # #region agent log
+        # import json
+        # try:
+        #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+        #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"flashcard_agent.py:616","message":"Extracted page content","data":{"summary_len":len(summary),"key_terms_count":len(key_terms),"exam_questions_count":len(exam_questions),"diagram_desc_len":len(diagram_description),"page_number":page_number,"summary_preview":summary[:100] if summary else "","key_terms_preview":key_terms[:5] if key_terms else []},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+        # except: pass
+        # #endregion
+        
         # Build conversation context
         messages = state.get("current_page_messages", [])
         conversation_context = ""
@@ -639,6 +649,15 @@ Respond with a JSON object matching this structure:
         # Get prompt from Langfuse
         try:
             url = state.get("current_snippet_url")
+            classification = state.get("classification", "general")  # Get from state
+            
+            # #region agent log
+            # try:
+            #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+            #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"flashcard_agent.py:644","message":"Before prompt generation","data":{"classification":classification,"has_summary":bool(summary),"has_key_terms":bool(key_terms)},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+            # except: pass
+            # #endregion
+            
             prompt = self._get_card_generation_prompt(
                 summary=summary,
                 key_terms=key_terms,
@@ -648,10 +667,26 @@ Respond with a JSON object matching this structure:
                 course_id=state.get("course_id", ""),
                 material_id=state.get("course_material_id", ""),
                 page_number=page_number,
+                classification=classification,  # NEW: Pass classification
                 snippet_image_urls=[url] if url else None,
             )
+            
+            # #region agent log
+            # try:
+            #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+            #         prompt_preview = prompt[:500] if prompt else ""
+            #         has_summary_in_prompt = "{{summary}}" not in prompt and summary and summary[:50] in prompt if summary else False
+            #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"flashcard_agent.py:656","message":"After prompt generation","data":{"prompt_len":len(prompt) if prompt else 0,"prompt_preview":prompt_preview,"has_summary_in_prompt":has_summary_in_prompt,"has_placeholders":("{{summary}}" in prompt or "{{key_terms}}" in prompt)},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+            # except: pass
+            # #endregion
         except Exception as e:
             logger.error(f"Failed to get card generation prompt: {e}")
+            # #region agent log
+            # try:
+            #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+            #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"flashcard_agent.py:658","message":"Prompt generation error","data":{"error":str(e)},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+            # except: pass
+            # #endregion
             return state
         
         # Create Langfuse callback handler
@@ -685,6 +720,16 @@ Respond with a JSON object matching this structure:
                 logger.info(f"Including snippet image in vision input for page {page_number}")
             else:
                 message = HumanMessage(content=prompt)
+            
+            # #region agent log
+            # try:
+            #     import json
+            #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+            #         msg_content_preview = str(message.content)[:800] if hasattr(message, 'content') else str(message)[:800]
+            #         msg_has_summary = summary and summary[:50] in str(message.content) if (hasattr(message, 'content') and summary) else False
+            #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"K","location":"flashcard_agent.py:691","message":"Message sent to LLM","data":{"message_type":type(message).__name__,"content_len":len(str(message.content)) if hasattr(message, 'content') else 0,"content_preview":msg_content_preview,"has_summary_in_message":msg_has_summary,"has_image":isinstance(message.content, list) if hasattr(message, 'content') else False},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+            # except: pass
+            # #endregion
             
             result = self.card_generation_llm.invoke([message], config=config if config else None)
             
@@ -772,6 +817,25 @@ Respond with a JSON object matching this structure:
         
         return state
     
+    def _prepare_snippet_info(self, snippet_image_urls: Optional[List[str]]) -> str:
+        """
+        Prepare snippet information string for prompt.
+        
+        Args:
+            snippet_image_urls: Optional list of snippet image URLs
+            
+        Returns:
+            Formatted snippet info string
+        """
+        if not snippet_image_urls:
+            return ""
+        
+        if len(snippet_image_urls) == 1:
+            return f"- **VISUELLES SNIPPET (1 Bild):** Ein wichtiger visueller Ausschnitt ist vorhanden. URL: {snippet_image_urls[0]}\n- Du siehst das Bild direkt in dieser Nachricht als Vision-Input. Analysiere es und füge es bei relevanten Karteikarten ein."
+        else:
+            urls_list = '\n'.join([f"  - Snippet {i+1}: {url}" for i, url in enumerate(snippet_image_urls)])
+            return f"- **VISUELLE SNIPPETS ({len(snippet_image_urls)} Bilder):** Mehrere wichtige visuelle Ausschnitte sind vorhanden:\n{urls_list}\n- Du siehst alle Bilder direkt in dieser Nachricht als Vision-Input. Analysiere sie und füge die relevanten Bilder bei passenden Karteikarten ein. Du kannst mehrere Bilder pro Karte verwenden, wenn es sinnvoll ist."
+    
     def _get_skip_decision_prompt(self, summary: str, key_terms: List[str]) -> str:
         """
         Get skip decision prompt from Langfuse.
@@ -806,8 +870,63 @@ Respond with a JSON object matching this structure:
             logger.error(f"Failed to load Langfuse prompt for skip-decision: {e}")
             raise RuntimeError(f"Cannot load skip-decision prompt from Langfuse: {e}") from e
     
-    def _get_card_generation_prompt(
+    def _get_base_card_generation_prompt(self, compile_vars: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Get base flashcard generation prompt from Langfuse.
+        
+        Contains common instructions applicable to all subjects.
+        
+        Args:
+            compile_vars: Optional dict of variables to compile into the base prompt.
+                         If provided, placeholders like {{summary}} will be replaced.
+        
+        Returns:
+            Base prompt string (compiled if compile_vars provided)
+        """
+        if not self.langfuse_client:
+            base_prompt = self._get_fallback_base_prompt()
+            # If compile_vars provided, manually replace variables in fallback
+            if compile_vars:
+                base_prompt = base_prompt.replace("{{summary}}", compile_vars.get("summary", ""))
+                base_prompt = base_prompt.replace("{{key_terms}}", compile_vars.get("key_terms", ""))
+                base_prompt = base_prompt.replace("{{exam_questions}}", compile_vars.get("exam_questions", ""))
+                base_prompt = base_prompt.replace("{{diagram_description}}", compile_vars.get("diagram_description", ""))
+                base_prompt = base_prompt.replace("{{conversation_context}}", compile_vars.get("conversation_context", ""))
+                base_prompt = base_prompt.replace("{{course_id}}", compile_vars.get("course_id", ""))
+                base_prompt = base_prompt.replace("{{material_id}}", compile_vars.get("material_id", ""))
+                base_prompt = base_prompt.replace("{{page_number}}", str(compile_vars.get("page_number", "")))
+                base_prompt = base_prompt.replace("{{snippet_image_url}}", compile_vars.get("snippet_image_url", ""))
+            return base_prompt
+        
+        try:
+            langfuse_prompt = self.langfuse_client.get_prompt(
+                "flashcard-agent/card-generation-base",
+                label="production"
+            )
+            # Compile with variables if provided, otherwise return template
+            if compile_vars:
+                return langfuse_prompt.compile(**compile_vars)
+            else:
+                return langfuse_prompt.compile()
+        except Exception as e:
+            logger.warning(f"Failed to load base prompt from Langfuse: {e}, using fallback")
+            base_prompt = self._get_fallback_base_prompt()
+            # If compile_vars provided, manually replace variables in fallback
+            if compile_vars:
+                base_prompt = base_prompt.replace("{{summary}}", compile_vars.get("summary", ""))
+                base_prompt = base_prompt.replace("{{key_terms}}", compile_vars.get("key_terms", ""))
+                base_prompt = base_prompt.replace("{{exam_questions}}", compile_vars.get("exam_questions", ""))
+                base_prompt = base_prompt.replace("{{diagram_description}}", compile_vars.get("diagram_description", ""))
+                base_prompt = base_prompt.replace("{{conversation_context}}", compile_vars.get("conversation_context", ""))
+                base_prompt = base_prompt.replace("{{course_id}}", compile_vars.get("course_id", ""))
+                base_prompt = base_prompt.replace("{{material_id}}", compile_vars.get("material_id", ""))
+                base_prompt = base_prompt.replace("{{page_number}}", str(compile_vars.get("page_number", "")))
+                base_prompt = base_prompt.replace("{{snippet_image_url}}", compile_vars.get("snippet_image_url", ""))
+            return base_prompt
+    
+    def _get_classification_specific_prompt(
         self,
+        classification: str,
         summary: str,
         key_terms: List[str],
         exam_questions: List[str],
@@ -819,9 +938,17 @@ Respond with a JSON object matching this structure:
         snippet_image_urls: Optional[List[str]] = None
     ) -> str:
         """
-        Get card generation prompt from Langfuse.
+        Get classification-specific prompt. May extend base prompt or be standalone.
+        
+        This method:
+        1. Tries to load classification-specific prompt from Langfuse
+        2. Checks if prompt uses {{base_prompt_content}} variable
+        3. If yes: loads base prompt and combines
+        4. If no: uses prompt as standalone
+        5. Falls back to general if classification-specific prompt not found
         
         Args:
+            classification: Material classification category (extensible - any string)
             summary: Page summary
             key_terms: List of key terms
             exam_questions: List of exam questions
@@ -830,54 +957,73 @@ Respond with a JSON object matching this structure:
             course_id: Course ID
             material_id: Material ID
             page_number: Page number
-            snippet_image_urls: Optional list of snippet image URLs (for vision input and img tags)
+            snippet_image_urls: Optional list of snippet image URLs
             
         Returns:
-            Compiled prompt string
-            
-        Raises:
-            RuntimeError: If Langfuse client is not available or prompt cannot be loaded
+            Final compiled prompt string
         """
+        # Prepare variables
+        key_terms_str = ', '.join(key_terms) if key_terms else 'Keine'
+        exam_questions_str = ', '.join(exam_questions) if exam_questions else 'Keine'
+        diagram_desc_str = diagram_description if diagram_description else 'Kein Diagramm'
+        conv_context_str = conversation_context if conversation_context else 'Keine relevanten Konversationen'
+        
+        # Prepare snippet info
+        snippet_info = self._prepare_snippet_info(snippet_image_urls)
+        
+        # Try to load classification-specific prompt
         if not self.langfuse_client:
-            raise RuntimeError("Langfuse client is not available. Cannot load card-generation prompt.")
+            return self._get_fallback_classification_prompt(
+                classification, summary, key_terms_str, exam_questions_str,
+                diagram_desc_str, conv_context_str, course_id, material_id,
+                page_number, snippet_info
+            )
         
         try:
+            prompt_name = f"flashcard-agent/card-generation-{classification}"
             langfuse_prompt = self.langfuse_client.get_prompt(
-                "flashcard-agent/card-generation",
+                prompt_name,
                 label="production"
             )
-            # Prepare variables for compilation
-            key_terms_str = ', '.join(key_terms) if key_terms else 'Keine'
-            exam_questions_str = ', '.join(exam_questions) if exam_questions else 'Keine'
-            diagram_desc_str = diagram_description if diagram_description else 'Kein Diagramm'
-            conv_context_str = conversation_context if conversation_context else 'Keine relevanten Konversationen'
             
-            # Normalize snippet_image_urls to list
-            if snippet_image_urls is None:
-                snippet_image_urls = []
-            
-            # Log what we received
-            logger.info(f"🔍 _get_card_generation_prompt: {len(snippet_image_urls)} snippet URLs received for page {page_number}")
-            if snippet_image_urls:
-                for i, url in enumerate(snippet_image_urls):
-                    logger.info(f"📸 Snippet {i+1}: {url[:80]}...")
-            
-            # Prepare snippet info for prompt - now supports multiple snippets
-            if snippet_image_urls:
-                if len(snippet_image_urls) == 1:
-                    snippet_info = f"- **VISUELLES SNIPPET (1 Bild):** Ein wichtiger visueller Ausschnitt ist vorhanden. URL: {snippet_image_urls[0]}\n- Du siehst das Bild direkt in dieser Nachricht als Vision-Input. Analysiere es und füge es bei relevanten Karteikarten ein."
-                else:
-                    urls_list = '\n'.join([f"  - Snippet {i+1}: {url}" for i, url in enumerate(snippet_image_urls)])
-                    snippet_info = f"- **VISUELLE SNIPPETS ({len(snippet_image_urls)} Bilder):** Mehrere wichtige visuelle Ausschnitte sind vorhanden:\n{urls_list}\n- Du siehst alle Bilder direkt in dieser Nachricht als Vision-Input. Analysiere sie und füge die relevanten Bilder bei passenden Karteikarten ein. Du kannst mehrere Bilder pro Karte verwenden, wenn es sinnvoll ist."
+            # Check if prompt template contains {{base_prompt_content}}
+            # This indicates the prompt wants to extend the base prompt
+            # Try to get the prompt template string
+            prompt_template = None
+            if hasattr(langfuse_prompt, 'prompt'):
+                prompt_template = str(langfuse_prompt.prompt)
+            elif hasattr(langfuse_prompt, 'messages') and langfuse_prompt.messages:
+                # For chat prompts, check first message
+                first_msg = langfuse_prompt.messages[0] if isinstance(langfuse_prompt.messages, list) else None
+                if first_msg and hasattr(first_msg, 'content'):
+                    prompt_template = str(first_msg.content)
+                elif isinstance(first_msg, dict) and 'content' in first_msg:
+                    prompt_template = str(first_msg['content'])
             else:
-                snippet_info = ""
+                # Try to compile with empty vars to see template
+                try:
+                    test_compile = langfuse_prompt.compile()
+                    prompt_template = test_compile
+                except:
+                    pass
             
-            # Compile prompt with variables
-            # IMPORTANT: Langfuse might remove empty variables, so we use a placeholder
+            # #region agent log
+            # try:
+            #     import json
+            #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+            #         template_preview = prompt_template[:300] if prompt_template else "None"
+            #         has_summary_var = "{{summary}}" in (prompt_template or "")
+            #         has_key_terms_var = "{{key_terms}}" in (prompt_template or "")
+            #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"J","location":"flashcard_agent.py:919","message":"Prompt template analysis","data":{"prompt_name":prompt_name,"has_template":bool(prompt_template),"template_preview":template_preview,"has_summary_var":has_summary_var,"has_key_terms_var":has_key_terms_var},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+            # except: pass
+            # #endregion
+            
+            uses_base_prompt = prompt_template and "{{base_prompt_content}}" in prompt_template
+            
+            # IMPORTANT: Langfuse might remove empty variables, so we use a placeholder for snippets
             SNIPPET_PLACEHOLDER = "___SNIPPET_IMAGE_URL_PLACEHOLDER___"
             
-            # Always pass a non-empty value to ensure Langfuse doesn't remove the variable
-            compile_kwargs = {
+            compile_vars = {
                 "summary": summary,
                 "key_terms": key_terms_str,
                 "exam_questions": exam_questions_str,
@@ -889,17 +1035,50 @@ Respond with a JSON object matching this structure:
                 "snippet_image_url": SNIPPET_PLACEHOLDER  # Always pass placeholder, replace manually
             }
             
-            compiled_prompt = langfuse_prompt.compile(**compile_kwargs)
+            # #region agent log
+            # try:
+            #     import json
+            #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+            #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"flashcard_agent.py:942","message":"Before prompt compilation","data":{"classification":classification,"prompt_name":prompt_name,"uses_base_prompt":uses_base_prompt,"summary_len":len(summary),"key_terms_str_len":len(key_terms_str),"compile_vars_keys":list(compile_vars.keys())},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+            # except: pass
+            # #endregion
             
-            # Now manually replace the placeholder with actual values
-            if snippet_image_urls:
-                # For the first placeholder occurrence (info section), use the full snippet_info
-                # For subsequent occurrences (img tag template), use the first URL as example
-                placeholder_count = compiled_prompt.count(SNIPPET_PLACEHOLDER)
+            # If prompt uses base, load and compile it with variables first
+            if uses_base_prompt:
+                # Compile base prompt WITH variables so placeholders are replaced
+                base_prompt_content = self._get_base_card_generation_prompt(compile_vars=compile_vars)
+                compile_vars["base_prompt_content"] = base_prompt_content
+                logger.info(f"Using base prompt + {classification}-specific prompt")
                 
+                # #region agent log
+                # try:
+                #     import json
+                #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+                #         has_summary = summary and summary[:50] in base_prompt_content if summary else False
+                #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"F","location":"flashcard_agent.py:980","message":"Base prompt loaded and compiled with vars","data":{"base_prompt_len":len(base_prompt_content) if base_prompt_content else 0,"has_summary_in_base":has_summary,"summary_in_base_preview":base_prompt_content[base_prompt_content.find(summary[:30]):base_prompt_content.find(summary[:30])+100] if summary and summary[:30] in base_prompt_content else "not found"},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+                # except: pass
+                # #endregion
+            else:
+                logger.info(f"Using standalone {classification}-specific prompt (no base)")
+            
+            # Compile prompt with all variables
+            compiled = langfuse_prompt.compile(**compile_vars)
+            
+            # #region agent log
+            # try:
+            #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+            #         compiled_preview = compiled[:500] if compiled else ""
+            #         has_summary_compiled = summary and summary[:50] in compiled if summary else False
+            #         has_placeholders_remaining = "{{summary}}" in compiled or "{{key_terms}}" in compiled
+            #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"G","location":"flashcard_agent.py:963","message":"After prompt compilation","data":{"compiled_len":len(compiled) if compiled else 0,"compiled_preview":compiled_preview,"has_summary_compiled":has_summary_compiled,"has_placeholders_remaining":has_placeholders_remaining},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+            # except: pass
+            # #endregion
+            
+            # Handle snippet placeholder replacement (similar to original logic)
+            if snippet_image_urls:
+                placeholder_count = compiled.count(SNIPPET_PLACEHOLDER)
                 if placeholder_count > 0:
-                    parts = compiled_prompt.split(SNIPPET_PLACEHOLDER, placeholder_count)
-                    
+                    parts = compiled.split(SNIPPET_PLACEHOLDER, placeholder_count)
                     if len(parts) >= 2:
                         result_parts = [parts[0]]
                         result_parts.append(snippet_info)  # Info text for first occurrence
@@ -914,20 +1093,231 @@ Respond with a JSON object matching this structure:
                             result_parts.append(primary_url)
                             result_parts.append(parts[-1])
                         
-                        compiled_prompt = "".join(result_parts)
+                        compiled = "".join(result_parts)
                         logger.info(f"✅ Replaced placeholders with {len(snippet_image_urls)} snippet info")
                     else:
-                        compiled_prompt = compiled_prompt.replace(SNIPPET_PLACEHOLDER, snippet_info)
+                        compiled = compiled.replace(SNIPPET_PLACEHOLDER, snippet_info)
             else:
                 # No snippets - remove placeholder occurrences
-                compiled_prompt = compiled_prompt.replace(SNIPPET_PLACEHOLDER, "")
+                compiled = compiled.replace(SNIPPET_PLACEHOLDER, "")
                 logger.debug("📝 No snippets - removed placeholder from prompt")
             
-            logger.debug("✅ Using Langfuse prompt for card-generation")
-            return compiled_prompt
+            # #region agent log
+            # try:
+            #     import json
+            #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+            #         final_preview = compiled[:800] if compiled else ""
+            #         final_has_summary = summary and summary[:50] in compiled if summary else False
+            #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"H","location":"flashcard_agent.py:991","message":"Final compiled prompt","data":{"final_len":len(compiled) if compiled else 0,"final_preview":final_preview,"final_has_summary":final_has_summary},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+            # except: pass
+            # #endregion
+            
+            return compiled
+            
         except Exception as e:
-            logger.error(f"Failed to load Langfuse prompt for card-generation: {e}")
-            raise RuntimeError(f"Cannot load card-generation prompt from Langfuse: {e}") from e
+            logger.warning(f"Failed to load {classification} prompt: {e}, trying general")
+            
+            # #region agent log
+            # try:
+            #     import json
+            #     with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as f:
+            #         f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"I","location":"flashcard_agent.py:995","message":"Prompt load failed, falling back","data":{"classification":classification,"error":str(e)},"timestamp":int(__import__("time").time()*1000)}) + "\n")
+            # except: pass
+            # #endregion
+            
+            # Fallback to general if specific prompt not found
+            if classification != "general":
+                return self._get_classification_specific_prompt(
+                    "general", summary, key_terms, exam_questions,
+                    diagram_description, conversation_context, course_id,
+                    material_id, page_number, snippet_image_urls
+                )
+            
+            # Try old prompt name as fallback (for backward compatibility)
+            logger.info("Trying old prompt name 'flashcard-agent/card-generation' as fallback")
+            try:
+                SNIPPET_PLACEHOLDER = "___SNIPPET_IMAGE_URL_PLACEHOLDER___"
+                old_prompt_name = "flashcard-agent/card-generation"
+                old_langfuse_prompt = self.langfuse_client.get_prompt(
+                    old_prompt_name,
+                    label="production"
+                )
+                
+                # Use old prompt (doesn't use base_prompt_content)
+                compile_vars = {
+                    "summary": summary,
+                    "key_terms": key_terms_str,
+                    "exam_questions": exam_questions_str,
+                    "diagram_description": diagram_desc_str,
+                    "conversation_context": conv_context_str,
+                    "course_id": course_id,
+                    "material_id": material_id,
+                    "page_number": str(page_number),
+                    "snippet_image_url": SNIPPET_PLACEHOLDER
+                }
+                
+                compiled = old_langfuse_prompt.compile(**compile_vars)
+                
+                # Handle snippet placeholder replacement
+                if snippet_image_urls:
+                    placeholder_count = compiled.count(SNIPPET_PLACEHOLDER)
+                    if placeholder_count > 0:
+                        parts = compiled.split(SNIPPET_PLACEHOLDER, placeholder_count)
+                        if len(parts) >= 2:
+                            result_parts = [parts[0]]
+                            result_parts.append(snippet_info)
+                            primary_url = snippet_image_urls[0]
+                            for i in range(1, len(parts) - 1):
+                                result_parts.append(primary_url)
+                                result_parts.append(parts[i])
+                            if len(parts) > 1:
+                                result_parts.append(primary_url)
+                                result_parts.append(parts[-1])
+                            compiled = "".join(result_parts)
+                        else:
+                            compiled = compiled.replace(SNIPPET_PLACEHOLDER, snippet_info)
+                else:
+                    compiled = compiled.replace(SNIPPET_PLACEHOLDER, "")
+                
+                logger.info("✅ Using old prompt 'flashcard-agent/card-generation' as fallback")
+                return compiled
+            except Exception as old_prompt_error:
+                logger.warning(f"Old prompt also not found: {old_prompt_error}, using hardcoded fallback")
+            
+            # Final fallback to hardcoded prompts
+            return self._get_fallback_classification_prompt(
+                "general", summary, key_terms_str, exam_questions_str,
+                diagram_desc_str, conv_context_str, course_id, material_id,
+                page_number, snippet_info
+            )
+    
+    def _get_card_generation_prompt(
+        self,
+        summary: str,
+        key_terms: List[str],
+        exam_questions: List[str],
+        diagram_description: str,
+        conversation_context: str,
+        course_id: str,
+        material_id: str,
+        page_number: int,
+        classification: Optional[str] = None,
+        snippet_image_urls: Optional[List[str]] = None
+    ) -> str:
+        """
+        Get card generation prompt from Langfuse (delegates to classification-specific method).
+        
+        This method now delegates to _get_classification_specific_prompt which handles
+        the extensible prompt loading logic with base prompt detection.
+        
+        Args:
+            summary: Page summary
+            key_terms: List of key terms
+            exam_questions: List of exam questions
+            diagram_description: Diagram description
+            conversation_context: Conversation context
+            course_id: Course ID
+            material_id: Material ID
+            page_number: Page number
+            classification: Material classification category (extensible - any string)
+            snippet_image_urls: Optional list of snippet image URLs (for vision input and img tags)
+            
+        Returns:
+            Compiled prompt string
+            
+        Raises:
+            RuntimeError: If Langfuse client is not available or prompt cannot be loaded
+        """
+        classification = classification or "general"
+        return self._get_classification_specific_prompt(
+            classification=classification,
+            summary=summary,
+            key_terms=key_terms,
+            exam_questions=exam_questions,
+            diagram_description=diagram_description,
+            conversation_context=conversation_context,
+            course_id=course_id,
+            material_id=material_id,
+            page_number=page_number,
+            snippet_image_urls=snippet_image_urls
+        )
+    
+    def _get_fallback_base_prompt(self) -> str:
+        """Fallback base prompt if Langfuse unavailable."""
+        return """You are a flashcard generator that creates educational flashcards from lecture materials.
+
+**General Instructions:**
+- Create 1-2 flashcards per page based on content complexity
+- Front side should be a clear question or prompt
+- Back side should contain the answer with context
+- Use appropriate tags for categorization
+- Consider conversation context when available
+- Include visual snippets when relevant
+
+**Output Format:**
+You must respond with a valid JSON object matching this structure:
+{
+  "cards": [
+    {
+      "front": "question or prompt",
+      "back": "answer with context",
+      "tags": ["tag1", "tag2"]
+    }
+  ]
+}"""
+    
+    def _get_fallback_classification_prompt(
+        self,
+        classification: str,
+        summary: str,
+        key_terms: str,
+        exam_questions: str,
+        diagram_description: str,
+        conversation_context: str,
+        course_id: str,
+        material_id: str,
+        page_number: str,
+        snippet_info: str
+    ) -> str:
+        """
+        Fallback classification-specific prompt when Langfuse unavailable.
+        
+        For known classifications, returns base + specific additions.
+        For unknown classifications, returns general fallback.
+        This makes the system extensible - new classifications fall back to general.
+        """
+        # Load base prompt for fallback
+        base_prompt = self._get_fallback_base_prompt()
+        
+        # Known classification-specific additions
+        classification_additions = {
+            "language_learning": "\n\n**Language Learning Focus:**\n- Focus on vocabulary, grammar, translations\n- Create cards for verb conjugations and word meanings\n- Include pronunciation hints when relevant\n- Use language-specific tags (e.g., \"vocabulary\", \"grammar\", \"verb\")",
+            "math": "\n\n**Math Focus:**\n- Focus on formulas, equations, proofs\n- Create cards for mathematical concepts and problem-solving steps\n- Include step-by-step solutions when relevant\n- Use math-specific tags (e.g., \"formula\", \"theorem\", \"proof\")",
+            "business_administration": "\n\n**Business Administration Focus:**\n- Focus on business models, case studies, management concepts\n- Create cards for strategic thinking and business terminology\n- Include real-world examples when relevant\n- Use business-specific tags (e.g., \"strategy\", \"case_study\", \"management\")",
+            "general": ""  # General uses base as-is
+        }
+        
+        # Get classification-specific addition (or empty for unknown)
+        addition = classification_additions.get(classification, "")
+        
+        # Build final prompt
+        final_prompt = base_prompt + addition
+        
+        # Add page information section
+        final_prompt += f"""
+
+**Page Information:**
+- Summary: {summary}
+- Key Terms: {key_terms}
+- Exam Questions: {exam_questions}
+- Diagram Description: {diagram_description}
+- Conversation Context: {conversation_context}
+- Course ID: {course_id}
+- Material ID: {material_id}
+- Page Number: {page_number}
+{snippet_info}"""
+        
+        return final_prompt
     
     def generate_flashcards(
         self,

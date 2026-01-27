@@ -459,6 +459,261 @@ cards = agent.generate_flashcards(
 6. **Fehlerbehandlung**: Graceful degradation auf Node-Level
 7. **Zukunftserweiterungen**: Einfach Tools, Conditional Logic, Streaming hinzufügen
 
+#### Detaillierte Logik-Analyse
+
+##### Workflow Graph Struktur
+
+Der Agent verwendet einen LangGraph-Workflow mit folgender Struktur:
+
+```
+START → initialize → classify → [check_more_pages]
+                                    ↓
+                              ┌─────┴─────┐
+                              │           │
+                          continue      done
+                              │           │
+                              ↓           ↓
+                        process_page   save_cards
+                              ↓           │
+                        skip_decision    │
+                              ↓           │
+                    ┌─────────┴─────────┐ │
+                    │                   │ │
+                  skip              generate │
+                    │                   │ │
+                    ↓                   ↓ │
+              update_progress    get_context │
+                    │                   │ │
+                    │              generate_cards │
+                    │                   │ │
+                    └──────────┬────────┘ │
+                               ↓          │
+                        update_progress   │
+                               ↓          │
+                    [check_more_pages]    │
+                               ↓          │
+                          ┌────┴────┐     │
+                          │         │     │
+                      continue    done    │
+                          │         │     │
+                          └─────────┴─────┘
+                               ↓
+                              END
+```
+
+##### Detaillierte Node-Logik
+
+**1. initialize_node** (Zeilen 185-230)
+- **Zweck**: Lädt alle Seitenanalysen und Snippets aus der Datenbank
+- **Logik**:
+  - Ruft alle Seitenanalysen für das Material ab via `get_all_page_analyses_for_material()`
+  - Lädt visuelle Snippets via `get_snippets_for_material()`
+  - Organisiert Snippets nach Seitenzahl in `snippets_by_page` Dict
+  - Initialisiert Fortschritts-Tracking-Arrays (processed, skipped, all_cards)
+  - Setzt `current_page_index` auf 0
+
+**2. classify_node** (Zeilen 232-286)
+- **Zweck**: Klassifiziert Materialtyp (language_learning, math, business_administration, general)
+- **Logik**:
+  - **Cache-Check**: Prüft zuerst Datenbank auf vorhandene Klassifizierung
+  - **On-Demand-Generierung**: Falls nicht gecacht, generiert Klassifizierung via LLM
+  - **Aggregation**: Sammelt Summaries und Key Terms von allen Seiten
+  - **LLM-Call**: Nutzt `MaterialClassification` Structured Output
+  - **Speicherung**: Speichert Klassifizierung in Datenbank für zukünftige Nutzung
+  - **Fehlerbehandlung**: Bei Fehler weiter ohne Klassifizierung (non-blocking)
+
+**3. process_page_node** (Zeilen 434-461)
+- **Zweck**: Setzt Kontext für aktuelle Seite
+- **Logik**:
+  - Holt Seitenanalyse bei `current_page_index`
+  - Extrahiert Seitenzahl
+  - Setzt `current_page_analysis` im State
+  - Setzt seiten-spezifischen Kontext zurück (messages, snippet_url)
+
+**4. skip_decision_node** (Zeilen 463-531)
+- **Zweck**: Entscheidet ob aktuelle Seite übersprungen werden soll (Intro/Titel/TOC-Seiten)
+- **Logik**:
+  - Extrahiert `summary` und `key_terms` aus Seitenanalyse
+  - **Prompt-Laden**: Holt Skip-Decision-Prompt aus Langfuse (mit Fallback)
+  - **LLM-Entscheidung**: Nutzt `skip_decision_llm` mit Structured Output (`PageSkipDecision`)
+  - **Entscheidung**: Gibt `{skip: bool, reason: str}` zurück
+  - **State-Update**: Falls skip=true, fügt aktuellen Index zu `skipped_page_indices` hinzu
+  - **Fehlerbehandlung**: Standardmäßig nicht überspringen bei Fehler
+
+**5. should_skip_routing** (Zeilen 533-548)
+- **Zweck**: Bedingtes Routing basierend auf Skip-Entscheidung
+- **Logik**:
+  - Prüft ob `current_page_index` in `skipped_page_indices` ist
+  - Gibt `"skip"` zurück → geht zu `update_progress`
+  - Gibt `"generate"` zurück → geht zu `get_context`
+
+**6. get_context_node** (Zeilen 550-597)
+- **Zweck**: Ruft Konversationsnachrichten und Snippet-URL für aktuelle Seite ab
+- **Logik**:
+  - **Messages**: Ruft Konversationshistorie für die Seite ab via `get_messages_for_page()`
+  - **Snippet-URL**: Prüft `snippets_by_page` für aktuelle Seitenzahl
+  - **URL-Generierung**: Falls Snippet existiert, holt öffentliche URL via `get_snippet_public_url()`
+  - **State-Update**: Setzt `current_page_messages` und `current_snippet_url`
+
+**7. generate_cards_node** (Zeilen 599-715)
+- **Zweck**: Generiert Flashcards für aktuelle Seite via LLM
+- **Logik**:
+  - Extrahiert Seiteninhalt: summary, key_terms, exam_questions, diagram_description
+  - **Konversationskontext**: Filtert Messages für relevante Q&A-Paare (letzte 6 Messages)
+  - **Prompt-Laden**: Holt Card-Generation-Prompt aus Langfuse
+  - **Vision-Input**: Falls Snippet-URL existiert, inkludiert Bild in Message-Content
+  - **LLM-Call**: Nutzt `card_generation_llm` mit Structured Output (`FlashcardGenerationResult`)
+  - **Card-Formatierung**: Konvertiert LLM-Output zu Dict-Format mit `source_page_analysis_id`
+  - **Akkumulation**: Fügt Cards zu `all_cards` im State hinzu
+  - **Fehlerbehandlung**: Bei Fehler weiter mit leeren Cards für diese Seite
+
+**8. update_progress_node** (Zeilen 717-747)
+- **Zweck**: Aktualisiert Fortschritts-Tracking und geht zur nächsten Seite
+- **Logik**:
+  - Fügt aktuellen Index zu `processed_page_indices` hinzu (falls nicht übersprungen)
+  - Inkrementiert `current_page_index` um 1
+  - Löscht seiten-spezifischen Kontext (analysis, messages, snippet_url)
+  - Loggt Fortschritt
+
+**9. save_cards_node** (Zeilen 749-773)
+- **Zweck**: Speichert Flashcards in Datenbank falls gewünscht
+- **Logik**:
+  - Prüft `save_to_db` Flag
+  - Falls true und Cards existieren, ruft `save_flashcards()` mit allen akkumulierten Cards auf
+  - Loggt Erfolg/Fehler
+
+**10. check_more_pages** (Zeilen 417-432)
+- **Zweck**: Bedingtes Routing um zu prüfen ob noch Seiten vorhanden sind
+- **Logik**:
+  - Vergleicht `current_page_index` mit `len(page_analyses)`
+  - Gibt `"continue"` zurück falls mehr Seiten → Loop zurück zu `process_page`
+  - Gibt `"done"` zurück falls alle verarbeitet → geht zu `save_cards`
+
+##### Entscheidungspunkte
+
+**Skip-Decision-Logik**:
+- **Input**: Seiten-Summary und Key Terms
+- **LLM**: Nutzt Structured Output um zu entscheiden ob Seite Intro/Titel/TOC ist
+- **Output**: Boolean Skip-Flag mit Begründung
+- **Auswirkung**: Übersprungene Seiten generieren keine Cards, werden aber getrackt
+
+**Card-Generation-Logik**:
+- **Input-Quellen**:
+  1. Seitenanalyse (summary, key_terms, exam_questions, diagram_description)
+  2. Konversationshistorie (gefiltert für relevante Q&A)
+  3. Visuelle Snippets (falls verfügbar, als Vision-Input gesendet)
+  4. Material-Klassifizierung (verfügbar im Prompt-Kontext)
+- **LLM**: Nutzt Structured Output um 1-2 Cards pro Seite zu generieren
+- **Output**: Liste von Cards mit front, back, tags und source_page_analysis_id
+
+##### State Management
+
+**State Persistence**:
+- Nutzt **PostgresSaver** (falls DATABASE_URL konfiguriert) oder **MemorySaver** (Fallback)
+- State wird nach jedem Node automatisch gecheckpointed
+- Ermöglicht **Resumability**: Fehlgeschlagene Tasks können von letztem Checkpoint mit `thread_id` fortgesetzt werden
+
+**Fortschritts-Tracking**:
+- `current_page_index`: Aktuelle Seite die verarbeitet wird
+- `processed_page_indices`: Erfolgreich verarbeitete Seiten
+- `skipped_page_indices`: Seiten die übersprungen wurden
+- `all_cards`: Akkumulierte Flashcards
+
+##### Integration Points
+
+**API Endpoint Flow**:
+1. **POST `/api/flashcards/generate`**:
+   - Validiert User und Material-Ownership
+   - Erstellt Background-Task via `FlashcardTaskService`
+   - Gibt task_id sofort zurück (HTTP 202)
+
+2. **Task Execution** (`FlashcardTaskService._run_task`):
+   - Initialisiert Agent mit Checkpointer
+   - Ruft `generate_flashcards_with_progress()` mit Progress-Callback auf
+   - Aktualisiert Task-Fortschritt in Echtzeit
+   - Speichert Flashcards in Datenbank nach Generierung
+   - Baut .apkg-Datei für Download
+
+3. **Progress Tracking**:
+   - Task-Service empfängt Fortschritts-Updates via Callback
+   - Aktualisiert Task-Objekt (progress, processed_pages, cards_generated)
+   - Frontend pollt `/api/flashcards/status/{task_id}` für Updates
+
+##### Prompt Management
+
+**Langfuse Integration**:
+- Prompts werden aus Langfuse mit Label "production" geladen
+- Drei Prompts:
+  1. `material-classifier/classification`: Für Materialtyp-Klassifizierung
+  2. `flashcard-agent/skip-decision`: Für Seiten-Skip-Entscheidungen
+  3. `flashcard-agent/card-generation`: Für Flashcard-Generierung
+- **Fallback**: Falls Langfuse nicht verfügbar, nutzt hardcodierte Prompts
+- **Fehlerbehandlung**: Wirft RuntimeError falls Langfuse erforderlich aber nicht verfügbar
+
+**Prompt-Variablen**:
+- **Skip Decision**: `summary`, `key_terms`
+- **Card Generation**: `summary`, `key_terms`, `exam_questions`, `diagram_description`, `conversation_context`, `course_id`, `material_id`, `page_number`, `snippet_image_url`
+- **Classification**: Aggregierte `page_summaries`, `key_terms`
+
+##### Vision Input Handling
+
+**Snippet Processing**:
+- Snippets werden pro Seite in `initialize_node` geladen
+- Jede Seite kann mehrere Snippets haben (bis zu `MAX_SNIPPETS_PER_PAGE`)
+- Snippet-URLs werden in `get_context_node` abgerufen
+- **Vision Input**: Falls Snippet existiert, wird Bild in LLM-Message als `image_url` Content inkludiert
+- **HTML Embedding**: Prompt instruiert LLM Bilder in Card-Back mit `<img>` Tags einzubetten
+
+##### Fehlerbehandlungs-Strategie
+
+**Graceful Degradation**:
+- **Klassifizierungs-Fehler**: Weiter ohne Klassifizierung (non-blocking)
+- **Skip-Decision-Fehler**: Standardmäßig nicht überspringen (verarbeitet Seite)
+- **Card-Generation-Fehler**: Weiter mit leeren Cards für diese Seite
+- **Snippet-URL-Fehler**: Weiter ohne Bild
+- **Datenbank-Save-Fehler**: Loggt Warning aber macht weiter
+
+**State Recovery**:
+- Checkpointing ermöglicht automatische Recovery von Fehlern
+- Kann mit gleichem `thread_id` fortgesetzt werden
+- Fortschritt bleibt über Restarts erhalten
+
+##### Performance-Überlegungen
+
+**Recursion Limit**:
+- Gesetzt auf `10 * page_count` um große PDFs zu handhaben
+- Verhindert dass Standard-Limit von 25 große Materialien blockiert
+
+**Async Execution**:
+- Task-Service läuft Generierung in Background-Thread (`asyncio.to_thread`)
+- API gibt sofort mit task_id zurück
+- Fortschritt wird via Callbacks getrackt
+
+**Batch Processing**:
+- Verarbeitet Seiten sequenziell (eine nach der anderen)
+- Cards werden im State akkumuliert bis zum Abschluss
+- Datenbank-Save passiert einmal am Ende (falls `save_to_db=True`)
+
+##### Datenfluss-Zusammenfassung
+
+```
+Page Analyses (DB) → initialize_node → classify_node
+                                              ↓
+                                    process_page_node
+                                              ↓
+                                    skip_decision_node
+                                              ↓
+                                    [skip?] → get_context_node
+                                              ↓
+                                    generate_cards_node
+                                              ↓
+                                    update_progress_node
+                                              ↓
+                                    [more pages?] → save_cards_node
+                                              ↓
+                                    all_cards → Database/APKG
+```
+
 ---
 
 ## Projektstruktur und Aufbau
