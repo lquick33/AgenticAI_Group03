@@ -320,6 +320,41 @@ async def process_pdf_background(
                     f"{summary_error}",
                     exc_info=True,
                 )
+            
+            # Classify material if at least one page succeeded.
+            # This is best-effort only: failures here must not overwrite the main status.
+            try:
+                logger.info(
+                    f"Classifying material {material_id} based on {pages_analyzed} analyzed pages"
+                )
+                from app.services.classifier import classify_material
+                from app.services.storage import update_material_classification
+                
+                classification_result = await classify_material(
+                    material_id=material_id,
+                    user_id=user_id,
+                    course_id=course_id
+                )
+                
+                # Store classification in database
+                update_material_classification(
+                    material_id=material_id,
+                    classification=classification_result["category"],
+                    confidence=classification_result["confidence"],
+                    reasoning=classification_result["reasoning"],
+                    override=False
+                )
+                logger.info(
+                    f"Successfully classified material {material_id} as: {classification_result['category']} "
+                    f"(confidence: {classification_result['confidence']})"
+                )
+            except Exception as classification_error:
+                logger.error(
+                    f"Failed to classify material {material_id}: {classification_error}",
+                    exc_info=True,
+                )
+                # Don't fail the whole process if classification fails
+                # Material will be classified later when flashcards are generated (fallback)
 
         # Update final status in course_materials
         update_processing_status(material_id, status, error_message)

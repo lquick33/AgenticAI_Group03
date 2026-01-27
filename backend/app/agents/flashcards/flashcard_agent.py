@@ -233,10 +233,11 @@ class FlashcardGeneratorAgent(BaseAgent):
     
     def classify_node(self, state: FlashcardState) -> FlashcardState:
         """
-        Classify material type on-demand.
+        Get material classification (from upload or generate on-demand).
         
-        Checks database for cached classification first.
-        If not found, generates classification using LLM and stores it.
+        Classification is typically generated during PDF upload/processing.
+        This node checks the database for cached classification first.
+        If not found (e.g., for older materials), generates classification on-demand.
         
         Args:
             state: Current agent state
@@ -247,12 +248,12 @@ class FlashcardGeneratorAgent(BaseAgent):
         material_id = state["course_material_id"]
         user_id = state["user_id"]
         
-        # Check if classification exists in DB (cached)
+        # Check if classification exists in DB (cached from upload)
         cached = get_material_classification(material_id, user_id)
         
         if cached and not cached.get("classification_override", False):
-            # Use cached classification
-            logger.info(f"Using cached classification for material {material_id}: {cached['classification']}")
+            # Use cached classification (from upload)
+            logger.info(f"Using classification from upload for material {material_id}: {cached['classification']}")
             return {
                 **state,
                 "classification": cached["classification"],
@@ -260,8 +261,8 @@ class FlashcardGeneratorAgent(BaseAgent):
                 "classification_reasoning": cached.get("classification_reasoning")
             }
         
-        # Generate classification on-demand
-        logger.info(f"Generating classification for material {material_id}")
+        # Generate classification on-demand (fallback for older materials not yet classified)
+        logger.info(f"Classification not found in cache for material {material_id}, generating on-demand")
         try:
             classification_result = self._generate_classification(state)
             

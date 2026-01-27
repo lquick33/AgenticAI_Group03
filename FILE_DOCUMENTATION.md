@@ -132,6 +132,84 @@ ON slide_snippets(course_material_id, page_number, user_id);
 
 ---
 
+### `supabase/migrations/20260127000000_add_classification_to_course_materials.sql`
+
+**Purpose**: Migration that adds material classification support to the `course_materials` table. Classification categorizes uploaded materials into domain-specific types (language_learning, math, business_administration, general) to enable classification-specific flashcard generation prompts.
+
+**Key Components**:
+- **Enum Type**: `material_classification_enum` with values: `language_learning`, `math`, `business_administration`, `general`
+- **New Columns**:
+  - `classification`: Enum type for material category
+  - `classification_confidence`: Float (0.0-1.0) - LLM confidence score
+  - `classification_reasoning`: Text - LLM reasoning for the classification
+  - `classification_override`: Boolean (default: FALSE) - Indicates manual override
+- **Index**: `idx_course_materials_classification` for querying by classification
+
+**Classification Behavior**:
+- **Automatic Generation**: Classification is performed automatically during PDF upload/processing, after all page analyses complete
+- **Timing**: Classification happens in `process_pdf_background()` after material summary generation, before status is set to 'completed'
+- **Caching**: Classification is stored in database immediately after generation; flashcard generation uses cached classification
+- **Fallback**: For older materials not yet classified, classification is generated on-demand during flashcard generation
+- **Cache Key**: `material_id` + `user_id` (classification is user-specific)
+
+**Classification Process** (in `app.services.classifier.classify_material`):
+1. Get all page analyses for the material
+2. Aggregate page summaries (first 10 pages) and key terms (first 50 terms)
+3. Generate classification using:
+   - Input: Aggregated page summaries and key terms
+   - LLM: Gemini model with structured output (`MaterialClassification` schema)
+   - Prompt: Langfuse prompt `material-classifier/classification` (production label)
+   - Output: Category, confidence score (0.0-1.0), and reasoning
+4. Store classification in database for future use
+5. Flashcard generation uses cached classification to select appropriate prompts
+
+**Classification Usage**:
+- **Flashcard Generation**: Classification determines which prompt template to use
+  - Prompts loaded from Langfuse: `flashcard-agent/card-generation-{classification}`
+  - Falls back to `flashcard-agent/card-generation-general` if classification-specific prompt not found
+- **Customization**: Classification-specific prompts guide LLM to generate flashcards appropriate for material type:
+  - `language_learning`: Focus on vocabulary, grammar, translations, verb conjugations
+  - `math`: Focus on formulas, equations, proofs, mathematical concepts
+  - `business_administration`: Focus on business models, case studies, management concepts
+  - `general`: General educational materials without specific domain focus
+
+**Workflow**:
+```
+User Uploads PDF → POST /api/upload
+    ↓
+Background: process_pdf_background()
+    ├─ Analyze all pages → analyze_pdf_page() for each page
+    ├─ Generate material summary
+    ├─ Classify material ← CLASSIFICATION HAPPENS HERE
+    │   └─ classify_material() → store in DB
+    └─ Material Status: 'completed'
+    
+User Generates Flashcards → POST /api/flashcards/generate
+    ↓
+Background: FlashcardGeneratorAgent.generate_flashcards()
+    ↓
+LangGraph Workflow:
+    ├─ initialize_node (load page analyses)
+    ├─ classify_node ← Uses cached classification from upload
+    │   └─ Check cache → use cached (or generate on-demand for older materials)
+    └─ process_page_node (generate flashcards using classification)
+```
+
+**Related Files**:
+- `backend/app/services/classifier.py` - Classification service (extracted reusable logic)
+- `backend/app/services/pdf_processor.py` - Calls classification during upload (after page analyses)
+- `backend/app/agents/flashcards/flashcard_agent.py` - Uses cached classification (lines 234-288)
+- `backend/app/services/storage.py` - Storage functions (lines 1014-1072)
+- `backend/app/api/endpoints.py` - Flashcard generation endpoint (lines 2263-2428)
+- `backend/langfuse_prompts/material-classifier-classification.md` - Classification prompt
+- `backend/scripts/create_classification_prompt.py` - Script to create prompt in Langfuse
+
+**Dependencies**: Requires `course_materials` table from initial schema migration
+
+**Usage**: Apply via Supabase SQL editor or CLI as part of the normal migration flow (`supabase db push`)
+
+---
+
 ## Backend Configuration Files
 
 ### `backend/requirements.txt`
