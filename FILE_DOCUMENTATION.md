@@ -94,6 +94,44 @@ CREATE INDEX IF NOT EXISTS idx_quizzes_material_pages_user ON quizzes(course_mat
 
 ---
 
+### Database Schema Change: Allow Multiple Snippets Per Page (2026-01-27)
+
+**Purpose**: Migration that removes the unique constraint on slide_snippets to allow multiple snippets per page. This enables users to create multiple image crops (e.g., multiple diagrams, formulas) from a single slide.
+
+**Key Changes**:
+- **Removed Constraint**: `idx_slide_snippets_material_page_user` - Previously enforced one snippet per page per user
+- **New Column**: `order_index INTEGER DEFAULT 0` - For consistent ordering of snippets within a page
+- **New Index**: `idx_slide_snippets_material_page_user_non_unique` - Non-unique index for query performance
+
+**Reason**:
+- Users often want to capture multiple visual elements from a single slide (multiple diagrams, formulas, tables)
+- The flashcard agent benefits from seeing all relevant visuals for a page to make better card generation decisions
+- Allows the agent to intelligently select which images to include in which flashcards
+
+**Related Configuration**:
+- `backend/app/core/config.py` - `MAX_SNIPPETS_PER_PAGE` (default: 3) limits snippets per page for cost/performance control
+- `backend/app/core/config.py` - `MULTI_SNIPPETS_ENABLED` feature flag
+
+**Impact on Agent Flow**:
+1. Frontend allows creating multiple snippets per page (up to MAX_SNIPPETS_PER_PAGE)
+2. Snippets are stored with `order_index` for consistent ordering
+3. FlashcardGeneratorAgent collects all snippets for a page into a list
+4. All snippet images are sent to Gemini as vision inputs
+5. Agent decides which images are relevant for which flashcards
+6. Generated cards may contain multiple `<img>` tags for different snippets
+
+**SQL Applied**:
+```sql
+ALTER TABLE slide_snippets DROP CONSTRAINT IF EXISTS idx_slide_snippets_material_page_user;
+ALTER TABLE slide_snippets ADD COLUMN IF NOT EXISTS order_index INTEGER DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_slide_snippets_material_page_user_non_unique 
+ON slide_snippets(course_material_id, page_number, user_id);
+```
+
+**Execution Method**: Applied directly via Supabase MCP (`apply_migration` tool)
+
+---
+
 ## Backend Configuration Files
 
 ### `backend/requirements.txt`
@@ -2942,25 +2980,42 @@ from app.services.session_storage import (
   - Skips intro/title/table of contents pages automatically
   - Generates 1-4 cards per page based on content complexity and conversation issues
   - **Langfuse Prompt Management**: Loads prompts dynamically from Langfuse with fallback to hardcoded versions
+  - **Multiple Snippets Support**: Handles multiple visual snippets per page (up to MAX_SNIPPETS_PER_PAGE)
 - **Methods**:
   - `_get_skip_decision_prompt()`: Loads skip-decision prompt from Langfuse or uses fallback
-  - `_get_card_generation_prompt()`: Loads card-generation prompt from Langfuse or uses fallback
+  - `_get_card_generation_prompt()`: Loads card-generation prompt from Langfuse or uses fallback. Now accepts `snippet_image_urls: List[str]` for multiple images
   - `_should_skip_page()`: Determines if a page should be skipped using LLM decision
-  - `_generate_cards_for_page()`: Generates flashcards for a single page with conversation context
-  - `generate_flashcards()`: Main entry point that processes all pages and returns card list
+  - `_generate_cards_for_page()`: Generates flashcards for a single page with conversation context. Now accepts `snippet_image_urls: List[str]` and sends all images as vision inputs to Gemini
+  - `generate_flashcards()`: Main entry point that processes all pages and returns card list. Groups snippets by page into lists instead of single dict
 - **LLM Integration**: Uses Gemini model with structured output for consistent JSON responses
+- **Vision Input**: When snippets exist for a page, all snippet images are sent to Gemini as vision inputs (up to MAX_SNIPPETS_PER_PAGE per page)
 - **Conversation Context**: Analyzes user questions and assistant responses to identify understanding problems
 - **Prompt Management**: 
   - Prompts are managed in Langfuse under `flashcard-agent/skip-decision` and `flashcard-agent/card-generation`
-  - Prompts use variables ({{summary}}, {{key_terms}}, etc.) that are compiled at runtime
+  - Prompts use variables ({{summary}}, {{key_terms}}, {{snippet_image_url}}, etc.) that are compiled at runtime
   - Automatic fallback to hardcoded prompts if Langfuse is unavailable or prompts cannot be loaded
   - Prompts can be updated in Langfuse UI without code changes
+
+**Multi-Snippet Flow**:
+1. `generate_flashcards()` calls `get_snippets_for_material()` to get all snippets
+2. Snippets are grouped by page: `snippets_by_page = {page_num: [snippet1, snippet2, ...]}`
+3. For each page, up to `MAX_SNIPPETS_PER_PAGE` snippets are selected
+4. All selected snippet URLs are passed to `_generate_cards_for_page()`
+5. The method builds a `HumanMessage` with multiple vision inputs:
+   ```python
+   content = [{"type": "text", "text": prompt}]
+   for url in snippet_image_urls:
+       content.append({"type": "image_url", "image_url": {"url": url}})
+   ```
+6. Agent analyzes all images and decides which to include in which flashcards
 
 **Dependencies**: 
 - `app.models.schemas` - PageSkipDecision, FlashcardGenerationResult, Flashcard models
 - `app.services.storage` - get_all_page_analyses_for_material, get_messages_for_page
+- `app.services.snippet_service` - get_snippets_for_material, get_snippet_public_url
 - `app.services.analyzer` - get_gemini_model
 - `app.services.observability` - get_langfuse_client (for prompt management)
+- `app.core.config` - settings.MAX_SNIPPETS_PER_PAGE
 
 **Usage**: 
 ```python
@@ -2976,7 +3031,8 @@ cards = agent.generate_flashcards(
 ```
 
 **Related Files**: 
-- `backend/app/services/flashcard_service.py` - CSV export functionality
+- `backend/app/services/flashcard_service.py` - .apkg export with embedded images
+- `backend/app/services/snippet_service.py` - Snippet management (supports multiple per page)
 - `backend/app/api/endpoints.py` - Flashcard export endpoint
 - `frontend/components/study/congratulations-screen.tsx` - UI for flashcard download
 
@@ -4017,42 +4073,54 @@ The component automatically renders math when the content contains:
 
 **Purpose**: Service for managing slide snippets (user-created image crops from PDF slides) and downloading them for Anki export.
 
+**Multiple Snippets Per Page**: As of the 20260127 migration, multiple snippets per page are supported. Users can create up to `MAX_SNIPPETS_PER_PAGE` (default: 3) snippets per slide. The flashcard agent receives all snippets for a page as vision inputs and intelligently decides which images to include in which flashcards.
+
 **Storage**: All snippets are stored in the `course_materials` bucket with path structure:
 `{user_id}/snippets/{course_material_id}/page_{page_number}_{timestamp}.png`
 
 **Key Components**:
 - **create_snippet()**: 
   - Uploads image to Supabase Storage (`course_materials` bucket)
-  - Creates/updates record in `slide_snippets` table
-  - Handles upsert for replacing existing snippets on the same page
-  - Cleans up old images when overwriting
+  - Creates **new** record in `slide_snippets` table (no longer replaces existing snippets)
+  - Automatically assigns `order_index` for consistent ordering within a page
+  - Returns the created snippet record with ID
 - **get_snippets_for_material()**: 
   - Retrieves all snippets for a course material by user
-  - Returns list ordered by page number
+  - Returns list ordered by page_number, then order_index, then created_at
+- **get_snippets_for_page()**: 
+  - Retrieves all snippets for a specific page
+  - Useful for checking snippet count before creating new ones
+  - Returns list ordered by order_index, then created_at
 - **get_snippet_public_url()**: 
   - Generates signed URL for a snippet image from `course_materials` bucket
   - Note: For APKG generation, `download_snippet_image()` is used instead
-  - Falls back to signed URL from `course_materials` bucket (10-year expiration)
+  - Creates signed URL with 10-year expiration for backwards compatibility
 - **download_snippet_image()**: 
   - Downloads snippet image bytes from Supabase Storage
   - Used by `build_anki_apkg()` to embed images directly in .apkg files
-  - Tries `snippets` bucket first, fallback to `course_materials`
+  - Reads from `course_materials` bucket
 - **delete_snippet()**: 
   - Deletes snippet record and associated image file
+  - Individual snippets can be deleted without affecting others on the same page
 
 **Dependencies**: 
 - `app.services.storage.get_supabase_client` - Supabase client
-- `app.core.config.settings` - SUPABASE_URL for constructing public URLs
+- `app.core.config.settings` - Configuration (including MAX_SNIPPETS_PER_PAGE)
 
 **Usage**: 
 ```python
 from app.services.snippet_service import (
     create_snippet,
     get_snippets_for_material,
+    get_snippets_for_page,
     get_snippet_public_url,
     download_snippet_image,
     delete_snippet
 )
+
+# Get all snippets for a page (multiple allowed)
+page_snippets = get_snippets_for_page(material_id, page_number, user_id)
+print(f"Page has {len(page_snippets)} snippets")
 
 # Download image for embedding in .apkg
 image_bytes = download_snippet_image(snippet["image_path"])
@@ -4061,6 +4129,7 @@ image_bytes = download_snippet_image(snippet["image_path"])
 **Related Files**: 
 - `backend/app/services/flashcard_service.py` - Uses `download_snippet_image()` for .apkg generation
 - `backend/app/api/endpoints.py` - Snippet CRUD endpoints
-- `backend/supabase/migrations/20260126000000_add_slide_snippets.sql` - Table definition
+- `backend/supabase/migrations/20260126000000_add_slide_snippets.sql` - Initial table definition
+- Database change "Allow Multiple Snippets Per Page (2026-01-27)" - Applied via Supabase MCP
 
 ---

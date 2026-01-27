@@ -20,8 +20,12 @@ def create_snippet(
     """
     Create a new slide snippet.
     
+    Multiple snippets per page are supported. Each new snippet is added
+    without replacing existing ones.
+    
     1. Uploads image to Supabase Storage.
-    2. Inserts record into slide_snippets table.
+    2. Inserts new record into slide_snippets table.
+    3. Automatically assigns order_index for consistent ordering.
     
     Args:
         file_bytes: Image file bytes
@@ -34,25 +38,24 @@ def create_snippet(
     """
     client = get_supabase_client()
     
-    # Check if a snippet already exists for this page to cleanup old image
+    # Get current snippet count for this page to determine order_index
     try:
-        existing = client.table("slide_snippets").select("image_path").eq(
+        existing = client.table("slide_snippets").select("order_index").eq(
             "course_material_id", course_material_id
         ).eq(
             "page_number", page_number
         ).eq(
             "user_id", user_id
-        ).execute()
+        ).order("order_index", desc=True).limit(1).execute()
         
         if existing.data and len(existing.data) > 0:
-            old_image_path = existing.data[0]["image_path"]
-            logger.info(f"Deleting old snippet image: {old_image_path}")
-            try:
-                client.storage.from_("course_materials").remove([old_image_path])
-            except Exception as e:
-                logger.warning(f"Failed to delete old snippet image: {e}")
+            # Next order_index is max + 1
+            next_order_index = (existing.data[0].get("order_index") or 0) + 1
+        else:
+            next_order_index = 0
     except Exception as e:
         logger.warning(f"Failed to check for existing snippets: {e}")
+        next_order_index = 0
     
     # 1. Upload to Storage
     # Use course_materials bucket with clear path structure
@@ -73,28 +76,29 @@ def create_snippet(
         logger.error(f"Storage upload failed: {str(e)}")
         raise Exception(f"Failed to upload snippet image: {str(e)}")
         
-    # 2. Insert or update into DB (using upsert)
+    # 2. Insert into DB (not upsert - we allow multiple snippets per page now)
     try:
-        # Use upsert - Supabase will automatically handle the unique constraint
-        # on (course_material_id, page_number, user_id)
         data = {
             "course_material_id": course_material_id,
             "user_id": user_id,
             "page_number": page_number,
-            "image_path": storage_path
+            "image_path": storage_path,
+            "order_index": next_order_index
         }
         
-        # Upsert without explicit on_conflict - let Supabase use the unique constraint
-        response = client.table("slide_snippets").upsert(data).execute()
+        # Insert new snippet record
+        response = client.table("slide_snippets").insert(data).execute()
         
         if response.data and len(response.data) > 0:
+            snippet_count = next_order_index + 1
+            logger.info(f"✅ Created snippet {snippet_count} for page {page_number}")
             return response.data[0]
         else:
-            logger.error(f"DB upsert returned no data. Response: {response}")
+            logger.error(f"DB insert returned no data. Response: {response}")
             raise Exception("Failed to save snippet record (no data returned)")
             
     except Exception as e:
-        logger.error(f"DB upsert failed: {str(e)}", exc_info=True)
+        logger.error(f"DB insert failed: {str(e)}", exc_info=True)
         # Try to cleanup storage if DB insert fails
         try:
             client.storage.from_("course_materials").remove([storage_path])
@@ -110,6 +114,9 @@ def get_snippets_for_material(
     """
     Get all snippets for a course material.
     
+    Returns snippets sorted by page_number, then by order_index (or created_at).
+    Multiple snippets per page are supported.
+    
     Args:
         course_material_id: Course material ID
         user_id: User ID
@@ -124,11 +131,43 @@ def get_snippets_for_material(
             "course_material_id", course_material_id
         ).eq(
             "user_id", user_id
-        ).order("page_number").execute()
+        ).order("page_number").order("order_index").order("created_at").execute()
         
         return response.data or []
     except Exception as e:
         raise Exception(f"Failed to fetch snippets: {str(e)}")
+
+
+def get_snippets_for_page(
+    course_material_id: str,
+    page_number: int,
+    user_id: str
+) -> List[dict]:
+    """
+    Get all snippets for a specific page.
+    
+    Args:
+        course_material_id: Course material ID
+        page_number: Page number (1-indexed)
+        user_id: User ID
+        
+    Returns:
+        List of snippet records for the page, sorted by order_index
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("slide_snippets").select("*").eq(
+            "course_material_id", course_material_id
+        ).eq(
+            "page_number", page_number
+        ).eq(
+            "user_id", user_id
+        ).order("order_index").order("created_at").execute()
+        
+        return response.data or []
+    except Exception as e:
+        raise Exception(f"Failed to fetch snippets for page {page_number}: {str(e)}")
 
 
 def get_snippet_public_url(image_path: str) -> str:

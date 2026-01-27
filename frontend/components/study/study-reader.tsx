@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import { Panel, Group, Separator as PanelResizeHandle } from 'react-resizable-panels'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
@@ -12,10 +12,21 @@ import { useChatSession } from '@/hooks/use-chat-session'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+// Maximum snippets per page (should match backend setting)
+const MAX_SNIPPETS_PER_PAGE = 3
+
 // Dynamically import PDF Viewer with SSR disabled
 const PdfViewer = dynamic(() => import('./pdf-viewer').then((mod) => ({ default: mod.PdfViewer })), {
   ssr: false,
 })
+
+interface Snippet {
+  id: string
+  page_number: number
+  image_path: string
+  created_at: string
+  order_index?: number
+}
 
 interface StudyReaderProps {
   materialId: string
@@ -53,26 +64,41 @@ export function StudyReader({
     handleQuizComplete
   } = useChatSession(materialId, userId, pageCount)
 
-  const [hasSnippet, setHasSnippet] = useState(false)
+  // Track all snippets for the material, and current page's snippets
+  const [allSnippets, setAllSnippets] = useState<Snippet[]>([])
+  const [pageSnippets, setPageSnippets] = useState<Snippet[]>([])
 
-  // Check for existing snippet when page changes
-  useEffect(() => {
-    const checkSnippet = async () => {
-      try {
-        const response = await fetch(`${API_URL}/api/study/snippets/${materialId}?user_id=${userId}`)
-        if (response.ok) {
-          const snippets = await response.json()
-          const snippetExists = snippets.some((s: any) => s.page_number === currentPage)
-          setHasSnippet(snippetExists)
-        }
-      } catch (error) {
-        console.error('Failed to check snippets:', error)
+  // Fetch all snippets for material
+  const fetchSnippets = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/study/snippets/${materialId}?user_id=${userId}`)
+      if (response.ok) {
+        const snippets: Snippet[] = await response.json()
+        setAllSnippets(snippets)
       }
+    } catch (error) {
+      console.error('Failed to fetch snippets:', error)
     }
-    checkSnippet()
-  }, [currentPage, materialId, userId])
+  }, [materialId, userId])
+
+  // Fetch snippets on mount
+  useEffect(() => {
+    fetchSnippets()
+  }, [fetchSnippets])
+
+  // Filter snippets for current page when page or snippets change
+  useEffect(() => {
+    const snippetsForPage = allSnippets.filter(s => s.page_number === currentPage)
+    setPageSnippets(snippetsForPage)
+  }, [currentPage, allSnippets])
 
   const handleSaveSnippet = async (blob: Blob) => {
+    // Check if we've reached the limit
+    if (pageSnippets.length >= MAX_SNIPPETS_PER_PAGE) {
+      toast.error(`Maximal ${MAX_SNIPPETS_PER_PAGE} Snippets pro Seite erlaubt`)
+      return
+    }
+
     try {
       const formData = new FormData()
       formData.append('file', blob)
@@ -90,11 +116,33 @@ export function StudyReader({
         throw new Error(errorData.detail || 'Failed to save snippet')
       }
       
-      setHasSnippet(true)
-      toast.success('Snippet erfolgreich gespeichert')
+      // Refresh snippets list
+      await fetchSnippets()
+      
+      const newCount = pageSnippets.length + 1
+      toast.success(`Snippet ${newCount} für Seite ${currentPage} gespeichert`)
     } catch (error) {
       console.error('Error saving snippet:', error)
       toast.error(error instanceof Error ? error.message : 'Fehler beim Speichern des Snippets')
+    }
+  }
+
+  const handleDeleteSnippet = async (snippetId: string) => {
+    try {
+      const response = await fetch(`${API_URL}/api/study/snippets/${snippetId}?user_id=${userId}`, {
+        method: 'DELETE',
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to delete snippet')
+      }
+      
+      // Refresh snippets list
+      await fetchSnippets()
+      toast.success('Snippet gelöscht')
+    } catch (error) {
+      console.error('Error deleting snippet:', error)
+      toast.error('Fehler beim Löschen des Snippets')
     }
   }
 
@@ -159,7 +207,9 @@ export function StudyReader({
                 file={pdfUrl} 
                 pageNumber={currentPage} 
                 onSaveSnippet={handleSaveSnippet}
-                hasSnippet={hasSnippet}
+                snippets={pageSnippets}
+                maxSnippets={MAX_SNIPPETS_PER_PAGE}
+                onDeleteSnippet={handleDeleteSnippet}
               />
             </div>
           </div>

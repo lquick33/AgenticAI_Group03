@@ -340,13 +340,25 @@ class FlashcardTaskService:
         
         # Get all snippets for this material to avoid DB calls in loop
         from app.services.snippet_service import get_snippets_for_material, get_snippet_public_url
+        from app.core.config import settings
+        MAX_SNIPPETS_PER_PAGE = settings.MAX_SNIPPETS_PER_PAGE
+        
         logger.info(f"🔍 Getting snippets for material {course_material_id}, user {user_id}")
         snippets = get_snippets_for_material(course_material_id, user_id)
         logger.info(f"🔍 Found {len(snippets)} snippets total")
-        if snippets:
-            logger.info(f"🔍 Snippet page numbers: {[s.get('page_number') for s in snippets]}")
-        snippets_by_page = {s["page_number"]: s for s in snippets}
-        logger.info(f"🔍 snippets_by_page dict keys: {list(snippets_by_page.keys())}")
+        
+        # Group snippets by page - now supports multiple snippets per page
+        snippets_by_page: dict[int, list] = {}
+        for snippet in snippets:
+            page_num = snippet.get("page_number")
+            if page_num is not None:
+                if page_num not in snippets_by_page:
+                    snippets_by_page[page_num] = []
+                snippets_by_page[page_num].append(snippet)
+        
+        # Log snippet distribution
+        for page_num, page_snippets in snippets_by_page.items():
+            logger.info(f"🔍 Page {page_num}: {len(page_snippets)} snippet(s)")
         
         all_cards = []
         
@@ -394,36 +406,28 @@ class FlashcardTaskService:
                 except Exception as e:
                     logger.warning(f"Error getting messages for page {page_number}: {e}")
             
-            # Check for snippets and get URL if available
-            snippet_image_url = None
-            logger.info(f"🔍 Checking for snippets for page {page_number}...")
-            logger.info(f"🔍 snippets_by_page keys: {list(snippets_by_page.keys())}")
+            # Get all snippets for this page (supports multiple)
+            snippet_image_urls = []
+            page_snippets = snippets_by_page.get(page_number, [])
             
-            if page_number in snippets_by_page:
-                snippet = snippets_by_page[page_number]
-                logger.info(f"✅ Snippet found in dict for page {page_number}: {snippet}")
-                image_path = snippet.get("image_path")
-                logger.info(f"🔍 image_path from snippet: {image_path}")
+            if page_snippets:
+                # Limit to MAX_SNIPPETS_PER_PAGE for cost/performance control
+                selected_snippets = page_snippets[:MAX_SNIPPETS_PER_PAGE]
+                if len(page_snippets) > MAX_SNIPPETS_PER_PAGE:
+                    logger.warning(f"⚠️ Page {page_number} has {len(page_snippets)} snippets, using first {MAX_SNIPPETS_PER_PAGE}")
                 
-                if image_path:
-                    try:
-                        logger.info(f"🔍 Calling get_snippet_public_url with: {image_path}")
-                        snippet_image_url = get_snippet_public_url(image_path)
-                        logger.info(f"✅ URL generated successfully! Length: {len(snippet_image_url) if snippet_image_url else 0}")
-                        logger.info(f"✅ Found snippet for page {page_number}, URL: {snippet_image_url[:100] if snippet_image_url else 'None'}...")
-                        logger.info(f"📸 snippet_image_url is not None: {snippet_image_url is not None}")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to get snippet URL for page {page_number}: {e}", exc_info=True)
-                        snippet_image_url = None
-                else:
-                    logger.warning(f"⚠️ Snippet found but image_path is None or empty for page {page_number}")
-            else:
-                logger.debug(f"No snippet found for page {page_number} in snippets_by_page")
+                for snippet in selected_snippets:
+                    image_path = snippet.get("image_path")
+                    if image_path:
+                        try:
+                            url = get_snippet_public_url(image_path)
+                            if url:
+                                snippet_image_urls.append(url)
+                                logger.info(f"✅ Snippet URL for page {page_number}: {url[:80]}...")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to get snippet URL for page {page_number}: {e}")
             
-            # Log before passing to _generate_cards_for_page
-            logger.info(f"🔍 About to call _generate_cards_for_page with snippet_image_url: {snippet_image_url is not None}")
-            if snippet_image_url:
-                logger.info(f"🔍 snippet_image_url value: {snippet_image_url[:100]}...")
+            logger.info(f"🔍 Page {page_number}: Processing with {len(snippet_image_urls)} snippet(s)")
             
             # Generate cards for this page (async with timeout)
             try:
@@ -436,7 +440,7 @@ class FlashcardTaskService:
                         course_material_id,
                         page_number,
                         task.user_id,
-                        snippet_image_url,  # ✅ Pass snippet URL!
+                        snippet_image_urls,  # ✅ Pass list of snippet URLs!
                     ),
                     timeout=60.0  # 60 second timeout per card generation
                 )

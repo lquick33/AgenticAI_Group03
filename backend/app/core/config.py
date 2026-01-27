@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     LANGFUSE_BASE_URL: str = "https://cloud.langfuse.com"  # EU region (default)
     LANGFUSE_ENABLED: bool = False  # Feature flag
     
+    # Snippet Settings
+    MAX_SNIPPETS_PER_PAGE: int = 3  # Maximum number of snippets allowed per page
+    MULTI_SNIPPETS_ENABLED: bool = True  # Feature flag for multiple snippets per page
+    
     model_config = SettingsConfigDict(
         # Try .env in current directory, then parent directory (project root)
         env_file=[
