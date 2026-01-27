@@ -14,11 +14,13 @@ from langgraph.graph import StateGraph, START, END, MessagesState
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.agents.base import BaseAgent
-from app.models.schemas import PageSkipDecision, FlashcardGenerationResult
+from app.models.schemas import PageSkipDecision, FlashcardGenerationResult, MaterialClassification
 from app.services.storage import (
     get_all_page_analyses_for_material,
     get_messages_for_page,
     save_flashcards,
+    get_material_classification,
+    update_material_classification,
 )
 from app.services.snippet_service import get_snippets_for_material, get_snippet_public_url
 from app.services.analyzer import get_gemini_model
@@ -58,6 +60,11 @@ class FlashcardState(MessagesState):
     # Configuration
     save_to_db: bool = False
     task_id: Optional[str] = None  # For progress tracking
+    
+    # Classification
+    classification: Optional[str] = None
+    classification_confidence: Optional[float] = None
+    classification_reasoning: Optional[str] = None
 
 
 class FlashcardGeneratorAgent(BaseAgent):
@@ -114,6 +121,7 @@ class FlashcardGeneratorAgent(BaseAgent):
         
         # Add nodes
         workflow.add_node("initialize", self.initialize_node)
+        workflow.add_node("classify", self.classify_node)  # NEW: Classification node
         workflow.add_node("process_page", self.process_page_node)
         workflow.add_node("skip_decision", self.skip_decision_node)
         workflow.add_node("get_context", self.get_context_node)
@@ -124,9 +132,12 @@ class FlashcardGeneratorAgent(BaseAgent):
         # Set entry point
         workflow.add_edge(START, "initialize")
         
-        # After initialization, check if there are pages to process
+        # After initialization, classify
+        workflow.add_edge("initialize", "classify")
+        
+        # After classification, check if there are pages to process
         workflow.add_conditional_edges(
-            "initialize",
+            "classify",
             self.check_more_pages,
             {
                 "continue": "process_page",
@@ -213,6 +224,191 @@ class FlashcardGeneratorAgent(BaseAgent):
             "skipped_page_indices": [],
             "all_cards": []
         }
+    
+    def classify_node(self, state: FlashcardState) -> FlashcardState:
+        """
+        Classify material type on-demand.
+        
+        Checks database for cached classification first.
+        If not found, generates classification using LLM and stores it.
+        
+        Args:
+            state: Current agent state
+            
+        Returns:
+            Updated state with classification fields
+        """
+        material_id = state["course_material_id"]
+        user_id = state["user_id"]
+        
+        # Check if classification exists in DB (cached)
+        cached = get_material_classification(material_id, user_id)
+        
+        if cached and not cached.get("classification_override", False):
+            # Use cached classification
+            logger.info(f"Using cached classification for material {material_id}: {cached['classification']}")
+            return {
+                **state,
+                "classification": cached["classification"],
+                "classification_confidence": cached.get("classification_confidence"),
+                "classification_reasoning": cached.get("classification_reasoning")
+            }
+        
+        # Generate classification on-demand
+        logger.info(f"Generating classification for material {material_id}")
+        try:
+            classification_result = self._generate_classification(state)
+            
+            # Store in database for future use
+            update_material_classification(
+                material_id=material_id,
+                classification=classification_result["category"],
+                confidence=classification_result["confidence"],
+                reasoning=classification_result["reasoning"],
+                override=False
+            )
+            
+            logger.info(f"Classified material {material_id} as: {classification_result['category']}")
+            
+            return {
+                **state,
+                "classification": classification_result["category"],
+                "classification_confidence": classification_result["confidence"],
+                "classification_reasoning": classification_result["reasoning"]
+            }
+        except Exception as e:
+            logger.error(f"Error classifying material {material_id}: {e}", exc_info=True)
+            # On error, continue without classification (don't block flashcard generation)
+            return state
+    
+    def _generate_classification(self, state: FlashcardState) -> Dict[str, Any]:
+        """
+        Generate classification using LLM.
+        
+        Analyzes aggregated page content to determine material type.
+        
+        Args:
+            state: Current agent state
+            
+        Returns:
+            Dict with category, confidence, and reasoning
+        """
+        # Get all page analyses
+        page_analyses = state.get("page_analyses", [])
+        
+        if not page_analyses:
+            logger.warning("No page analyses available for classification")
+            return {
+                "category": "general",
+                "confidence": 0.5,
+                "reasoning": "No page analyses available, defaulting to general"
+            }
+        
+        # Aggregate content from all pages
+        summaries = [p.get("summary", "") for p in page_analyses if p.get("summary")]
+        key_terms = []
+        for p in page_analyses:
+            key_terms.extend(p.get("key_terms", []))
+        
+        # Get classification prompt
+        prompt = self._get_classification_prompt(summaries, key_terms)
+        
+        # Use structured output
+        llm = get_gemini_model()
+        classification_llm = llm.with_structured_output(MaterialClassification)
+        
+        # Create Langfuse callback
+        callback_handler = create_callback_handler()
+        config = {}
+        if callback_handler:
+            config["callbacks"] = [callback_handler]
+            config["metadata"] = {
+                "langfuse_user_id": state.get("user_id"),
+                "langfuse_session_id": state.get("course_material_id"),
+                "material_id": state.get("course_material_id"),
+                "operation": "classification"
+            }
+        
+        try:
+            message = HumanMessage(content=prompt)
+            result = classification_llm.invoke([message], config=config if config else None)
+            
+            return {
+                "category": result.category,
+                "confidence": result.confidence,
+                "reasoning": result.reasoning
+            }
+        except Exception as e:
+            logger.error(f"Error in LLM classification: {e}", exc_info=True)
+            # Fallback to general
+            return {
+                "category": "general",
+                "confidence": 0.3,
+                "reasoning": f"Classification failed: {str(e)}"
+            }
+    
+    def _get_classification_prompt(self, summaries: List[str], key_terms: List[str]) -> str:
+        """
+        Get classification prompt from Langfuse.
+        
+        Falls back to hardcoded prompt if Langfuse unavailable.
+        
+        Args:
+            summaries: List of page summaries
+            key_terms: List of key terms from all pages
+            
+        Returns:
+            Compiled prompt string
+        """
+        if not self.langfuse_client:
+            return self._get_fallback_classification_prompt(summaries, key_terms)
+        
+        try:
+            langfuse_prompt = self.langfuse_client.get_prompt(
+                "material-classifier/classification",
+                label="production"
+            )
+            
+            # Aggregate summaries (limit to avoid token explosion)
+            summaries_text = "\n".join(summaries[:10])  # First 10 pages
+            key_terms_text = ", ".join(key_terms[:50])  # First 50 terms
+            
+            compiled_prompt = langfuse_prompt.compile(
+                page_summaries=summaries_text,
+                key_terms=key_terms_text
+            )
+            return compiled_prompt
+        except Exception as e:
+            logger.warning(f"Failed to load Langfuse prompt: {e}, using fallback")
+            return self._get_fallback_classification_prompt(summaries, key_terms)
+    
+    def _get_fallback_classification_prompt(self, summaries: List[str], key_terms: List[str]) -> str:
+        """Fallback prompt if Langfuse unavailable."""
+        summaries_text = "\n".join(summaries[:10])
+        key_terms_text = ", ".join(key_terms[:50])
+        
+        return f"""Analyze the following lecture material and classify it into one of these categories:
+- language_learning: Materials focused on vocabulary, grammar, translations, language practice
+- math: Materials with formulas, equations, proofs, mathematical concepts
+- business_administration: Materials covering business models, case studies, management concepts
+- general: General educational materials without specific domain focus
+
+Page Summaries:
+{summaries_text}
+
+Key Terms: {key_terms_text}
+
+Based on the content, classify this material and provide:
+1. The most appropriate category
+2. A confidence score (0.0 to 1.0)
+3. Brief reasoning for your choice
+
+Respond with a JSON object matching this structure:
+{{
+  "category": "one of the categories above",
+  "confidence": 0.0-1.0,
+  "reasoning": "brief explanation"
+}}"""
     
     def check_more_pages(self, state: FlashcardState) -> str:
         """
@@ -813,6 +1009,9 @@ class FlashcardGeneratorAgent(BaseAgent):
             "current_page_analysis": None,
             "current_page_messages": [],
             "current_snippet_url": None,
+            "classification": None,
+            "classification_confidence": None,
+            "classification_reasoning": None,
         }
         
         # Use thread_id if provided (for resumability), otherwise generate new
@@ -939,6 +1138,9 @@ class FlashcardGeneratorAgent(BaseAgent):
             "current_page_analysis": None,
             "current_page_messages": [],
             "current_snippet_url": None,
+            "classification": None,
+            "classification_confidence": None,
+            "classification_reasoning": None,
         }
         
         # Use thread_id if provided (for resumability), otherwise generate new

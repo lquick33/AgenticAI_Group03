@@ -1010,3 +1010,64 @@ def delete_course_material(
         logger.error(f"Error deleting course material {material_id}: {str(e)}", exc_info=True)
         raise Exception(f"Failed to delete course material: {str(e)}")
 
+
+def get_material_classification(
+    material_id: str,
+    user_id: str
+) -> Optional[dict]:
+    """
+    Get classification for a material.
+    
+    Args:
+        material_id: Course material ID
+        user_id: User ID
+        
+    Returns:
+        Dict with keys: classification, classification_confidence, 
+        classification_reasoning, classification_override
+        or None if not classified
+    """
+    client = get_supabase_client()
+    try:
+        response = client.table("course_materials").select(
+            "classification, classification_confidence, classification_reasoning, classification_override"
+        ).eq("id", material_id).eq("user_id", user_id).single().execute()
+        
+        if response.data and response.data.get("classification"):
+            return response.data
+        return None
+    except Exception as e:
+        logger.error(f"Error getting classification: {e}")
+        return None
+
+
+def update_material_classification(
+    material_id: str,
+    classification: str,
+    confidence: float,
+    reasoning: str,
+    override: bool = False
+) -> None:
+    """
+    Update classification for a material.
+    
+    Args:
+        material_id: Course material ID
+        classification: Classification category (must match enum)
+        confidence: Confidence score (0.0-1.0)
+        reasoning: LLM reasoning for classification
+        override: Whether this is a manual override
+    """
+    client = get_supabase_client()
+    try:
+        client.table("course_materials").update({
+            "classification": classification,
+            "classification_confidence": confidence,
+            "classification_reasoning": reasoning,
+            "classification_override": override
+        }).eq("id", material_id).execute()
+        logger.info(f"Updated classification for material {material_id}: {classification}")
+    except Exception as e:
+        logger.error(f"Error updating classification: {e}")
+        raise
+

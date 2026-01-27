@@ -147,6 +147,22 @@ class FlashcardGenerationResult(BaseModel):
     cards: list[Flashcard] = Field(..., description="List of flashcards generated for this page")
 
 
+class MaterialClassification(BaseModel):
+    """Structured output for material classification."""
+    
+    category: Literal['language_learning', 'math', 'business_administration', 'general'] = Field(
+        description="Classification category"
+    )
+    confidence: float = Field(
+        ge=0.0, 
+        le=1.0, 
+        description="Confidence score between 0.0 and 1.0"
+    )
+    reasoning: str = Field(
+        description="Brief explanation of why this classification was chosen"
+    )
+
+
 class FlashcardTaskResponse(BaseModel):
     """Response model for flashcard generation task creation."""
     
