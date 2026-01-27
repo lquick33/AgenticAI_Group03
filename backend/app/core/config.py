@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # Snippet Settings
     MAX_SNIPPETS_PER_PAGE: int = 3  # Maximum number of snippets allowed per page
     MULTI_SNIPPETS_ENABLED: bool = True  # Feature flag for multiple snippets per page
+
+    # Text-to-Speech (TTS) Configuration (optional)
+    GOOGLE_CLOUD_PROJECT_ID: str | None = None
+    GOOGLE_APPLICATION_CREDENTIALS: str | None = None  # Path to service account JSON file
+    TTS_LANGUAGE_CODE: str = "zh-CN"  # Default language code for TTS
+    TTS_VOICE_NAME: str | None = None  # Optional default voice name
+    TTS_AUDIO_ENCODING: str = "MP3"  # Audio encoding format
+    TTS_SPEAKING_RATE: float = 1.0  # Speaking rate (0.25 to 4.0)
     
     model_config = SettingsConfigDict(
         # Try .env in current directory, then parent directory (project root)

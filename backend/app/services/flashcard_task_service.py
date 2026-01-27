@@ -11,11 +11,49 @@ import uuid
 from enum import Enum
 from typing import Any, Dict, Optional
 
+from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.memory import MemorySaver
+
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_apkg
 from app.services.storage import save_flashcards
+from app.services.db_migration_helper import get_postgres_connection_string
 
 logger = logging.getLogger(__name__)
+
+# Singleton checkpointer instance
+_checkpointer = None
+
+
+def _get_checkpointer():
+    """
+    Get or create checkpointer instance for flashcard agent.
+    
+    Tries to use PostgresSaver for persistent checkpointing.
+    Falls back to MemorySaver if database connection is unavailable.
+    
+    Returns:
+        BaseCheckpointSaver instance (PostgresSaver or MemorySaver)
+    """
+    global _checkpointer
+    if _checkpointer is None:
+        try:
+            conn_string = get_postgres_connection_string()
+            _checkpointer = PostgresSaver.from_conn_string(conn_string)
+            # Setup database tables (idempotent - safe to call multiple times)
+            try:
+                _checkpointer.setup()
+                logger.info("PostgresSaver tables initialized successfully")
+            except Exception as setup_error:
+                # If setup fails (e.g., tables already exist), log warning but continue
+                # PostgresSaver may auto-create tables on first use in some versions
+                logger.warning(f"PostgresSaver.setup() failed (may be normal if tables exist): {setup_error}")
+            logger.info("Using PostgresSaver for flashcard agent checkpointing")
+        except (ValueError, Exception) as e:
+            logger.warning(f"Failed to initialize PostgresSaver, falling back to MemorySaver: {e}")
+            _checkpointer = MemorySaver()
+            logger.info("Using MemorySaver for flashcard agent checkpointing (fallback)")
+    return _checkpointer
 
 
 class TaskStatus(str, Enum):
@@ -185,8 +223,9 @@ class FlashcardTaskService:
             task.status = TaskStatus.RUNNING
             logger.info(f"Starting flashcard generation task {task.task_id}")
             
-            # Initialize agent
-            agent = FlashcardGeneratorAgent()
+            # Initialize agent with checkpointer for state persistence
+            checkpointer = _get_checkpointer()
+            agent = FlashcardGeneratorAgent(checkpointer=checkpointer)
             
             # Get page count for progress tracking
             from app.services.storage import get_all_page_analyses_for_material
@@ -202,13 +241,35 @@ class FlashcardTaskService:
                 task.completed_at = time.time()
                 return
             
-            # Generate flashcards asynchronously with progress updates
-            cards = await self._generate_flashcards_async(
-                agent=agent,
+            # Generate flashcards using the graph-based agent with progress tracking
+            # The agent now handles all page processing internally with state persistence
+            
+            def progress_callback(current_page_index, total_pages, processed_pages, skipped_pages, cards_generated, progress):
+                """Update task progress from graph state."""
+                try:
+                    task.processed_pages = processed_pages
+                    task.progress = progress
+                    task.cards_generated = cards_generated
+                    # total_pages already set before graph execution, but update if needed
+                    if total_pages > 0 and task.total_pages != total_pages:
+                        task.total_pages = total_pages
+                    logger.debug(
+                        f"Progress update for task {task.task_id}: "
+                        f"{processed_pages}/{total_pages} pages ({progress*100:.1f}%), "
+                        f"{cards_generated} cards generated"
+                    )
+                except Exception as e:
+                    # Don't let callback errors crash the generation
+                    logger.warning(f"Error updating task progress in callback: {e}")
+            
+            cards = await asyncio.to_thread(
+                agent.generate_flashcards_with_progress,
                 course_material_id=task.course_material_id,
                 user_id=task.user_id,
                 course_id=task.course_id,
-                task=task,
+                save_to_db=False,  # We'll save manually after generation
+                task_id=task.task_id,
+                progress_callback=progress_callback,
             )
             
             if task._cancelled:
@@ -294,7 +355,7 @@ class FlashcardTaskService:
             safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
             
             # Build .apkg with embedded images
-            deck_name = f"{course_title} - {file_name.replace('.pdf', '')}"
+            deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
             task.apkg_bytes = build_anki_apkg(cards, deck_name=deck_name)
             task.filename = f"flashcards_{safe_course_title}_{safe_file_name}.apkg"
             
@@ -313,146 +374,9 @@ class FlashcardTaskService:
             task.error_message = str(e)
             task.completed_at = time.time()
     
-    async def _generate_flashcards_async(
-        self,
-        agent: FlashcardGeneratorAgent,
-        course_material_id: str,
-        user_id: str,
-        course_id: str,
-        task: FlashcardTask,
-    ) -> list:
-        """
-        Generate flashcards asynchronously with progress updates.
-        
-        This wraps the synchronous generate_flashcards method and adds
-        async/await support with progress tracking.
-        """
-        from app.services.storage import (
-            get_all_page_analyses_for_material,
-            get_messages_for_page,
-        )
-        
-        # Get all page analyses
-        page_analyses = get_all_page_analyses_for_material(course_material_id, user_id)
-        
-        if not page_analyses:
-            return []
-        
-        # Get all snippets for this material to avoid DB calls in loop
-        from app.services.snippet_service import get_snippets_for_material, get_snippet_public_url
-        from app.core.config import settings
-        MAX_SNIPPETS_PER_PAGE = settings.MAX_SNIPPETS_PER_PAGE
-        
-        logger.info(f"🔍 Getting snippets for material {course_material_id}, user {user_id}")
-        snippets = get_snippets_for_material(course_material_id, user_id)
-        logger.info(f"🔍 Found {len(snippets)} snippets total")
-        
-        # Group snippets by page - now supports multiple snippets per page
-        snippets_by_page: dict[int, list] = {}
-        for snippet in snippets:
-            page_num = snippet.get("page_number")
-            if page_num is not None:
-                if page_num not in snippets_by_page:
-                    snippets_by_page[page_num] = []
-                snippets_by_page[page_num].append(snippet)
-        
-        # Log snippet distribution
-        for page_num, page_snippets in snippets_by_page.items():
-            logger.info(f"🔍 Page {page_num}: {len(page_snippets)} snippet(s)")
-        
-        all_cards = []
-        
-        # Process each page with progress updates
-        for idx, page_analysis in enumerate(page_analyses):
-            if task._cancelled:
-                break
-            
-            page_number = page_analysis.get("page_number", 0)
-            page_id = page_analysis.get("id")
-            
-            # Update progress
-            task.processed_pages = idx + 1
-            task.progress = (idx + 1) / len(page_analyses)
-            
-            # Check if page should be skipped (async with timeout)
-            try:
-                should_skip, reason = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        agent._should_skip_page,
-                        page_analysis,
-                        task.user_id,
-                        task.course_material_id,
-                        task.course_id,
-                        page_number
-                    ),
-                    timeout=30.0  # 30 second timeout per skip decision
-                )
-                
-                if should_skip:
-                    logger.debug(f"Skipping page {page_number}: {reason}")
-                    continue
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout checking if page {page_number} should be skipped, skipping it")
-                continue
-            except Exception as e:
-                logger.warning(f"Error checking if page {page_number} should be skipped: {e}, continuing")
-                continue
-            
-            # Get messages for this page
-            messages = []
-            if page_id:
-                try:
-                    messages = get_messages_for_page(page_id, user_id)
-                except Exception as e:
-                    logger.warning(f"Error getting messages for page {page_number}: {e}")
-            
-            # Get all snippets for this page (supports multiple)
-            snippet_image_urls = []
-            page_snippets = snippets_by_page.get(page_number, [])
-            
-            if page_snippets:
-                # Limit to MAX_SNIPPETS_PER_PAGE for cost/performance control
-                selected_snippets = page_snippets[:MAX_SNIPPETS_PER_PAGE]
-                if len(page_snippets) > MAX_SNIPPETS_PER_PAGE:
-                    logger.warning(f"⚠️ Page {page_number} has {len(page_snippets)} snippets, using first {MAX_SNIPPETS_PER_PAGE}")
-                
-                for snippet in selected_snippets:
-                    image_path = snippet.get("image_path")
-                    if image_path:
-                        try:
-                            url = get_snippet_public_url(image_path)
-                            if url:
-                                snippet_image_urls.append(url)
-                                logger.info(f"✅ Snippet URL for page {page_number}: {url[:80]}...")
-                        except Exception as e:
-                            logger.error(f"❌ Failed to get snippet URL for page {page_number}: {e}")
-            
-            logger.info(f"🔍 Page {page_number}: Processing with {len(snippet_image_urls)} snippet(s)")
-            
-            # Generate cards for this page (async with timeout)
-            try:
-                cards = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        agent._generate_cards_for_page,
-                        page_analysis,
-                        messages,
-                        course_id,
-                        course_material_id,
-                        page_number,
-                        task.user_id,
-                        snippet_image_urls,  # ✅ Pass list of snippet URLs!
-                    ),
-                    timeout=60.0  # 60 second timeout per card generation
-                )
-                all_cards.extend(cards)
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout generating cards for page {page_number}, skipping")
-                continue
-            except Exception as e:
-                logger.warning(f"Error generating cards for page {page_number}: {e}, continuing")
-                continue
-        
-        return all_cards
+    # Note: _generate_flashcards_async method removed
+    # The agent now handles all page processing internally via LangGraph
+    # Progress tracking can be added in the future by checking graph state
 
 
 # Global task service instance

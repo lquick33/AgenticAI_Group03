@@ -5,10 +5,10 @@ import dynamic from 'next/dynamic'
 import { Panel, Group, Separator as PanelResizeHandle } from 'react-resizable-panels'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { toast } from 'sonner'
 import { ChatInterface } from './chat-interface'
 import { CongratulationsScreen } from './congratulations-screen'
 import { useChatSession } from '@/hooks/use-chat-session'
+import { toast } from 'sonner'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 

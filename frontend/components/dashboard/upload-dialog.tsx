@@ -196,6 +196,22 @@ export function UploadDialog({ courses }: UploadDialogProps) {
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      
+      // Check backend connectivity before upload
+      try {
+        const healthController = new AbortController()
+        const healthTimeout = setTimeout(() => healthController.abort(), 5000) // 5 second timeout
+        
+        const healthResponse = await fetch(`${apiUrl}/health`, {
+          method: 'GET',
+          signal: healthController.signal,
+        })
+        
+        clearTimeout(healthTimeout)
+      } catch (healthError) {
+        throw new Error(`Backend server is not reachable at ${apiUrl}. Please ensure the backend is running.`)
+      }
+      
       const formData = new FormData()
       formData.append('file', fileItem.file)
       formData.append('user_id', user.id)
@@ -263,8 +279,14 @@ export function UploadDialog({ courses }: UploadDialogProps) {
         }))
       }, 2000)
     } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : 'Upload fehlgeschlagen'
+      let errorMessage = err instanceof Error ? err.message : 'Upload fehlgeschlagen'
+      
+      // Provide user-friendly error messages for common network issues
+      if (err instanceof TypeError && err.message.includes('fetch')) {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+        errorMessage = `Verbindung zum Server fehlgeschlagen. Bitte überprüfen Sie, ob der Backend-Server unter ${apiUrl} läuft.`
+      }
+      
       setFiles((prev) =>
         prev.map((f) =>
           f.id === fileItem.id

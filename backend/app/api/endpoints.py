@@ -56,6 +56,7 @@ from app.services.storage import (
     get_flashcards_for_material,
     get_course_material_summary,
     update_course_material_filename,
+    delete_course_material,
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_apkg
@@ -333,6 +334,7 @@ async def upload_pdf(
             material_id=material_id,
             file_bytes=file_bytes,
             user_id=user_id,
+            course_id=actual_course_id,
             max_concurrent=5  # Process 5 pages in parallel
         )
         
@@ -2834,7 +2836,7 @@ async def download_flashcards_from_db(
         safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
         safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
         
-        deck_name = f"{course_title} - {file_name.replace('.pdf', '')}"
+        deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
         apkg_bytes = build_anki_apkg(cards_for_apkg, deck_name=deck_name)
         filename = f"flashcards_{safe_course_title}_{safe_file_name}.apkg"
         
@@ -2947,6 +2949,54 @@ async def update_material_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to update material: {str(e)}"
+        )
+
+
+@router.delete("/materials/{material_id}", status_code=200)
+async def delete_material_endpoint(
+    material_id: str = Path(..., description="Material ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)"),
+) -> dict:
+    """
+    Delete a course material and all associated data.
+    
+    This endpoint:
+    - Validates that the material exists and belongs to the user
+    - Deletes flashcards associated ONLY with this specific material (via page_analyses)
+    - Deletes any stored Anki APKG files specific to this material
+    - Deletes the PDF file from Supabase Storage
+    - Deletes the material record from database (cascades handle page_analyses, slide_snippets)
+    
+    Args:
+        material_id: Material ID (UUID)
+        user_id: User ID (UUID) - required for authorization
+        
+    Returns:
+        Success response with status message
+        
+    Raises:
+        HTTPException: If material not found, access denied, or deletion fails
+    """
+    # Validate user exists
+    if not validate_user_exists(user_id):
+        raise HTTPException(
+            status_code=404,
+            detail="User not found. Please sign up first.",
+        )
+    
+    try:
+        delete_course_material(material_id, user_id)
+        return {"status": "success", "message": "Material deleted successfully"}
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error deleting material: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete material: {str(e)}"
         )
 
 

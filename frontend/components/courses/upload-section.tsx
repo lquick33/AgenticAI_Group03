@@ -16,12 +16,13 @@ import {
 interface UploadSectionProps {
   courseId: string
   userId: string
+  onUploadSuccess?: () => void
 }
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB
 const MAX_FILES = 20
 
-export function UploadSection({ courseId, userId }: UploadSectionProps) {
+export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSectionProps) {
   const [files, setFiles] = useState<FileUploadItem[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -124,6 +125,22 @@ export function UploadSection({ courseId, userId }: UploadSectionProps) {
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      
+      // Check backend connectivity before upload
+      try {
+        const healthController = new AbortController()
+        const healthTimeout = setTimeout(() => healthController.abort(), 5000) // 5 second timeout
+        
+        const healthResponse = await fetch(`${apiUrl}/health`, {
+          method: 'GET',
+          signal: healthController.signal,
+        })
+        
+        clearTimeout(healthTimeout)
+      } catch (healthError) {
+        throw new Error(`Backend server is not reachable at ${apiUrl}. Please ensure the backend is running.`)
+      }
+      
       const formData = new FormData()
       formData.append('file', fileItem.file)
       formData.append('user_id', userId)
@@ -167,6 +184,10 @@ export function UploadSection({ courseId, userId }: UploadSectionProps) {
         )
       )
 
+      // Call onUploadSuccess callback immediately after successful upload
+      // The material is already in the database at this point
+      onUploadSuccess?.()
+
       // Simulate processing progress
       const processingInterval = setInterval(() => {
         setUploadProgress((prev) => ({
@@ -191,8 +212,14 @@ export function UploadSection({ courseId, userId }: UploadSectionProps) {
         }))
       }, 2000)
     } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : 'Upload fehlgeschlagen'
+      let errorMessage = err instanceof Error ? err.message : 'Upload fehlgeschlagen'
+      
+      // Provide user-friendly error messages for common network issues
+      if (err instanceof TypeError && err.message.includes('fetch')) {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+        errorMessage = `Verbindung zum Server fehlgeschlagen. Bitte überprüfen Sie, ob der Backend-Server unter ${apiUrl} läuft.`
+      }
+      
       setFiles((prev) =>
         prev.map((f) =>
           f.id === fileItem.id
@@ -239,6 +266,7 @@ export function UploadSection({ courseId, userId }: UploadSectionProps) {
 
       if (allCompleted) {
         toast.success('Alle Dateien erfolgreich hochgeladen!')
+        // Refresh router for server-side state sync (non-blocking, since we already updated UI)
         setTimeout(() => {
           router.refresh()
         }, 2000)

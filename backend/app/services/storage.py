@@ -6,12 +6,15 @@ for course materials and page analyses.
 """
 
 import json
+import logging
 from typing import Optional, List
 
 from supabase import create_client, Client
 
 from app.core.config import settings
 from app.models.schemas import SlideAnalysis
+
+logger = logging.getLogger(__name__)
 
 
 # Initialize Supabase client (singleton)
@@ -589,6 +592,60 @@ def update_course_material_filename(
         raise Exception(f"Failed to update course material filename: {str(e)}")
 
 
+def get_course_material_filename(material_id: str, user_id: str) -> Optional[str]:
+    """
+    Get the current filename of a course material.
+    
+    Args:
+        material_id: Course material ID
+        user_id: User ID for authorization
+        
+    Returns:
+        Current filename or None if not found
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("course_materials").select("file_name").eq("id", material_id).eq("user_id", user_id).single().execute()
+        if response.data:
+            return response.data.get("file_name")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to get course material filename: {str(e)}")
+        return None
+
+
+def get_course_materials_for_naming(
+    course_id: str,
+    user_id: str,
+    exclude_material_id: Optional[str] = None
+) -> List[dict]:
+    """
+    Get existing course materials to detect naming patterns.
+    
+    Args:
+        course_id: Course ID
+        user_id: User ID for authorization
+        exclude_material_id: Material ID to exclude from results (the one being renamed)
+        
+    Returns:
+        List of material dicts with file_name field
+    """
+    client = get_supabase_client()
+    
+    try:
+        query = client.table("course_materials").select("id, file_name").eq("course_id", course_id).eq("user_id", user_id)
+        
+        if exclude_material_id:
+            query = query.neq("id", exclude_material_id)
+        
+        response = query.order("created_at", ascending=True).execute()
+        return response.data if response.data else []
+    except Exception as e:
+        logger.warning(f"Failed to get course materials for naming pattern: {str(e)}")
+        return []
+
+
 def get_course_material_summary(
     course_material_id: str,
     user_id: str
@@ -816,4 +873,201 @@ def get_flashcards_for_material(
         
     except Exception as e:
         raise Exception(f"Failed to get flashcards for material: {str(e)}")
+
+
+def delete_course_material(
+    material_id: str,
+    user_id: str
+) -> None:
+    """
+    Delete a course material and all associated data.
+    
+    This function:
+    1. Gets the material record to retrieve file_path
+    2. Deletes flashcards specific to this material (via page_analyses)
+    3. Deletes any stored Anki APKG files specific to this material
+    4. Deletes the PDF file from Supabase Storage
+    5. Deletes the material record from database (cascades handle page_analyses, slide_snippets)
+    
+    Args:
+        material_id: Course material ID (UUID)
+        user_id: User ID (UUID) for authorization
+        
+    Raises:
+        ValueError: If material not found or access denied
+        Exception: If deletion fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        # Get material record to retrieve file_path and validate ownership
+        material_response = (
+            client.table("course_materials")
+            .select("*")
+            .eq("id", material_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        
+        if not material_response.data:
+            raise ValueError("Course material not found or access denied")
+        
+        material = material_response.data
+        file_path = material.get("file_path")
+        
+        # 1. Delete flashcards specific to this material only
+        try:
+            # Get all page_analyses for this material
+            page_analyses = get_all_page_analyses_for_material(material_id, user_id)
+            page_analysis_ids = [pa.get("id") for pa in page_analyses if pa.get("id")]
+            
+            if page_analysis_ids:
+                # Get all flashcards linked to these page_analyses
+                flashcards_response = (
+                    client.table("flashcards")
+                    .select("id")
+                    .eq("user_id", user_id)
+                    .in_("source_page_analysis_id", page_analysis_ids)
+                    .execute()
+                )
+                
+                if flashcards_response.data:
+                    flashcard_ids = [fc.get("id") for fc in flashcards_response.data if fc.get("id")]
+                    if flashcard_ids:
+                        # Delete only flashcards linked to this material's page_analyses
+                        client.table("flashcards").delete().in_("id", flashcard_ids).execute()
+                        logger.info(f"✅ Deleted {len(flashcard_ids)} flashcards for material {material_id}")
+        except Exception as e:
+            logger.warning(f"Failed to delete flashcards for material {material_id}: {e}")
+            # Continue with deletion even if flashcard deletion fails
+        
+        # 2. Delete any stored Anki APKG files specific to this material
+        try:
+            # APKG files are typically generated on-the-fly, but check for any stored ones
+            # Common patterns: flashcards_{material_id}.apkg or paths containing material_id
+            # Since APKG files are usually generated on-demand, we'll try to find and delete
+            # any files that might match this material
+            
+            # List files in user's storage folder to find APKG files
+            user_folder = f"{user_id}/"
+            try:
+                # List files in the user's folder
+                files_response = client.storage.from_("course_materials").list(user_folder)
+                
+                if files_response:
+                    # Look for APKG files that might be associated with this material
+                    # Pattern: files containing material_id or matching flashcard naming
+                    apkg_files_to_delete = []
+                    for file_info in files_response:
+                        file_name = file_info.get("name", "")
+                        # Check if it's an APKG file and might be related to this material
+                        if file_name.endswith(".apkg") and (
+                            material_id in file_name or 
+                            f"flashcards_" in file_name.lower()
+                        ):
+                            # Construct full path
+                            apkg_path = f"{user_folder}{file_name}" if not file_name.startswith(user_folder) else file_name
+                            apkg_files_to_delete.append(apkg_path)
+                    
+                    if apkg_files_to_delete:
+                        client.storage.from_("course_materials").remove(apkg_files_to_delete)
+                        logger.info(f"✅ Deleted {len(apkg_files_to_delete)} APKG files for material {material_id}")
+            except Exception as e:
+                # If listing fails (e.g., folder doesn't exist), that's okay
+                logger.debug(f"No APKG files found or listing failed for material {material_id}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to delete APKG files for material {material_id}: {e}")
+            # Continue with deletion even if APKG deletion fails
+        
+        # 3. Delete the PDF file from Supabase Storage
+        if file_path:
+            try:
+                client.storage.from_("course_materials").remove([file_path])
+                logger.info(f"✅ Deleted PDF file from storage: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete PDF file from storage {file_path}: {e}")
+                # Continue with DB deletion even if storage deletion fails
+        
+        # 4. Delete material record from database
+        # This will cascade delete page_analyses and slide_snippets
+        delete_response = (
+            client.table("course_materials")
+            .delete()
+            .eq("id", material_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        
+        if not delete_response.data:
+            raise ValueError("Failed to delete material record from database")
+        
+        logger.info(f"✅ Successfully deleted course material {material_id}")
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting course material {material_id}: {str(e)}", exc_info=True)
+        raise Exception(f"Failed to delete course material: {str(e)}")
+
+
+def get_material_classification(
+    material_id: str,
+    user_id: str
+) -> Optional[dict]:
+    """
+    Get classification for a material.
+    
+    Args:
+        material_id: Course material ID
+        user_id: User ID
+        
+    Returns:
+        Dict with keys: classification, classification_confidence, 
+        classification_reasoning, classification_override
+        or None if not classified
+    """
+    client = get_supabase_client()
+    try:
+        response = client.table("course_materials").select(
+            "classification, classification_confidence, classification_reasoning, classification_override"
+        ).eq("id", material_id).eq("user_id", user_id).single().execute()
+        
+        if response.data and response.data.get("classification"):
+            return response.data
+        return None
+    except Exception as e:
+        logger.error(f"Error getting classification: {e}")
+        return None
+
+
+def update_material_classification(
+    material_id: str,
+    classification: str,
+    confidence: float,
+    reasoning: str,
+    override: bool = False
+) -> None:
+    """
+    Update classification for a material.
+    
+    Args:
+        material_id: Course material ID
+        classification: Classification category (must match enum)
+        confidence: Confidence score (0.0-1.0)
+        reasoning: LLM reasoning for classification
+        override: Whether this is a manual override
+    """
+    client = get_supabase_client()
+    try:
+        client.table("course_materials").update({
+            "classification": classification,
+            "classification_confidence": confidence,
+            "classification_reasoning": reasoning,
+            "classification_override": override
+        }).eq("id", material_id).execute()
+        logger.info(f"Updated classification for material {material_id}: {classification}")
+    except Exception as e:
+        logger.error(f"Error updating classification: {e}")
+        raise
 

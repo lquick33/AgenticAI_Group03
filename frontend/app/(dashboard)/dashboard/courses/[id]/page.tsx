@@ -1,8 +1,7 @@
 import { requireAuth } from '@/lib/auth'
 import { createClient } from '@/lib/supabase/server'
 import { DashboardSidebar } from '@/components/dashboard/sidebar'
-import { UploadSection } from '@/components/courses/upload-section'
-import { CourseMaterialsList } from '@/components/courses/course-materials-list'
+import { CourseMaterialsContainer } from '@/components/courses/course-materials-container'
 import { ExamDateEditor } from '@/components/courses/exam-date-editor'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
@@ -152,25 +151,12 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
                 <ExamDateEditor courseId={id} userId={user.id} initialDate={course.exam_date} />
               </div>
 
-              {/* Upload Section */}
-              <div className="px-4 lg:px-6">
-                <UploadSection courseId={id} userId={user.id} />
-              </div>
-
-              {/* Materials List */}
-              <div className="px-4 lg:px-6">
-                <div className="mb-4">
-                  <h2 className="text-lg font-semibold">Hochgeladene Materialien</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Übersicht aller hochgeladenen Vorlesungsmaterialien
-                  </p>
-                </div>
-                <CourseMaterialsList 
-                  materials={(materials || []) as CourseMaterial[]} 
-                  courseId={id}
-                  userId={user.id}
-                />
-              </div>
+              {/* Upload Section and Materials List */}
+              <CourseMaterialsContainer
+                courseId={id}
+                userId={user.id}
+                initialMaterials={(materials || []) as CourseMaterial[]}
+              />
             </div>
           </div>
         </div>

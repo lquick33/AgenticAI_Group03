@@ -145,6 +145,7 @@ ON slide_snippets(course_material_id, page_number, user_id);
 - **PDF Processing**: `pdf2image`, `pillow` - Convert PDF pages to images for multimodal analysis
 - **Database**: `supabase`, `psycopg2-binary` - Supabase client and PostgreSQL adapter
 - **Data Validation**: `pydantic`, `pydantic-settings` - Request/response validation and settings management
+- **Text-to-Speech**: `google-cloud-texttospeech>=2.16.0` - Google Cloud TTS API for audio generation (Chinese language learning)
 - **Utilities**: `python-dotenv`, `httpx`, `aiohttp` - Environment variables and async HTTP clients
 
 **Dependencies**: Requires Python 3.11+ and pip package manager
@@ -874,6 +875,7 @@ uvicorn app.main:app --reload
 - Environment variable loading from `.env` file
 - Required settings: `GOOGLE_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`
 - Optional settings: `OPENAI_API_KEY`, `APP_NAME`, `APP_VERSION`, `DEBUG`
+- TTS settings: `GOOGLE_CLOUD_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `TTS_LANGUAGE_CODE`, `TTS_VOICE_NAME`, `TTS_AUDIO_ENCODING`, `TTS_SPEAKING_RATE`
 - Singleton pattern with exported `settings` instance
 
 **Environment Variables**:
@@ -881,6 +883,12 @@ uvicorn app.main:app --reload
 - `OPENAI_API_KEY` - OpenAI API key (optional)
 - `SUPABASE_URL` - Supabase project URL (required)
 - `SUPABASE_KEY` - Supabase service role key (required)
+- `GOOGLE_CLOUD_PROJECT_ID` - Google Cloud project ID for TTS (optional)
+- `GOOGLE_APPLICATION_CREDENTIALS` - Path to Google Cloud service account JSON file for TTS (optional)
+- `TTS_LANGUAGE_CODE` - Default language code for TTS (default: "zh-CN")
+- `TTS_VOICE_NAME` - Default voice name for TTS (default: None, uses Google's default)
+- `TTS_AUDIO_ENCODING` - Audio encoding format (default: "MP3")
+- `TTS_SPEAKING_RATE` - Speaking rate 0.25-4.0 (default: 1.0)
 
 **Dependencies**: Requires `pydantic-settings` package
 
@@ -1923,6 +1931,137 @@ agent = TutorAgent(
 **Related Files**: 
 - `backend/app/services/storage.py` - Service function implementation
 - `backend/app/agents/tutor/tutor_agent.py` - Agent that uses this tool
+
+---
+
+### `backend/app/tools/tts_tool.py`
+
+**Purpose**: LangChain tool for converting text to speech using Google Cloud Text-to-Speech API. Primarily designed for Chinese language learning flashcards, but can be used for any text-to-speech conversion needs.
+
+**Key Components**:
+- `TextToSpeechInput(BaseModel)`: Pydantic input schema with:
+  - `text`: str - Text to convert to speech (required)
+  - `voice_name`: Optional[str] - Voice name (default: None, uses Google's default for language)
+  - `language_code`: Optional[str] - Language code (default: "zh-CN" from config)
+  - `speaking_rate`: Optional[float] - Speaking rate 0.25-4.0 (default: 1.0)
+- `TextToSpeechTool`: Tool class with:
+  - `_run()`: Synchronous execution that calls TTS service
+  - `_arun()`: Async wrapper for `_run()`
+  - `to_langchain_tool()`: Converts to LangChain StructuredTool
+
+**Key Features**:
+- **Google Cloud TTS Integration**: Uses Google Cloud Text-to-Speech API for high-quality audio generation
+- **Chinese Language Support**: Optimized for Chinese (Simplified) text with automatic character detection
+- **Flexible Voice Selection**: Can use specific voice names or let Google choose default voice for language
+- **Error Handling**: Returns error JSON instead of raising exceptions (graceful degradation)
+- **Base64 Audio Output**: Returns audio as base64-encoded MP3 in JSON response
+- **Automatic Fallback**: Falls back to default voice if specified voice doesn't exist
+
+**Tool Description**:
+- Clear description for LLM: "Konvertiert Text in Audio-Dateien (Text-to-Speech) mit Google Cloud TTS..."
+- Helps LLM understand when to use this tool (especially for language learning applications)
+
+**Dependencies**: 
+- `app.services.tts_service` - `generate_chinese_audio()`, `contains_chinese()` service functions
+- `google-cloud-texttospeech` - Google Cloud TTS client library
+- `langchain_core.tools` - StructuredTool
+- `pydantic` - Input validation
+
+**Configuration**:
+- Requires Google Cloud credentials (service account JSON or default credentials)
+- Configurable via `app.core.config`:
+  - `GOOGLE_APPLICATION_CREDENTIALS`: Path to service account JSON file
+  - `TTS_LANGUAGE_CODE`: Default language code (default: "zh-CN")
+  - `TTS_VOICE_NAME`: Optional default voice name (default: None)
+  - `TTS_SPEAKING_RATE`: Default speaking rate (default: 1.0)
+
+**Usage**: 
+```python
+from app.tools.tts_tool import TextToSpeechTool
+
+# Create tool instance
+tool = TextToSpeechTool()
+
+# Use directly
+result = tool._run(text="你好")
+# Returns JSON string with base64-encoded audio
+
+# Convert to LangChain tool for agent use
+langchain_tool = tool.to_langchain_tool()
+```
+
+**Related Files**: 
+- `backend/app/services/tts_service.py` - TTS service implementation with Google Cloud integration
+- `backend/app/core/config.py` - TTS configuration settings
+- `backend/requirements.txt` - Includes `google-cloud-texttospeech>=2.16.0`
+
+---
+
+### `backend/app/services/tts_service.py`
+
+**Purpose**: Service layer for Google Cloud Text-to-Speech functionality. Provides functions for generating audio files from text, primarily for Chinese language learning flashcards.
+
+**Key Functions**:
+- **`get_tts_client()`**: 
+  - Initializes and returns Google Cloud TTS client (singleton pattern)
+  - Supports service account credentials or default credentials
+  - Returns `None` if credentials not configured (graceful degradation)
+  
+- **`generate_chinese_audio(text, voice_name, language_code, speaking_rate)`**:
+  - Generates MP3 audio bytes from Chinese text
+  - Uses Google Cloud TTS API
+  - Automatically falls back to default voice if specified voice doesn't exist
+  - Returns `bytes` (MP3 audio) or `None` on error
+  
+- **`contains_chinese(text)`**:
+  - Detects if text contains Chinese characters (Unicode range U+4E00 to U+9FFF)
+  - Returns boolean
+  - Used to determine if TTS should be applied
+  
+- **`generate_flashcard_audio(character, sentence, user_id, card_id)`**:
+  - Generates audio for both character and sentence in a flashcard
+  - Returns dict with `character_audio` and `sentence_audio` keys
+  - Each value is `bytes` (MP3) or `None` if generation fails
+
+**Key Features**:
+- **Singleton Client**: TTS client is initialized once and reused
+- **Error Handling**: All functions return `None` on error instead of raising exceptions
+- **Flexible Voice Selection**: Works with or without specific voice names
+- **Chinese Text Detection**: Automatic detection of Chinese characters
+- **Logging**: Comprehensive logging for debugging and monitoring
+
+**Dependencies**: 
+- `google-cloud-texttospeech` - Google Cloud TTS client library
+- `google.oauth2.service_account` - Service account authentication
+- `app.core.config` - Configuration settings
+
+**Configuration Requirements**:
+- Google Cloud project with Text-to-Speech API enabled
+- Service account with Text-to-Speech API permissions, OR
+- Default credentials configured via `gcloud auth application-default login`
+
+**Usage**: 
+```python
+from app.services.tts_service import generate_chinese_audio, contains_chinese
+
+# Check if text contains Chinese
+if contains_chinese("你好"):
+    # Generate audio
+    audio_bytes = generate_chinese_audio("你好")
+    if audio_bytes:
+        # Save to file
+        with open("output.mp3", "wb") as f:
+            f.write(audio_bytes)
+```
+
+**Error Handling**:
+- Returns `None` on errors (doesn't raise exceptions)
+- Logs errors for debugging
+- Gracefully degrades if credentials not configured
+
+**Related Files**: 
+- `backend/app/tools/tts_tool.py` - Tool wrapper that uses this service
+- `backend/app/core/config.py` - TTS configuration
 
 ---
 
@@ -2971,22 +3110,39 @@ from app.services.session_storage import (
 
 ### `backend/app/agents/flashcards/flashcard_agent.py`
 
-**Purpose**: Agent for generating Anki-compatible flashcards from lecture materials and conversation history.
+**Purpose**: LangGraph-based agent for generating Anki-compatible flashcards from lecture materials and conversation history. Refactored to use LangGraph for state persistence and resumability.
 
 **Key Components**:
+- **FlashcardState Schema**: 
+  - Extends `MessagesState` from LangGraph
+  - Contains page processing data, progress tracking, results, and current page context
+  - Fields: `page_analyses`, `snippets_by_page`, `current_page_index`, `all_cards`, `processed_page_indices`, `skipped_page_indices`, etc.
 - **FlashcardGeneratorAgent Class**: 
+  - Extends `BaseAgent` (consistent with TutorAgent, QuizGeneratorAgent)
+  - Uses LangGraph for state management and execution flow
   - Processes page analyses and conversation messages to create educational flashcards
-  - Uses LLM with structured output (Pydantic models) for page filtering and card generation
   - Skips intro/title/table of contents pages automatically
-  - Generates 1-4 cards per page based on content complexity and conversation issues
+  - Generates 1-2 cards per page based on content complexity and conversation issues
+  - **State Persistence**: Uses checkpointer for automatic state saving after each node
+  - **Resumability**: Can resume failed tasks from last checkpoint using `thread_id`
   - **Langfuse Prompt Management**: Loads prompts dynamically from Langfuse with fallback to hardcoded versions
   - **Multiple Snippets Support**: Handles multiple visual snippets per page (up to MAX_SNIPPETS_PER_PAGE)
+- **Graph Nodes**:
+  - `initialize_node`: Loads all page analyses and snippets from database
+  - `process_page_node`: Sets up current page context
+  - `skip_decision_node`: LLM decides if page should be skipped
+  - `get_context_node`: Fetches conversation messages and snippet URL
+  - `generate_cards_node`: Generates flashcards for current page
+  - `update_progress_node`: Updates state and increments index
+  - `save_cards_node`: Saves flashcards to database if requested
+- **Conditional Routing**:
+  - `check_more_pages`: Routes to continue processing or finish
+  - `should_skip_routing`: Routes to skip or generate based on skip decision
 - **Methods**:
+  - `_build_graph()`: Builds LangGraph workflow with all nodes and edges
   - `_get_skip_decision_prompt()`: Loads skip-decision prompt from Langfuse or uses fallback
-  - `_get_card_generation_prompt()`: Loads card-generation prompt from Langfuse or uses fallback. Now accepts `snippet_image_urls: List[str]` for multiple images
-  - `_should_skip_page()`: Determines if a page should be skipped using LLM decision
-  - `_generate_cards_for_page()`: Generates flashcards for a single page with conversation context. Now accepts `snippet_image_urls: List[str]` and sends all images as vision inputs to Gemini
-  - `generate_flashcards()`: Main entry point that processes all pages and returns card list. Groups snippets by page into lists instead of single dict
+  - `_get_card_generation_prompt()`: Loads card-generation prompt from Langfuse or uses fallback (supports multiple snippet images in graph nodes)
+  - `generate_flashcards()`: Main entry point that invokes graph and returns card list. Graph loads snippets per page and passes them to generate_cards_node.
 - **LLM Integration**: Uses Gemini model with structured output for consistent JSON responses
 - **Vision Input**: When snippets exist for a page, all snippet images are sent to Gemini as vision inputs (up to MAX_SNIPPETS_PER_PAGE per page)
 - **Conversation Context**: Analyzes user questions and assistant responses to identify understanding problems
@@ -2995,6 +3151,10 @@ from app.services.session_storage import (
   - Prompts use variables ({{summary}}, {{key_terms}}, {{snippet_image_url}}, etc.) that are compiled at runtime
   - Automatic fallback to hardcoded prompts if Langfuse is unavailable or prompts cannot be loaded
   - Prompts can be updated in Langfuse UI without code changes
+- **Observability**:
+  - Graph-level tracing: `flashcard-generator-agent/graph-execution` span in Langfuse
+  - Node-level metadata for each processing step
+  - LLM call tracking with operation type (`skip_decision`, `card_generation`)
 
 **Multi-Snippet Flow**:
 1. `generate_flashcards()` calls `get_snippets_for_material()` to get all snippets
@@ -3010,24 +3170,49 @@ from app.services.session_storage import (
 6. Agent analyzes all images and decides which to include in which flashcards
 
 **Dependencies**: 
+- `app.agents.base` - BaseAgent abstract base class
 - `app.models.schemas` - PageSkipDecision, FlashcardGenerationResult, Flashcard models
-- `app.services.storage` - get_all_page_analyses_for_material, get_messages_for_page
+- `app.services.storage` - get_all_page_analyses_for_material, get_messages_for_page, save_flashcards
 - `app.services.snippet_service` - get_snippets_for_material, get_snippet_public_url
 - `app.services.analyzer` - get_gemini_model
-- `app.services.observability` - get_langfuse_client (for prompt management)
+- `app.services.observability` - get_langfuse_client, create_callback_handler (for prompt management)
 - `app.core.config` - settings.MAX_SNIPPETS_PER_PAGE
+- `langgraph` - StateGraph, MessagesState, START, END
+- `langgraph.checkpoint` - BaseCheckpointSaver (MemorySaver for development)
 
 **Usage**: 
 ```python
 from app.agents.flashcards import FlashcardGeneratorAgent
+from langgraph.checkpoint.memory import MemorySaver
 
-agent = FlashcardGeneratorAgent()
+# Create agent with checkpointer for state persistence
+checkpointer = MemorySaver()
+agent = FlashcardGeneratorAgent(checkpointer=checkpointer)
+
+# Generate flashcards (backward compatible API)
 cards = agent.generate_flashcards(
     course_material_id="...",
     user_id="...",
     course_id="...",
     save_to_db=False
 )
+
+# With resumability support
+cards = agent.generate_flashcards(
+    course_material_id="...",
+    user_id="...",
+    course_id="...",
+    save_to_db=False,
+    thread_id="unique-task-id"  # For resumability
+)
+```
+
+**Graph Flow**:
+```
+START → initialize → check_more_pages → process_page → skip_decision
+                                                      ├─→ skip: update_progress → check_more_pages (loop)
+                                                      └─→ generate: get_context → generate_cards → update_progress → check_more_pages (loop)
+                                                                                                                      └─→ done: save_cards → END
 ```
 
 **Related Files**: 
