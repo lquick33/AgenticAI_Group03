@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { BookOpen, Download, Loader2, MoreVertical, Play, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,9 +48,10 @@ interface CourseMaterialsListProps {
   courseId: string
   userId: string
   onMaterialDeleted?: () => void
+  materialProgress?: Record<string, { progress: number; stage: string; stageMessage: string }>
 }
 
-export function CourseMaterialsList({ materials, courseId, userId, onMaterialDeleted }: CourseMaterialsListProps) {
+export function CourseMaterialsList({ materials, courseId, userId, onMaterialDeleted, materialProgress = {} }: CourseMaterialsListProps) {
   const [localMaterials, setLocalMaterials] = useState<CourseMaterial[]>(materials)
   const [flashcardsStatus, setFlashcardsStatus] = useState<Record<string, boolean>>({})
   const [loadingFlashcards, setLoadingFlashcards] = useState<Record<string, boolean>>({})
@@ -341,12 +343,32 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     setShowConfirmDialog(true)
   }
 
-  const getStatusBadge = (status: CourseMaterial['processing_status']) => {
+  const getStatusBadge = (material: CourseMaterial) => {
+    const status = material.processing_status
+    const progress = materialProgress[material.id]
+    
     switch (status) {
       case 'uploading':
-        return <Badge variant="outline">Wird hochgeladen</Badge>
+        return (
+          <div className="space-y-1">
+            <Badge variant="outline">Wird hochgeladen</Badge>
+            {progress && (
+              <>
+                <Progress value={progress.progress} className="h-1.5 w-24" />
+                <p className="text-xs text-muted-foreground">{progress.progress}%</p>
+              </>
+            )}
+          </div>
+        )
       case 'processing':
-        return <Badge variant="secondary">Wird verarbeitet</Badge>
+        return (
+          <div className="space-y-1 min-w-[120px]">
+            <Badge variant="secondary">Wird verarbeitet</Badge>
+            {progress && (
+              <Progress value={progress.progress} className="h-1.5" />
+            )}
+          </div>
+        )
       case 'completed':
         return <Badge variant="default">Abgeschlossen</Badge>
       case 'error':
@@ -462,7 +484,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
                   />
                 </TableCell>
                 <TableCell>{material.page_count}</TableCell>
-                <TableCell>{getStatusBadge(material.processing_status)}</TableCell>
+                <TableCell>{getStatusBadge(material)}</TableCell>
                 <TableCell className="text-muted-foreground">
                   {formatDate(material.created_at)}
                 </TableCell>

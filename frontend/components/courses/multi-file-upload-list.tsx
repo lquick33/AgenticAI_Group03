@@ -29,6 +29,9 @@ export interface FileUploadItem {
   file: File
   status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error'
   progress?: number
+  processingProgress?: number
+  processingStage?: string
+  processingStageMessage?: string
   errorMessage?: string
   materialId?: string
   order: number
@@ -161,11 +164,19 @@ function SortableFileItem({
         </div>
         {/* Progress Bar */}
         {(item.status === 'uploading' || item.status === 'processing') && (
-          <div className="mt-2">
+          <div className="mt-2 space-y-1">
             <Progress
-              value={item.progress || 0}
+              value={item.processingProgress !== undefined ? item.processingProgress : (item.progress || 0)}
               className="h-1.5"
             />
+            {item.processingProgress !== undefined && (
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>{item.processingProgress}%</span>
+                {item.processingStageMessage && (
+                  <span className="truncate ml-2">{item.processingStageMessage}</span>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
