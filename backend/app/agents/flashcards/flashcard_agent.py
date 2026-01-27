@@ -638,6 +638,7 @@ Respond with a JSON object matching this structure:
         
         # Get prompt from Langfuse
         try:
+            url = state.get("current_snippet_url")
             prompt = self._get_card_generation_prompt(
                 summary=summary,
                 key_terms=key_terms,
@@ -647,7 +648,7 @@ Respond with a JSON object matching this structure:
                 course_id=state.get("course_id", ""),
                 material_id=state.get("course_material_id", ""),
                 page_number=page_number,
-                snippet_image_url=state.get("current_snippet_url")
+                snippet_image_urls=[url] if url else None,
             )
         except Exception as e:
             logger.error(f"Failed to get card generation prompt: {e}")
@@ -983,7 +984,11 @@ Respond with a JSON object matching this structure:
             if task_id:
                 thread_id = f"flashcard-task-{task_id}"
         
-        config = {"configurable": {"thread_id": thread_id}}
+        # Recursion limit: 10 * page count so large PDFs don't hit default 25
+        page_analyses_pre = get_all_page_analyses_for_material(course_material_id, user_id)
+        total_pages_pre = len(page_analyses_pre) if page_analyses_pre else 0
+        recursion_limit = 10 * max(1, total_pages_pre)
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": recursion_limit}
         
         # Add Langfuse tracing for graph execution
         langfuse_client = get_langfuse_client()
@@ -1112,7 +1117,11 @@ Respond with a JSON object matching this structure:
             if task_id:
                 thread_id = f"flashcard-task-{task_id}"
         
-        config = {"configurable": {"thread_id": thread_id}}
+        # Recursion limit: 10 * page count so large PDFs don't hit default 25
+        page_analyses_pre = get_all_page_analyses_for_material(course_material_id, user_id)
+        total_pages_pre = len(page_analyses_pre) if page_analyses_pre else 0
+        recursion_limit = 10 * max(1, total_pages_pre)
+        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": recursion_limit}
         
         # Add Langfuse tracing for graph execution
         langfuse_client = get_langfuse_client()

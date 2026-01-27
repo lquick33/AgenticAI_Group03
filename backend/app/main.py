@@ -28,6 +28,12 @@ logging.getLogger("python_multipart").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
 
+# Reduce noise from hpack (HTTP/2, used by Supabase/httpx)
+logging.getLogger("hpack").setLevel(logging.WARNING)
+
+# Reduce noise from httpcore (used by httpx/Supabase: http2 + http11)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # Initialize FastAPI app
 app = FastAPI(
     title=settings.APP_NAME,
