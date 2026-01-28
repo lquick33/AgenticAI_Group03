@@ -150,8 +150,13 @@ class FlashcardGenerationResult(BaseModel):
 class MaterialClassification(BaseModel):
     """Structured output for material classification."""
     
-    category: Literal['language_learning', 'math', 'business_administration', 'general'] = Field(
-        description="Classification category"
+    category: str = Field(
+        description=(
+            "Classification category (e.g., 'language_learning', 'math', "
+            "'business_administration', 'computer_science', 'general')"
+        ),
+        min_length=1,
+        max_length=64,
     )
     confidence: float = Field(
         ge=0.0, 

@@ -275,7 +275,12 @@ class FlashcardGeneratorAgent(BaseAgent):
                 override=False
             )
             
-            logger.info(f"Classified material {material_id} as: {classification_result['category']}")
+            logger.info(
+                "Classified material %s as '%s' (confidence=%.3f)",
+                material_id,
+                classification_result["category"],
+                classification_result["confidence"],
+            )
             
             return {
                 **state,
@@ -650,7 +655,12 @@ Respond with a JSON object matching this structure:
         # Get prompt from Langfuse
         try:
             url = state.get("current_snippet_url")
-            classification = state.get("classification", "general")  # Get from state
+            classification = state.get("classification") or "general"  # Safe fallback
+            logger.info(
+                "Using classification '%s' for card generation on page %s",
+                classification,
+                page_number,
+            )
             
             # #region agent log
             # try:
@@ -982,6 +992,7 @@ Respond with a JSON object matching this structure:
         
         try:
             prompt_name = f"flashcard-agent/card-generation-{classification}"
+            logger.info("Loading flashcard prompt '%s' from Langfuse", prompt_name)
             langfuse_prompt = self.langfuse_client.get_prompt(
                 prompt_name,
                 label="production"

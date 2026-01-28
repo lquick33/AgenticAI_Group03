@@ -22,6 +22,7 @@ Analyze the following lecture material and classify it into one of these categor
 - language_learning: Materials focused on vocabulary, grammar, translations, language practice, verb conjugations, pronunciation guides, language-specific terminology
 - math: Materials with formulas, equations, proofs, mathematical concepts, derivatives, integrals, theorems, mathematical notation, problem sets
 - business_administration: Materials covering business models, case studies, management concepts, strategy, marketing, financial terms, organizational behavior
+- computer_science: Materials covering algorithms, data structures, programming, software engineering, operating systems, databases, computer architecture, networking, theoretical computer science
 - general: General educational materials without specific domain focus, mixed content, or content that doesn't clearly fit the above categories
 
 **Material Content:**
@@ -44,7 +45,7 @@ Key Terms: {{key_terms}}
 **Output Format:**
 You must respond with a valid JSON object matching this exact structure:
 {
-  "category": "one of: language_learning, math, business_administration, or general",
+  "category": "one of: language_learning, math, business_administration, computer_science, or general",
   "confidence": 0.0-1.0,
   "reasoning": "brief explanation (1-2 sentences)"
 }
