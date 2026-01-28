@@ -962,7 +962,31 @@ async def initiate_chat(
                     """
                     if not messages:
                         return messages
-                    
+
+                    def _ep_summarize(msgs: list, up_to: int = 20) -> list:
+                        out = []
+                        for idx, m in enumerate(msgs[:up_to]):
+                            t = type(m).__name__
+                            if isinstance(m, ToolMessage):
+                                tid = getattr(m, "tool_call_id", None)
+                                out.append({"i": idx, "type": t, "tool_call_id": repr(tid)})
+                            elif isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+                                ids = [
+                                    (tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None))
+                                    for tc in m.tool_calls
+                                ]
+                                out.append({"i": idx, "type": t, "tool_call_ids": [repr(x) for x in ids]})
+                            else:
+                                out.append({"i": idx, "type": t})
+                        if len(msgs) > up_to:
+                            out.append({"_truncated": len(msgs) - up_to})
+                        return out
+
+                    logger.info(
+                        "endpoints.fix_incomplete_tool_calls INPUT: count=%d, summary=%s",
+                        len(messages),
+                        _ep_summarize(messages),
+                    )
                     fixed_messages = []
                     i = 0
                     
@@ -999,21 +1023,40 @@ async def initiate_chat(
                                 i = j  # Skip past the ToolMessages
                             else:
                                 # Incomplete tool call pair - remove the AIMessage
+                                tool_msg_ids = [repr(getattr(tm, "tool_call_id", None)) for tm in found_tool_messages]
                                 logger.warning(
-                                    f"Incomplete tool call pair detected at index {i}: AIMessage has {len(tool_call_ids)} tool_calls, "
-                                    f"but only {len(found_tool_messages)} ToolMessages found. Removing incomplete AIMessage to prevent API error."
+                                    "endpoints: Incomplete tool call pair at index %d: AIMessage tool_call_ids=%s (%d calls), "
+                                    "found ToolMessages=%d with tool_call_ids=%s. ID-match=%s, count-match=%s. Removing AIMessage.",
+                                    i,
+                                    [repr(x) for x in tool_call_ids],
+                                    len(tool_call_ids),
+                                    len(found_tool_messages),
+                                    tool_msg_ids,
+                                    found_tool_call_ids == tool_call_ids,
+                                    len(found_tool_messages) == len(tool_call_ids),
                                 )
                                 i += 1  # Skip the incomplete AIMessage
                         elif isinstance(msg, ToolMessage):
                             # Orphaned ToolMessage (no preceding AIMessage with tool_calls)
                             # Remove it to prevent API errors
-                            logger.warning(f"Orphaned ToolMessage detected at index {i}, removing to prevent API error.")
+                            orphan_tid = getattr(msg, "tool_call_id", None)
+                            prev_types = [type(m).__name__ for m in messages[:i]]
+                            logger.warning(
+                                "endpoints: Orphaned ToolMessage at index %d: tool_call_id=%s (type=%s), prev_messages_types=%s. Removing.",
+                                i, orphan_tid, type(orphan_tid).__name__, prev_types,
+                            )
                             i += 1
                         else:
                             # Regular message (HumanMessage, AIMessage without tool_calls, SystemMessage)
                             fixed_messages.append(msg)
                             i += 1
-                    
+
+                    if len(fixed_messages) != len(messages):
+                        logger.info(
+                            "endpoints.fix_incomplete_tool_calls OUTPUT: removed %d message(s), fixed count=%d",
+                            len(messages) - len(fixed_messages),
+                            len(fixed_messages),
+                        )
                     return fixed_messages
 
                 def has_pending_quiz_creation(material_id: str, user_id: str) -> bool:

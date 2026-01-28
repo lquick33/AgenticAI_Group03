@@ -491,6 +491,31 @@ class TutorAgent(BaseAgent):
         if not messages:
             return messages
         
+        # Ausführliches Logging: Kurzfassung der Eingabe (Typ + tool_call_id wo relevant)
+        def _summarize(msgs: list, up_to: int = 20) -> list:
+            out = []
+            for idx, m in enumerate(msgs[:up_to]):
+                t = type(m).__name__
+                if isinstance(m, ToolMessage):
+                    tid = getattr(m, "tool_call_id", None)
+                    out.append({"i": idx, "type": t, "tool_call_id": repr(tid)})
+                elif isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+                    ids = [
+                        (tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None))
+                        for tc in m.tool_calls
+                    ]
+                    out.append({"i": idx, "type": t, "tool_call_ids": [repr(x) for x in ids]})
+                else:
+                    out.append({"i": idx, "type": t})
+            if len(msgs) > up_to:
+                out.append({"_truncated": len(msgs) - up_to})
+            return out
+
+        logger.info(
+            "tutor._fix_incomplete_tool_calls INPUT: count=%d, summary=%s",
+            len(messages),
+            _summarize(messages),
+        )
         fixed_messages = []
         i = 0
         
@@ -527,9 +552,11 @@ class TutorAgent(BaseAgent):
                 
                 if not is_valid_previous:
                     # Invalid: AIMessage with tool_calls not after HumanMessage or ToolMessage
+                    prev_type = type(messages[i - 1]).__name__ if i > 0 else "none"
                     logger.warning(
-                        f"Invalid message order at index {i}: AIMessage with tool_calls must come immediately "
-                        f"after HumanMessage or ToolMessage. Removing to prevent API error."
+                        "Invalid message order at index %d: AIMessage with tool_calls must come immediately "
+                        "after HumanMessage or ToolMessage. prev_msg_type=%s, messages_before=%s. Removing to prevent API error.",
+                        i, prev_type, _summarize(messages[:i], up_to=5),
                     )
                     i += 1
                     continue
@@ -562,21 +589,40 @@ class TutorAgent(BaseAgent):
                     i = j  # Skip past the ToolMessages
                 else:
                     # Incomplete tool call pair - remove the AIMessage
+                    tool_msg_ids = [repr(getattr(tm, "tool_call_id", None)) for tm in found_tool_messages]
                     logger.warning(
-                        f"Incomplete tool call pair detected at index {i}: AIMessage has {len(tool_call_ids)} tool_calls, "
-                        f"but only {len(found_tool_messages)} ToolMessages found. Removing incomplete AIMessage to prevent API error."
+                        "Incomplete tool call pair at index %d: AIMessage tool_call_ids=%s (%d calls), "
+                        "found ToolMessages=%d with tool_call_ids=%s. ID-match=%s, count-match=%s. Removing AIMessage.",
+                        i,
+                        [repr(x) for x in tool_call_ids],
+                        len(tool_call_ids),
+                        len(found_tool_messages),
+                        tool_msg_ids,
+                        found_tool_call_ids == tool_call_ids,
+                        len(found_tool_messages) == len(tool_call_ids),
                     )
                     i += 1  # Skip the incomplete AIMessage
             elif isinstance(msg, ToolMessage):
                 # Orphaned ToolMessage (no preceding AIMessage with tool_calls)
                 # Remove it to prevent API errors
-                logger.warning(f"Orphaned ToolMessage detected at index {i}, removing to prevent API error.")
+                orphan_tid = getattr(msg, "tool_call_id", None)
+                prev_types = [type(m).__name__ for m in messages[:i]]
+                logger.warning(
+                    "Orphaned ToolMessage at index %d: tool_call_id=%s (type=%s), prev_messages_types=%s. Removing to prevent API error.",
+                    i, orphan_tid, type(orphan_tid).__name__, prev_types,
+                )
                 i += 1
             else:
                 # Regular message (HumanMessage, AIMessage without tool_calls)
                 fixed_messages.append(msg)
                 i += 1
         
+        if len(fixed_messages) != len(messages):
+            logger.info(
+                "tutor._fix_incomplete_tool_calls OUTPUT: removed %d message(s), fixed count=%d",
+                len(messages) - len(fixed_messages),
+                len(fixed_messages),
+            )
         return fixed_messages
     
     def call_model(self, state: TutorState) -> TutorState:
@@ -604,6 +650,13 @@ class TutorAgent(BaseAgent):
             # Einfache Strategie: Nehmen wir die letzten N Messages
             # Wenn das erste Message ein AIMessage mit tool_calls ist, prüfen wir ob es vollständig ist
             trimmed_messages = non_system_messages[-self.MAX_HISTORY_MESSAGES:]
+            logger.info(
+                "tutor call_model TRUNCATION: non_system count=%d, max=%d, trimmed_count=%d, first_types=%s",
+                len(non_system_messages),
+                self.MAX_HISTORY_MESSAGES,
+                len(trimmed_messages),
+                [type(m).__name__ for m in trimmed_messages[:5]],
+            )
             
             # Prüfe ob das erste Message ein AIMessage mit tool_calls ist
             if trimmed_messages and hasattr(trimmed_messages[0], "tool_calls") and trimmed_messages[0].tool_calls:
@@ -618,15 +671,25 @@ class TutorAgent(BaseAgent):
                 # Prüfe ob alle zugehörigen ToolMessages in trimmed_messages vorhanden sind
                 # ToolMessages kommen normalerweise direkt nach dem AIMessage
                 found_tool_messages = set()
+                tool_msg_ids_seen = []
                 for msg in trimmed_messages[1:]:
                     if isinstance(msg, ToolMessage):
                         tool_call_id = getattr(msg, "tool_call_id", None)
+                        tool_msg_ids_seen.append((repr(tool_call_id), type(tool_call_id).__name__))
                         if tool_call_id in tool_call_ids:
                             found_tool_messages.add(tool_call_id)
                 
                 # Wenn nicht alle ToolMessages vorhanden sind, entferne das AIMessage
                 # (besser ein Message weniger als ein Fehler)
                 if found_tool_messages != tool_call_ids:
+                    logger.warning(
+                        "tutor call_model TRUNCATION: dropping first AIMessage (incomplete pair). "
+                        "AIMessage tool_call_ids=%s, found_tool_call_ids=%s, "
+                        "ToolMessages in trimmed[1:] had tool_call_ids=%s",
+                        [repr(x) for x in tool_call_ids],
+                        [repr(x) for x in found_tool_messages],
+                        tool_msg_ids_seen[:10],
+                    )
                     trimmed_messages = trimmed_messages[1:]
                     # Optional: Versuche noch ein Message mehr zu nehmen, wenn möglich
                     if len(non_system_messages) > len(trimmed_messages):
