@@ -16,7 +16,16 @@ services:
     volumes:
       # Use named volume so Docker initializes from container's /data
       - anki-data:/data
+      # Persist Qt/Anki config (sync credentials may be stored here)
+      - anki-config:/root/.config
+      # Custom startup script that forwards SIGTERM to Anki for graceful shutdown
+      - ./anki-startup.sh:/startup.sh:ro
     restart: unless-stopped
+    # Give Anki time to save state before killing
+    stop_grace_period: 30s
+    # Use SIGTERM for graceful shutdown
+    stop_signal: SIGTERM
 
 volumes:
   anki-data:
+  anki-config:
