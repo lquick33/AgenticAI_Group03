@@ -7,7 +7,7 @@ for course materials and page analyses.
 
 import json
 import logging
-from typing import Optional, List
+from typing import Dict, Optional, List
 
 from supabase import create_client, Client
 
@@ -763,6 +763,87 @@ def get_messages_for_page(
         return filtered_messages
     except Exception as e:
         raise Exception(f"Failed to get messages for page: {str(e)}")
+
+
+def get_messages_for_pages_batch(
+    page_ids: List[str],
+    user_id: str
+) -> Dict[str, List[dict]]:
+    """
+    Batch fetch messages for multiple pages in a single query.
+    
+    Performance optimization: Replaces N+1 queries with 2 queries total.
+    Used during flashcard generation to prefetch all messages upfront.
+    
+    Args:
+        page_ids: List of page analysis IDs (UUIDs)
+        user_id: User ID for authorization (RLS)
+        
+    Returns:
+        Dict mapping page_id -> list of message dicts
+        Messages are ordered chronologically (oldest first) within each page
+        
+    Raises:
+        Exception: If database operation fails
+    """
+    if not page_ids:
+        return {}
+    
+    client = get_supabase_client()
+    
+    try:
+        # Query all messages for the given page IDs in a single query
+        response = (
+            client.table("messages")
+            .select("id, role, content, created_at, context_page_id, conversation_id")
+            .in_("context_page_id", page_ids)
+            .execute()
+        )
+        
+        if not response.data:
+            return {}
+        
+        # Get all unique conversation IDs
+        conversation_ids = list(set(
+            msg.get("conversation_id") for msg in response.data 
+            if msg.get("conversation_id")
+        ))
+        
+        if not conversation_ids:
+            return {}
+        
+        # Validate ownership for all conversations in a single query
+        conv_response = (
+            client.table("conversations")
+            .select("id")
+            .in_("id", conversation_ids)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        
+        valid_conversation_ids = {conv["id"] for conv in (conv_response.data or [])}
+        
+        # Group messages by page_id, filtering for valid conversations
+        messages_by_page: Dict[str, List[dict]] = {}
+        
+        for msg in response.data:
+            if msg.get("conversation_id") not in valid_conversation_ids:
+                continue
+            
+            page_id = msg.get("context_page_id")
+            if page_id:
+                if page_id not in messages_by_page:
+                    messages_by_page[page_id] = []
+                messages_by_page[page_id].append(msg)
+        
+        # Sort messages within each page by created_at (oldest first)
+        for page_id in messages_by_page:
+            messages_by_page[page_id].sort(key=lambda x: x.get("created_at", ""))
+        
+        return messages_by_page
+    
+    except Exception as e:
+        raise Exception(f"Failed to batch fetch messages for pages: {str(e)}")
 
 
 def save_flashcards(
