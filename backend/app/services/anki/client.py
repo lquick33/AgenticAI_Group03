@@ -861,6 +861,9 @@ class AnkiClient:
         Returns:
             Note ID
         """
+        # Ensure deck exists (AnkiConnect requires deck to exist before adding notes)
+        self.create_deck(deck)
+        
         return self._request("addNote", {
             "note": {
                 "deckName": deck,
@@ -893,6 +896,17 @@ class AnkiClient:
         Returns:
             List of note IDs (None for failed additions)
         """
+        # Collect all unique deck names and ensure they exist
+        # (AnkiConnect requires deck to exist before adding notes)
+        deck_names = set()
+        for note in notes:
+            deck_name = note.get("deck", deck)
+            if deck_name:
+                deck_names.add(deck_name)
+        
+        for deck_name in deck_names:
+            self.create_deck(deck_name)
+        
         formatted_notes = []
         for note in notes:
             formatted_notes.append({
@@ -927,6 +941,9 @@ class AnkiClient:
         Returns:
             Note ID
         """
+        # Ensure deck exists (AnkiConnect requires deck to exist before adding notes)
+        self.create_deck(deck)
+        
         return self._request("addNote", {
             "note": {
                 "deckName": deck,
