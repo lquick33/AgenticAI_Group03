@@ -268,6 +268,7 @@ export interface FlashcardTaskStatus {
   cards_generated: number
   error_message?: string
   filename?: string
+  anki_synced?: boolean
   created_at: number
   completed_at?: number
 }
@@ -277,9 +278,15 @@ export interface FlashcardTaskStatus {
  */
 export async function generateFlashcards(
   materialId: string,
-  userId: string
+  userId: string,
+  deduplicateCourse: boolean = false
 ): Promise<{ task_id: string; status: string; message: string }> {
-  const url = `${API_URL}/api/flashcards/generate?course_material_id=${encodeURIComponent(materialId)}&user_id=${encodeURIComponent(userId)}`
+  const params = new URLSearchParams({
+    course_material_id: materialId,
+    user_id: userId,
+    deduplicate_course: String(deduplicateCourse),
+  })
+  const url = `${API_URL}/api/flashcards/generate?${params.toString()}`
   
   const response = await fetch(url, {
     method: 'POST',

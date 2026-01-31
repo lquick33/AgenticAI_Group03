@@ -2,6 +2,7 @@ import { requireAuth } from '@/lib/auth'
 import { createClient } from '@/lib/supabase/server'
 import { DashboardSidebar } from '@/components/dashboard/sidebar'
 import { CourseMaterialsContainer } from '@/components/courses/course-materials-container'
+import { CourseSettings } from '@/components/courses/course-settings'
 import { ExamDateEditor } from '@/components/courses/exam-date-editor'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
@@ -120,10 +121,19 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
               <div className="px-4 lg:px-6 grid gap-4">
                 <Card>
                   <CardHeader>
-                    <CardTitle>{course.title}</CardTitle>
-                    <CardDescription>
-                      {course.description || 'Keine Beschreibung'}
-                    </CardDescription>
+                    <div className="flex items-start justify-between">
+                      <div className="space-y-1">
+                        <CardTitle>{course.title}</CardTitle>
+                        <CardDescription>
+                          {course.description || 'Keine Beschreibung'}
+                        </CardDescription>
+                      </div>
+                      <CourseSettings
+                        courseId={id}
+                        userId={user.id}
+                        initialDeduplicateFlashcards={course.deduplicate_flashcards ?? false}
+                      />
+                    </div>
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -156,6 +166,7 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
                 courseId={id}
                 userId={user.id}
                 initialMaterials={(materials || []) as CourseMaterial[]}
+                deduplicateFlashcards={course.deduplicate_flashcards ?? false}
               />
             </div>
           </div>

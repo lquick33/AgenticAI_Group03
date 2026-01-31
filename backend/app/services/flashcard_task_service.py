@@ -93,6 +93,7 @@ class FlashcardTask:
         self.error_message: Optional[str] = None
         self.apkg_bytes: Optional[bytes] = None
         self.filename: Optional[str] = None
+        self.anki_synced: bool = False
         self.created_at = time.time()
         self.completed_at: Optional[float] = None
         self._cancelled = False
@@ -108,6 +109,7 @@ class FlashcardTask:
             "cards_generated": self.cards_generated,
             "error_message": self.error_message,
             "filename": self.filename,
+            "anki_synced": self.anki_synced,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
         }
@@ -277,7 +279,7 @@ class FlashcardTaskService:
                     # Don't let callback errors crash the generation
                     logger.warning(f"Error updating task progress in callback: {e}")
             
-            cards = await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 agent.generate_flashcards_with_progress,
                 course_material_id=task.course_material_id,
                 user_id=task.user_id,
@@ -294,6 +296,10 @@ class FlashcardTaskService:
                 task.status = TaskStatus.CANCELLED
                 task.completed_at = time.time()
                 return
+            
+            # Extract cards and anki_synced from result
+            cards = result.get("cards", []) if isinstance(result, dict) else result
+            task.anki_synced = result.get("anki_synced", False) if isinstance(result, dict) else False
             
             if not cards:
                 task.status = TaskStatus.FAILED

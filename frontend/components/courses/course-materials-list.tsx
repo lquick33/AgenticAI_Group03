@@ -49,9 +49,10 @@ interface CourseMaterialsListProps {
   userId: string
   onMaterialDeleted?: () => void
   materialProgress?: Record<string, { progress: number; stage: string; stageMessage: string }>
+  deduplicateFlashcards?: boolean
 }
 
-export function CourseMaterialsList({ materials, courseId, userId, onMaterialDeleted, materialProgress = {} }: CourseMaterialsListProps) {
+export function CourseMaterialsList({ materials, courseId, userId, onMaterialDeleted, materialProgress = {}, deduplicateFlashcards = false }: CourseMaterialsListProps) {
   const [localMaterials, setLocalMaterials] = useState<CourseMaterial[]>(materials)
   const [flashcardsStatus, setFlashcardsStatus] = useState<Record<string, boolean>>({})
   const [loadingFlashcards, setLoadingFlashcards] = useState<Record<string, boolean>>({})
@@ -109,7 +110,17 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
   }
 
   const handleDownloadAfterGeneration = useCallback(async (materialId: string, status: FlashcardTaskStatus) => {
-    // Use task_id from status, or get from state
+    // If Anki sync succeeded, just show success and don't prompt download
+    if (status.anki_synced) {
+      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
+      setFlashcardsStatus(prev => ({ ...prev, [materialId]: true }))
+      toast.success('Karteikarten mit Anki synchronisiert', {
+        description: `${status.cards_generated} Karteikarten wurden erfolgreich generiert und mit AnkiWeb synchronisiert.`,
+      })
+      return
+    }
+
+    // Anki sync failed or not connected - offer download
     const taskId = status.task_id
     
     if (!taskId) {
@@ -262,7 +273,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     setMaterialIdForGeneration(null)
 
     try {
-      const { task_id } = await generateFlashcards(materialId, userId)
+      const { task_id } = await generateFlashcards(materialId, userId, deduplicateFlashcards)
       setTaskIds(prev => ({ ...prev, [materialId]: task_id }))
       
       // Start polling for status

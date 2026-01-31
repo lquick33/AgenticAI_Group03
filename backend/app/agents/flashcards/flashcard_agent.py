@@ -78,6 +78,9 @@ class FlashcardState(MessagesState):
     existing_anki_fronts: List[str] = []  # Card fronts from Anki (for dedup)
     parent_deck_name: Optional[str] = None  # Course deck (e.g., "Marketing 101")
     target_deck_name: Optional[str] = None  # Full deck (e.g., "Marketing 101::Lecture 3")
+    
+    # Anki sync result
+    anki_synced: bool = False  # Whether cards were successfully synced to Anki
 
 
 def deduplicate_flashcards(
@@ -909,11 +912,15 @@ Respond with a JSON object matching this structure:
         # 2. Add to Anki (source of truth)
         target_deck = state.get("target_deck_name")
         note_ids = []
+        anki_synced = False
         
         if target_deck:
             try:
                 note_ids = self._add_cards_to_anki(all_cards, target_deck)
-                logger.info(f"Added {len([n for n in note_ids if n])} cards to Anki deck '{target_deck}'")
+                successful_adds = len([n for n in note_ids if n])
+                logger.info(f"Added {successful_adds} cards to Anki deck '{target_deck}'")
+                # Consider Anki sync successful if at least one card was added
+                anki_synced = successful_adds > 0
             except Exception as e:
                 logger.error(f"Failed to add cards to Anki: {e}")
                 # Continue to cache even if Anki fails
@@ -941,7 +948,7 @@ Respond with a JSON object matching this structure:
             else:
                 logger.warning("No Anki note IDs - cards not cached (Anki integration may have failed)")
         
-        return {**state, "all_cards": all_cards}
+        return {**state, "all_cards": all_cards, "anki_synced": anki_synced}
     
     def _load_existing_fronts_from_anki(
         self, 
@@ -1700,7 +1707,7 @@ You must respond with a valid JSON object matching this structure:
             target_deck_name: Full deck name for adding cards (e.g., "Marketing 101::Lecture 3")
             
         Returns:
-            List of flashcard dicts with front, back, tags
+            Dict with "cards" (list of flashcard dicts) and "anki_synced" (bool)
         """
         # Prepare initial state
         initial_state = {
@@ -1850,10 +1857,11 @@ You must respond with a valid JSON object matching this structure:
                 except Exception as e:
                     logger.warning(f"🔴 Langfuse: Failed to update graph execution span: {e}")
             
-            # Return cards from final state
+            # Return cards and sync status from final state
             all_cards = final_state.get("all_cards", [])
-            logger.info(f"Flashcard generation completed: {len(all_cards)} cards generated")
-            return all_cards
+            anki_synced = final_state.get("anki_synced", False)
+            logger.info(f"Flashcard generation completed: {len(all_cards)} cards generated, anki_synced={anki_synced}")
+            return {"cards": all_cards, "anki_synced": anki_synced}
             
         except Exception as e:
             # Update span with error

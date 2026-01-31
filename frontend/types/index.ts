@@ -25,6 +25,7 @@ export interface Course {
   description?: string | null
   exam_date?: string | null
   color_code?: string | null
+  deduplicate_flashcards?: boolean
   created_at: string
   updated_at: string
 }

@@ -11,12 +11,14 @@ interface CourseMaterialsContainerProps {
   courseId: string
   userId: string
   initialMaterials: CourseMaterial[]
+  deduplicateFlashcards?: boolean
 }
 
 export function CourseMaterialsContainer({
   courseId,
   userId,
   initialMaterials,
+  deduplicateFlashcards = false,
 }: CourseMaterialsContainerProps) {
   const [materials, setMaterials] = useState<CourseMaterial[]>(initialMaterials)
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -273,6 +275,7 @@ export function CourseMaterialsContainer({
           userId={userId}
           onMaterialDeleted={refreshMaterials}
           materialProgress={materialProgress}
+          deduplicateFlashcards={deduplicateFlashcards}
         />
       </div>
     </>
