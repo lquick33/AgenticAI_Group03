@@ -1071,3 +1071,279 @@ def update_material_classification(
         logger.error(f"Error updating classification: {e}")
         raise
 
+
+# =============================================================================
+# Knowledge Tracking Functions
+# =============================================================================
+
+def save_deck_mapping(
+    user_id: str,
+    course_id: str,
+    deck_name: str,
+    course_material_id: Optional[str] = None
+) -> dict:
+    """
+    Save or update a course-to-deck mapping.
+    
+    Args:
+        user_id: User ID
+        course_id: Course ID
+        deck_name: Anki deck name (e.g., "Marketing 101::Lecture 1")
+        course_material_id: Optional course material ID
+        
+    Returns:
+        The created/updated mapping record
+    """
+    client = get_supabase_client()
+    
+    data = {
+        "user_id": user_id,
+        "course_id": course_id,
+        "deck_name": deck_name,
+    }
+    if course_material_id:
+        data["course_material_id"] = course_material_id
+    
+    try:
+        # Upsert based on user_id + deck_name unique constraint
+        response = client.table("course_deck_mappings").upsert(
+            data,
+            on_conflict="user_id,deck_name"
+        ).execute()
+        
+        return response.data[0] if response.data else data
+    except Exception as e:
+        logger.error(f"Error saving deck mapping: {e}")
+        raise
+
+
+def get_deck_mappings_for_course(user_id: str, course_id: str) -> List[dict]:
+    """
+    Get all deck mappings for a course.
+    
+    Args:
+        user_id: User ID
+        course_id: Course ID
+        
+    Returns:
+        List of deck mapping records
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("course_deck_mappings").select("*").eq(
+            "user_id", user_id
+        ).eq("course_id", course_id).execute()
+        
+        return response.data or []
+    except Exception as e:
+        logger.error(f"Error getting deck mappings: {e}")
+        return []
+
+
+def save_knowledge_snapshot(
+    user_id: str,
+    deck_name: str,
+    total_cards: int,
+    new_cards: int,
+    learning_cards: int,
+    young_cards: int,
+    mature_cards: int,
+    suspended_cards: int = 0,
+    avg_ease_factor: Optional[float] = None,
+    avg_interval_days: Optional[float] = None,
+    retention_rate: Optional[float] = None,
+    mastery_score: Optional[float] = None,
+    course_id: Optional[str] = None,
+    course_material_id: Optional[str] = None,
+) -> dict:
+    """
+    Save a knowledge snapshot for a deck.
+    
+    Args:
+        user_id: User ID
+        deck_name: Anki deck name
+        total_cards: Total card count
+        new_cards: New card count
+        learning_cards: Learning card count
+        young_cards: Young review card count
+        mature_cards: Mature card count
+        suspended_cards: Suspended card count
+        avg_ease_factor: Average ease factor
+        avg_interval_days: Average interval in days
+        retention_rate: Retention rate (0-1)
+        mastery_score: Mastery score (0-1)
+        course_id: Optional course ID
+        course_material_id: Optional material ID
+        
+    Returns:
+        The created snapshot record
+    """
+    client = get_supabase_client()
+    
+    data = {
+        "user_id": user_id,
+        "deck_name": deck_name,
+        "total_cards": total_cards,
+        "new_cards": new_cards,
+        "learning_cards": learning_cards,
+        "young_cards": young_cards,
+        "mature_cards": mature_cards,
+        "suspended_cards": suspended_cards,
+        "avg_ease_factor": avg_ease_factor,
+        "avg_interval_days": avg_interval_days,
+        "retention_rate": retention_rate,
+        "mastery_score": mastery_score,
+    }
+    
+    if course_id:
+        data["course_id"] = course_id
+    if course_material_id:
+        data["course_material_id"] = course_material_id
+    
+    try:
+        response = client.table("deck_knowledge_snapshots").insert(data).execute()
+        return response.data[0] if response.data else data
+    except Exception as e:
+        logger.error(f"Error saving knowledge snapshot: {e}")
+        raise
+
+
+def get_latest_knowledge_snapshot(
+    user_id: str, 
+    deck_name: str
+) -> Optional[dict]:
+    """
+    Get the most recent knowledge snapshot for a deck.
+    
+    Args:
+        user_id: User ID
+        deck_name: Anki deck name
+        
+    Returns:
+        The latest snapshot record or None
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("deck_knowledge_snapshots").select("*").eq(
+            "user_id", user_id
+        ).eq("deck_name", deck_name).order(
+            "captured_at", desc=True
+        ).limit(1).execute()
+        
+        return response.data[0] if response.data else None
+    except Exception as e:
+        logger.error(f"Error getting knowledge snapshot: {e}")
+        return None
+
+
+def get_knowledge_snapshots_for_course(
+    user_id: str,
+    course_id: str,
+    limit: int = 30
+) -> List[dict]:
+    """
+    Get recent knowledge snapshots for all decks in a course.
+    
+    Args:
+        user_id: User ID
+        course_id: Course ID
+        limit: Maximum snapshots per deck
+        
+    Returns:
+        List of snapshot records
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = client.table("deck_knowledge_snapshots").select("*").eq(
+            "user_id", user_id
+        ).eq("course_id", course_id).order(
+            "captured_at", desc=True
+        ).limit(limit).execute()
+        
+        return response.data or []
+    except Exception as e:
+        logger.error(f"Error getting course knowledge snapshots: {e}")
+        return []
+
+
+def save_anki_card_mapping(
+    user_id: str,
+    anki_note_id: int,
+    deck_name: str,
+    flashcard_id: Optional[str] = None
+) -> dict:
+    """
+    Save a mapping between an Anki note and an agent-generated flashcard.
+    
+    Args:
+        user_id: User ID
+        anki_note_id: Anki note ID
+        deck_name: Deck the card was added to
+        flashcard_id: Optional flashcard ID from our database
+        
+    Returns:
+        The created mapping record
+    """
+    client = get_supabase_client()
+    
+    data = {
+        "user_id": user_id,
+        "anki_note_id": anki_note_id,
+        "deck_name": deck_name,
+    }
+    if flashcard_id:
+        data["flashcard_id"] = flashcard_id
+    
+    try:
+        response = client.table("anki_card_mappings").upsert(
+            data,
+            on_conflict="user_id,anki_note_id"
+        ).execute()
+        
+        return response.data[0] if response.data else data
+    except Exception as e:
+        logger.error(f"Error saving Anki card mapping: {e}")
+        raise
+
+
+def get_course_with_materials(user_id: str, course_id: str) -> Optional[dict]:
+    """
+    Get a course with all its materials.
+    
+    Args:
+        user_id: User ID
+        course_id: Course ID
+        
+    Returns:
+        Course dict with 'materials' list, or None if not found
+    """
+    client = get_supabase_client()
+    
+    try:
+        # Get course
+        course_response = client.table("courses").select("*").eq(
+            "id", course_id
+        ).eq("user_id", user_id).single().execute()
+        
+        if not course_response.data:
+            return None
+        
+        course = course_response.data
+        
+        # Get materials
+        materials_response = client.table("course_materials").select(
+            "id, file_name, file_type, page_count, processing_status"
+        ).eq("course_id", course_id).eq("user_id", user_id).order(
+            "created_at"
+        ).execute()
+        
+        course["materials"] = materials_response.data or []
+        
+        return course
+    except Exception as e:
+        logger.error(f"Error getting course with materials: {e}")
+        return None
+

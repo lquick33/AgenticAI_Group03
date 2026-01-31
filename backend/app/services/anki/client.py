@@ -46,6 +46,90 @@ class ReviewStats:
     reviews_by_day: dict[str, int]  # date -> count
 
 
+@dataclass
+class CardKnowledge:
+    """Knowledge state for a single card"""
+    card_id: int
+    note_id: int
+    deck_name: str
+    ease_factor: float      # 1.3-2.5+, higher = easier (stored as permille, e.g., 2500 = 2.5)
+    interval: int           # Days until next review
+    queue: int              # 0=new, 1=learning, 2=review, -1=suspended, -2=buried
+    card_type: int          # 0=new, 1=learning, 2=review, 3=relearning
+    reviews: int            # Total review count
+    lapses: int             # Times forgotten (pressed "Again")
+    
+    @property
+    def is_mature(self) -> bool:
+        """Card is mature if interval >= 21 days"""
+        return self.queue == 2 and self.interval >= 21
+    
+    @property
+    def is_young(self) -> bool:
+        """Card is young if in review queue but interval < 21 days"""
+        return self.queue == 2 and self.interval < 21
+    
+    @property
+    def is_learning(self) -> bool:
+        """Card is in learning phase"""
+        return self.queue == 1 or self.card_type in (1, 3)
+    
+    @property
+    def is_new(self) -> bool:
+        """Card has never been studied"""
+        return self.queue == 0 or self.card_type == 0
+
+
+@dataclass
+class DeckKnowledge:
+    """Aggregated knowledge metrics for a deck"""
+    deck_name: str
+    total_cards: int
+    new_cards: int
+    learning_cards: int
+    young_cards: int        # Review queue, interval < 21 days
+    mature_cards: int       # Review queue, interval >= 21 days
+    suspended_cards: int
+    avg_ease: float         # Average ease factor (normalized to 2.5 scale)
+    avg_interval: float     # Average interval in days
+    total_reviews: int      # Sum of all card reviews
+    total_lapses: int       # Sum of all lapses
+    mastery_score: float    # Composite 0.0-1.0 score
+    is_leaf: bool = True    # True if deck has no subdecks (should be counted in totals)
+    
+    @property
+    def retention_rate(self) -> float:
+        """Calculate retention rate: 1 - (lapses / reviews)"""
+        if self.total_reviews == 0:
+            return 0.0
+        return max(0.0, 1.0 - (self.total_lapses / self.total_reviews))
+    
+    @property
+    def status(self) -> str:
+        """Get status label based on mastery score"""
+        if self.total_cards == 0:
+            return "no_cards"
+        if self.mastery_score >= 0.8:
+            return "mastered"
+        if self.mastery_score >= 0.5:
+            return "progressing"
+        if self.mastery_score >= 0.3:
+            return "needs_review"
+        return "not_started"
+
+
+@dataclass
+class CourseKnowledge:
+    """Aggregated knowledge for a course (multiple decks/lectures)"""
+    course_id: str
+    course_title: str
+    overall_mastery: float
+    total_cards: int
+    lectures: list[DeckKnowledge]
+    weakest_lecture: Optional[str]
+    strongest_lecture: Optional[str]
+
+
 class AnkiClient:
     """
     Client for interacting with AnkiConnect API.
@@ -298,6 +382,304 @@ class AnkiClient:
             cards_reviewed_today=self.get_cards_reviewed_today(),
             reviews_by_day=self.get_reviews_by_day()
         )
+    
+    # =========================================================================
+    # Card-Level Statistics (for Knowledge Tracking)
+    # =========================================================================
+    
+    def find_cards(self, query: str) -> list[int]:
+        """
+        Search for cards (not notes) matching a query.
+        
+        Args:
+            query: Search query using Anki's search syntax
+                - "deck:MyDeck" - all cards in MyDeck
+                - "deck:MyDeck::*" - all cards in MyDeck and subdecks
+                - "is:review" - cards in review queue
+                - "is:new" - new cards
+                
+        Returns:
+            List of card IDs
+        """
+        return self._request("findCards", {"query": query})
+    
+    def get_cards_info(self, card_ids: list[int]) -> list[dict]:
+        """
+        Get detailed information about cards including scheduling data.
+        
+        Args:
+            card_ids: List of card IDs
+            
+        Returns:
+            List of card info dictionaries containing:
+            - cardId, noteId, deckName
+            - interval, ease (as permille, e.g., 2500 = 2.5)
+            - queue (0=new, 1=learning, 2=review, -1=suspended, -2=buried)
+            - type (0=new, 1=learning, 2=review, 3=relearning)
+            - reps (review count), lapses
+        """
+        if not card_ids:
+            return []
+        return self._request("cardsInfo", {"cards": card_ids})
+    
+    def get_reviews_of_cards(self, card_ids: list[int]) -> dict[int, list]:
+        """
+        Get review history for cards.
+        
+        Args:
+            card_ids: List of card IDs
+            
+        Returns:
+            Dictionary mapping card ID to list of reviews.
+            Each review is a list: [reviewTime, ease, ivl, lastIvl, factor, time, type]
+            - reviewTime: Unix timestamp (ms)
+            - ease: Button pressed (1=Again, 2=Hard, 3=Good, 4=Easy)
+            - ivl: New interval
+            - lastIvl: Previous interval
+            - factor: New ease factor (permille)
+            - time: Review duration (ms)
+            - type: 0=learn, 1=review, 2=relearn, 3=filtered
+        """
+        if not card_ids:
+            return {}
+        result = self._request("getReviewsOfCards", {"cards": card_ids})
+        # Convert string keys to int
+        return {int(k): v for k, v in result.items()}
+    
+    def get_cards_knowledge(self, deck_name: Optional[str] = None) -> list[CardKnowledge]:
+        """
+        Get knowledge state for all cards in a deck.
+        
+        Args:
+            deck_name: Deck name to query. If None, queries all decks.
+                       Use "DeckName::*" for deck and all subdecks.
+                       
+        Returns:
+            List of CardKnowledge objects
+        """
+        # Build query
+        if deck_name:
+            # Escape deck name for query (handle special chars)
+            escaped_name = deck_name.replace('"', '\\"')
+            query = f'"deck:{escaped_name}"'
+        else:
+            query = "deck:*"
+        
+        card_ids = self.find_cards(query)
+        if not card_ids:
+            return []
+        
+        cards_info = self.get_cards_info(card_ids)
+        
+        result = []
+        for card in cards_info:
+            result.append(CardKnowledge(
+                card_id=card["cardId"],
+                note_id=card["note"],
+                deck_name=card["deckName"],
+                ease_factor=card.get("factor", 2500) / 1000.0,  # Convert permille to decimal
+                interval=card.get("interval", 0),
+                queue=card.get("queue", 0),
+                card_type=card.get("type", 0),
+                reviews=card.get("reps", 0),
+                lapses=card.get("lapses", 0),
+            ))
+        
+        return result
+    
+    def get_deck_knowledge(self, deck_name: str) -> DeckKnowledge:
+        """
+        Calculate aggregated knowledge metrics for a single deck.
+        
+        Args:
+            deck_name: Name of the deck
+            
+        Returns:
+            DeckKnowledge with aggregated metrics
+        """
+        cards = self.get_cards_knowledge(deck_name)
+        return self._aggregate_deck_knowledge(deck_name, cards)
+    
+    def get_all_decks_knowledge(self) -> dict[str, DeckKnowledge]:
+        """
+        Get knowledge metrics for all decks.
+        
+        Parent decks (those with subdecks) are marked with is_leaf=False
+        to prevent double-counting when calculating totals.
+        
+        Returns:
+            Dictionary mapping deck name to DeckKnowledge
+        """
+        deck_names = self.get_deck_names()
+        
+        # Identify parent decks (decks that have subdecks)
+        # A deck is a parent if another deck starts with "{deck_name}::"
+        parent_decks = set()
+        for deck_name in deck_names:
+            for other_deck in deck_names:
+                if other_deck != deck_name and other_deck.startswith(f"{deck_name}::"):
+                    parent_decks.add(deck_name)
+                    break
+        
+        result = {}
+        
+        for deck_name in deck_names:
+            # Skip the default deck if empty
+            if deck_name == "Default":
+                cards = self.get_cards_knowledge(deck_name)
+                if not cards:
+                    continue
+            
+            dk = self.get_deck_knowledge(deck_name)
+            
+            # Mark parent decks as non-leaf (should not be counted in totals)
+            if deck_name in parent_decks:
+                # Create a new DeckKnowledge with is_leaf=False
+                dk = DeckKnowledge(
+                    deck_name=dk.deck_name,
+                    total_cards=dk.total_cards,
+                    new_cards=dk.new_cards,
+                    learning_cards=dk.learning_cards,
+                    young_cards=dk.young_cards,
+                    mature_cards=dk.mature_cards,
+                    suspended_cards=dk.suspended_cards,
+                    avg_ease=dk.avg_ease,
+                    avg_interval=dk.avg_interval,
+                    total_reviews=dk.total_reviews,
+                    total_lapses=dk.total_lapses,
+                    mastery_score=dk.mastery_score,
+                    is_leaf=False,
+                )
+            
+            result[deck_name] = dk
+        
+        return result
+    
+    def _aggregate_deck_knowledge(
+        self, 
+        deck_name: str, 
+        cards: list[CardKnowledge]
+    ) -> DeckKnowledge:
+        """
+        Aggregate card-level knowledge into deck-level metrics.
+        
+        Args:
+            deck_name: Name of the deck
+            cards: List of CardKnowledge for the deck
+            
+        Returns:
+            DeckKnowledge with calculated metrics
+        """
+        if not cards:
+            return DeckKnowledge(
+                deck_name=deck_name,
+                total_cards=0,
+                new_cards=0,
+                learning_cards=0,
+                young_cards=0,
+                mature_cards=0,
+                suspended_cards=0,
+                avg_ease=2.5,
+                avg_interval=0.0,
+                total_reviews=0,
+                total_lapses=0,
+                mastery_score=0.0,
+            )
+        
+        # Count cards by state
+        new_cards = sum(1 for c in cards if c.is_new)
+        learning_cards = sum(1 for c in cards if c.is_learning)
+        young_cards = sum(1 for c in cards if c.is_young)
+        mature_cards = sum(1 for c in cards if c.is_mature)
+        suspended_cards = sum(1 for c in cards if c.queue == -1)
+        
+        # Calculate averages (only for non-new cards)
+        reviewed_cards = [c for c in cards if c.reviews > 0]
+        if reviewed_cards:
+            avg_ease = sum(c.ease_factor for c in reviewed_cards) / len(reviewed_cards)
+            avg_interval = sum(c.interval for c in reviewed_cards) / len(reviewed_cards)
+        else:
+            avg_ease = 2.5
+            avg_interval = 0.0
+        
+        # Sum totals
+        total_reviews = sum(c.reviews for c in cards)
+        total_lapses = sum(c.lapses for c in cards)
+        
+        # Calculate mastery score
+        mastery_score = self._calculate_mastery_score(
+            total_cards=len(cards),
+            new_cards=new_cards,
+            learning_cards=learning_cards,
+            young_cards=young_cards,
+            mature_cards=mature_cards,
+            avg_ease=avg_ease,
+            total_reviews=total_reviews,
+            total_lapses=total_lapses,
+        )
+        
+        return DeckKnowledge(
+            deck_name=deck_name,
+            total_cards=len(cards),
+            new_cards=new_cards,
+            learning_cards=learning_cards,
+            young_cards=young_cards,
+            mature_cards=mature_cards,
+            suspended_cards=suspended_cards,
+            avg_ease=avg_ease,
+            avg_interval=avg_interval,
+            total_reviews=total_reviews,
+            total_lapses=total_lapses,
+            mastery_score=mastery_score,
+        )
+    
+    def _calculate_mastery_score(
+        self,
+        total_cards: int,
+        new_cards: int,
+        learning_cards: int,
+        young_cards: int,
+        mature_cards: int,
+        avg_ease: float,
+        total_reviews: int,
+        total_lapses: int,
+    ) -> float:
+        """
+        Calculate composite mastery score (0.0-1.0).
+        
+        Formula weights:
+        - 40% card distribution (mature > young > learning > new)
+        - 30% ease factor (normalized)
+        - 30% retention rate (1 - lapse rate)
+        """
+        if total_cards == 0:
+            return 0.0
+        
+        # Distribution score: weighted average of card states
+        distribution_score = (
+            mature_cards * 1.0 +
+            young_cards * 0.6 +
+            learning_cards * 0.3 +
+            new_cards * 0.0
+        ) / total_cards
+        
+        # Ease score: normalize 1.3-3.0 range to 0-1
+        ease_score = max(0.0, min(1.0, (avg_ease - 1.3) / 1.7))
+        
+        # Retention score
+        if total_reviews > 0:
+            retention_score = max(0.0, 1.0 - (total_lapses / total_reviews))
+        else:
+            retention_score = 0.0
+        
+        # Weighted combination
+        mastery = (
+            0.4 * distribution_score +
+            0.3 * ease_score +
+            0.3 * retention_score
+        )
+        
+        return round(mastery, 3)
     
     # =========================================================================
     # Flashcard Creation (Write)
