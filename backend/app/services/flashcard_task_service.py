@@ -16,7 +16,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_apkg
-from app.services.storage import save_flashcards
+# NOTE: save_flashcards removed - now using cache_flashcards in agent
 from app.services.db_migration_helper import get_postgres_connection_string
 
 logger = logging.getLogger(__name__)
@@ -74,11 +74,17 @@ class FlashcardTask:
         course_material_id: str,
         user_id: str,
         course_id: str,
+        deduplicate_course: bool = False,
+        parent_deck_name: Optional[str] = None,
+        target_deck_name: Optional[str] = None,
     ):
         self.task_id = task_id
         self.course_material_id = course_material_id
         self.user_id = user_id
         self.course_id = course_id
+        self.deduplicate_course = deduplicate_course
+        self.parent_deck_name = parent_deck_name
+        self.target_deck_name = target_deck_name
         self.status = TaskStatus.PENDING
         self.progress = 0.0  # 0.0 to 1.0
         self.total_pages = 0
@@ -129,6 +135,9 @@ class FlashcardTaskService:
         course_material_id: str,
         user_id: str,
         course_id: str,
+        deduplicate_course: bool = False,
+        parent_deck_name: Optional[str] = None,
+        target_deck_name: Optional[str] = None,
     ) -> str:
         """
         Create a new flashcard generation task.
@@ -137,6 +146,9 @@ class FlashcardTaskService:
             course_material_id: Course material ID
             user_id: User ID
             course_id: Course ID
+            deduplicate_course: Enable course-wide deduplication
+            parent_deck_name: Course deck name (e.g., "Marketing 101")
+            target_deck_name: Full deck name (e.g., "Marketing 101::Lecture 3")
             
         Returns:
             Task ID
@@ -147,6 +159,9 @@ class FlashcardTaskService:
             course_material_id=course_material_id,
             user_id=user_id,
             course_id=course_id,
+            deduplicate_course=deduplicate_course,
+            parent_deck_name=parent_deck_name,
+            target_deck_name=target_deck_name,
         )
         
         async with self._lock:
@@ -267,9 +282,12 @@ class FlashcardTaskService:
                 course_material_id=task.course_material_id,
                 user_id=task.user_id,
                 course_id=task.course_id,
-                save_to_db=False,  # We'll save manually after generation
+                save_to_db=True,  # Let agent handle Anki + cache
                 task_id=task.task_id,
                 progress_callback=progress_callback,
+                deduplicate_course=task.deduplicate_course,
+                parent_deck_name=task.parent_deck_name,
+                target_deck_name=task.target_deck_name,
             )
             
             if task._cancelled:
@@ -285,13 +303,8 @@ class FlashcardTaskService:
             
             task.cards_generated = len(cards)
             
-            # Save flashcards to Supabase
-            try:
-                save_flashcards(cards, task.user_id, task.course_id)
-                logger.info(f"Saved {len(cards)} flashcards to database for task {task.task_id}")
-            except Exception as e:
-                logger.warning(f"Failed to save flashcards to database: {str(e)}")
-                # Continue anyway - APKG generation should still work
+            # Note: Flashcards are now saved by the agent (Anki + cache)
+            # No additional save needed here
             
             # Generate filename first (needed for deck name)
             from app.services.storage import get_supabase_client, get_all_page_analyses_for_material

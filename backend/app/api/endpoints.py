@@ -2266,7 +2266,8 @@ async def get_study_session(
 @router.post("/flashcards/generate", response_model=FlashcardTaskResponse, status_code=202)
 async def generate_flashcards(
     course_material_id: str = Query(..., description="Course material ID (UUID)"),
-    user_id: str = Query(..., description="User ID (UUID)")
+    user_id: str = Query(..., description="User ID (UUID)"),
+    deduplicate_course: bool = Query(False, description="Enable course-wide deduplication via Anki")
 ) -> FlashcardTaskResponse:
     """
     Start flashcard generation as a background task.
@@ -2280,6 +2281,7 @@ async def generate_flashcards(
     Args:
         course_material_id: Course material ID (UUID)
         user_id: User ID (UUID)
+        deduplicate_course: Enable course-wide deduplication (compares against existing Anki cards)
         
     Returns:
         FlashcardTaskResponse with task_id and status
@@ -2333,7 +2335,7 @@ async def generate_flashcards(
         # Get course material and validate ownership
         material_response = (
             client.table("course_materials")
-            .select("id, course_id, user_id")
+            .select("id, course_id, user_id, file_name")
             .eq("id", course_material_id)
             .eq("user_id", user_id)
             .single()
@@ -2349,12 +2351,38 @@ async def generate_flashcards(
         material = material_response.data
         course_id = material["course_id"]
         
+        # Build deck names for Anki integration
+        parent_deck_name = None
+        target_deck_name = None
+        
+        if deduplicate_course or True:  # Always build deck names for Anki integration
+            # Get course title
+            course_response = (
+                client.table("courses")
+                .select("title")
+                .eq("id", course_id)
+                .single()
+                .execute()
+            )
+            
+            if course_response.data:
+                from pathlib import Path
+                course_title = course_response.data.get("title", "Course")
+                file_name = material.get("file_name", "Lecture")
+                lecture_name = Path(file_name).stem  # Remove extension
+                
+                parent_deck_name = course_title
+                target_deck_name = f"{course_title}::{lecture_name}"
+        
         # Create background task
         task_service = get_flashcard_task_service()
         task_id = await task_service.create_task(
             course_material_id=course_material_id,
             user_id=user_id,
             course_id=course_id,
+            deduplicate_course=deduplicate_course,
+            parent_deck_name=parent_deck_name,
+            target_deck_name=target_deck_name,
         )
         
         logger.info(f"Created flashcard generation task {task_id} for material {course_material_id}")
@@ -2429,6 +2457,58 @@ async def generate_flashcards(
             status_code=500,
             detail=f"Failed to start flashcard generation: {str(e)}",
         )
+
+
+@router.post("/flashcards/sync", status_code=200)
+async def sync_flashcards_from_anki(
+    course_id: str = Query(..., description="Course ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> dict:
+    """
+    Sync flashcard cache from Anki.
+    
+    Pulls any manual edits/additions from Anki into the local cache.
+    Useful for debugging or forcing a cache refresh.
+    
+    Args:
+        course_id: Course ID to sync
+        user_id: User ID (UUID)
+        
+    Returns:
+        Sync statistics (inserted, updated, deleted, unchanged)
+    """
+    from app.services.storage import sync_cache_from_anki
+    
+    # Validate user
+    if not validate_user_exists(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get course title to build deck name
+    client = get_supabase_client()
+    course_response = (
+        client.table("courses")
+        .select("title")
+        .eq("id", course_id)
+        .eq("user_id", user_id)
+        .single()
+        .execute()
+    )
+    
+    if not course_response.data:
+        raise HTTPException(status_code=404, detail="Course not found or access denied")
+    
+    course_title = course_response.data["title"]
+    
+    try:
+        stats = sync_cache_from_anki(course_title, user_id, course_id)
+        return {
+            "status": "success",
+            "course_title": course_title,
+            "sync_stats": stats
+        }
+    except Exception as e:
+        logger.error(f"Sync failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
 
 
 @router.get("/flashcards/status/{task_id}", response_model=FlashcardTaskStatusResponse, status_code=200)

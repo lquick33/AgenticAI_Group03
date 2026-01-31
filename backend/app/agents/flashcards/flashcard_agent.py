@@ -6,7 +6,8 @@ Refactored to use LangGraph for state persistence and resumability.
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from difflib import SequenceMatcher
+from typing import List, Dict, Any, Optional, Tuple
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
@@ -18,9 +19,11 @@ from app.models.schemas import PageSkipDecision, FlashcardGenerationResult, Mate
 from app.services.storage import (
     get_all_page_analyses_for_material,
     get_messages_for_page,
-    save_flashcards,
     get_material_classification,
     update_material_classification,
+    cache_flashcards,
+    get_cached_flashcards_for_course,
+    sync_cache_from_anki,
 )
 from app.services.snippet_service import get_snippets_for_material, get_snippet_public_url
 from app.services.analyzer import get_gemini_model
@@ -69,6 +72,53 @@ class FlashcardState(MessagesState):
     classification: Optional[str] = None
     classification_confidence: Optional[float] = None
     classification_reasoning: Optional[str] = None
+    
+    # Deduplication (Anki-first architecture)
+    deduplicate_course: bool = False  # Enable course-wide deduplication
+    existing_anki_fronts: List[str] = []  # Card fronts from Anki (for dedup)
+    parent_deck_name: Optional[str] = None  # Course deck (e.g., "Marketing 101")
+    target_deck_name: Optional[str] = None  # Full deck (e.g., "Marketing 101::Lecture 3")
+
+
+def deduplicate_flashcards(
+    new_cards: List[Dict[str, Any]],
+    existing_fronts: List[str],
+    similarity_threshold: float = 0.85
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Remove cards with fronts similar to existing cards or each other.
+    
+    Uses SequenceMatcher for efficient string similarity comparison.
+    
+    Args:
+        new_cards: Newly generated cards to filter
+        existing_fronts: Fronts of existing cards (from Anki or session)
+        similarity_threshold: Minimum similarity ratio to consider duplicate (0-1)
+                             Default 0.85 catches near-duplicates while avoiding false positives.
+    
+    Returns:
+        Tuple of (unique_cards, removed_count)
+    """
+    unique_cards = []
+    all_fronts = list(existing_fronts)  # Copy to avoid mutation
+    
+    for card in new_cards:
+        card_front_lower = card["front"].lower().strip()
+        is_duplicate = False
+        
+        for existing_front in all_fronts:
+            ratio = SequenceMatcher(None, card_front_lower, existing_front.lower().strip()).ratio()
+            if ratio >= similarity_threshold:
+                is_duplicate = True
+                logger.debug(f"Duplicate detected (similarity={ratio:.2f}): '{card['front'][:50]}...'")
+                break
+        
+        if not is_duplicate:
+            unique_cards.append(card)
+            all_fronts.append(card["front"])  # Add to check against subsequent cards
+    
+    removed_count = len(new_cards) - len(unique_cards)
+    return unique_cards, removed_count
 
 
 class FlashcardGeneratorAgent(BaseAgent):
@@ -221,6 +271,18 @@ class FlashcardGeneratorAgent(BaseAgent):
         snippets_by_page = {s["page_number"]: s for s in snippets}
         logger.info(f"Loaded {len(snippets)} snippets for {len(snippets_by_page)} pages")
         
+        # Load existing card fronts from Anki if deduplication is enabled
+        existing_anki_fronts = []
+        if state.get("deduplicate_course", False):
+            parent_deck = state.get("parent_deck_name", "")
+            if parent_deck:
+                existing_anki_fronts = self._load_existing_fronts_from_anki(
+                    parent_deck, 
+                    state["course_id"],
+                    state["user_id"]
+                )
+                logger.info(f"Loaded {len(existing_anki_fronts)} existing fronts for deduplication")
+        
         return {
             **state,
             "page_analyses": page_analyses,
@@ -228,7 +290,8 @@ class FlashcardGeneratorAgent(BaseAgent):
             "current_page_index": 0,
             "processed_page_indices": [],
             "skipped_page_indices": [],
-            "all_cards": []
+            "all_cards": [],
+            "existing_anki_fronts": existing_anki_fronts
         }
     
     def classify_node(self, state: FlashcardState) -> FlashcardState:
@@ -744,14 +807,23 @@ Respond with a JSON object matching this structure:
             
             result = self.card_generation_llm.invoke([message], config=config if config else None)
             
-            # Convert to dict format with source_page_analysis_id
+            # Convert to dict format with metadata tags
             cards = []
+            page_analysis_id = page_analysis.get("id")
             for card in result.cards:
+                # Build metadata tags (page:N, source:uuid) + LLM-generated tags
+                metadata_tags = [
+                    f"page:{page_number}",
+                    f"source:{page_analysis_id}"
+                ]
+                all_tags = metadata_tags + (card.tags if card.tags else [])
+                
                 card_dict = {
                     "front": card.front,
                     "back": card.back,
-                    "tags": card.tags,
-                    "source_page_analysis_id": page_analysis.get("id")
+                    "tags": all_tags,
+                    # Keep source_page_analysis_id for backward compatibility during transition
+                    "source_page_analysis_id": page_analysis_id
                 }
                 cards.append(card_dict)
             
@@ -804,29 +876,162 @@ Respond with a JSON object matching this structure:
     
     def save_cards_node(self, state: FlashcardState) -> FlashcardState:
         """
-        Save cards node: Save flashcards to database if requested.
+        Save cards node: Apply deduplication, add to Anki, and cache to database.
+        
+        Flow:
+        1. Apply deduplication if enabled (compare against Anki fronts)
+        2. Add unique cards to Anki (source of truth)
+        3. Cache to database (backup)
         
         Args:
             state: Current agent state
             
         Returns:
-            State unchanged (cards already in all_cards)
+            Updated state with deduplicated cards
         """
         save_to_db = state.get("save_to_db", False)
         all_cards = state.get("all_cards", [])
         
-        if save_to_db and all_cards:
-            try:
-                save_flashcards(
-                    all_cards,
-                    state.get("user_id", ""),
-                    state.get("course_id", "")
-                )
-                logger.info(f"Saved {len(all_cards)} flashcards to database")
-            except Exception as e:
-                logger.warning(f"Failed to save flashcards to database: {str(e)}")
+        if not all_cards:
+            return state
         
-        return state
+        # 1. Apply deduplication if enabled
+        if state.get("deduplicate_course", False):
+            existing_fronts = state.get("existing_anki_fronts", [])
+            all_cards, removed_count = deduplicate_flashcards(all_cards, existing_fronts)
+            if removed_count > 0:
+                logger.info(f"Deduplication removed {removed_count} similar cards")
+        
+        if not all_cards:
+            logger.info("No unique cards remaining after deduplication")
+            return {**state, "all_cards": []}
+        
+        # 2. Add to Anki (source of truth)
+        target_deck = state.get("target_deck_name")
+        note_ids = []
+        
+        if target_deck:
+            try:
+                note_ids = self._add_cards_to_anki(all_cards, target_deck)
+                logger.info(f"Added {len([n for n in note_ids if n])} cards to Anki deck '{target_deck}'")
+            except Exception as e:
+                logger.error(f"Failed to add cards to Anki: {e}")
+                # Continue to cache even if Anki fails
+        
+        # 3. Save to database (flashcard_cache table - Anki-aligned)
+        if save_to_db:
+            user_id = state.get("user_id", "")
+            course_id = state.get("course_id", "")
+            
+            # NOTE: Dual-write disabled - now using only flashcard_cache table
+            # Old flashcards table is preserved but no longer written to
+            
+            if note_ids:
+                try:
+                    cache_flashcards(
+                        all_cards,
+                        note_ids,
+                        user_id,
+                        target_deck or "Default",
+                        course_id
+                    )
+                    logger.info(f"Cached {len(all_cards)} flashcards to database")
+                except Exception as e:
+                    logger.warning(f"Failed to cache flashcards: {str(e)}")
+            else:
+                logger.warning("No Anki note IDs - cards not cached (Anki integration may have failed)")
+        
+        return {**state, "all_cards": all_cards}
+    
+    def _load_existing_fronts_from_anki(
+        self, 
+        parent_deck: str, 
+        course_id: str, 
+        user_id: str
+    ) -> List[str]:
+        """
+        Load existing card fronts from Anki for deduplication.
+        
+        First syncs Anki → Cache to capture any manual edits/additions,
+        then returns fronts from Anki (or cache as fallback).
+        
+        Args:
+            parent_deck: Parent deck name (course)
+            course_id: Course ID for cache fallback
+            user_id: User ID for cache fallback
+            
+        Returns:
+            List of existing card front texts
+        """
+        try:
+            from app.services.anki.client import AnkiClient
+            anki = AnkiClient()
+            
+            # Step 1: Sync Anki → Cache (capture any manual edits/additions)
+            try:
+                sync_stats = sync_cache_from_anki(parent_deck, user_id, course_id)
+                if sync_stats.get("inserted") or sync_stats.get("updated"):
+                    logger.info(
+                        f"Synced Anki → Cache: +{sync_stats.get('inserted', 0)} new, "
+                        f"~{sync_stats.get('updated', 0)} updated"
+                    )
+            except Exception as e:
+                logger.warning(f"Anki → Cache sync failed (continuing anyway): {e}")
+            
+            # Step 2: Get fronts from Anki
+            fronts = anki.get_deck_card_fronts(parent_deck)
+            if fronts:
+                return fronts
+        except Exception as e:
+            logger.warning(f"Failed to query Anki for existing fronts: {e}")
+        
+        # Fallback to cache if Anki unavailable
+        try:
+            cached_cards = get_cached_flashcards_for_course(course_id, user_id)
+            return [c["front"] for c in cached_cards]
+        except Exception as e:
+            logger.warning(f"Failed to get cached fronts: {e}")
+            return []
+    
+    def _add_cards_to_anki(
+        self, 
+        cards: List[Dict[str, Any]], 
+        deck_name: str
+    ) -> List[Optional[int]]:
+        """
+        Add cards to Anki and sync to AnkiWeb.
+        
+        Args:
+            cards: List of card dicts with front, back, tags
+            deck_name: Target deck name (e.g., "Course::Lecture")
+            
+        Returns:
+            List of Anki note IDs (None for failed cards)
+        """
+        from app.services.anki.client import AnkiClient
+        
+        anki = AnkiClient()
+        
+        # Prepare notes for batch add
+        notes = []
+        for card in cards:
+            notes.append({
+                "deck": deck_name,
+                "front": card["front"],
+                "back": card["back"],
+                "tags": card.get("tags", [])
+            })
+        
+        # Add notes to Anki
+        note_ids = anki.add_notes(notes)
+        
+        # Sync to AnkiWeb
+        try:
+            anki.sync()
+        except Exception as e:
+            logger.warning(f"Anki sync failed (cards still added locally): {e}")
+        
+        return note_ids
     
     def _prepare_snippet_info(self, snippet_image_urls: Optional[List[str]]) -> str:
         """
@@ -1472,6 +1677,9 @@ You must respond with a valid JSON object matching this structure:
         task_id: Optional[str] = None,
         thread_id: Optional[str] = None,
         progress_callback: Optional[callable] = None,
+        deduplicate_course: bool = False,
+        parent_deck_name: Optional[str] = None,
+        target_deck_name: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Generate flashcards with progress tracking via callback.
@@ -1487,9 +1695,12 @@ You must respond with a valid JSON object matching this structure:
             task_id: Optional task ID for progress tracking
             thread_id: Optional thread ID for resumability (if not provided, generates one)
             progress_callback: Optional callback function(current_page_index, total_pages, processed_pages, skipped_pages, cards_generated, progress)
+            deduplicate_course: Enable course-wide deduplication via Anki
+            parent_deck_name: Course deck name for Anki query (e.g., "Marketing 101")
+            target_deck_name: Full deck name for adding cards (e.g., "Marketing 101::Lecture 3")
             
         Returns:
-            List of flashcard dicts with front, back, tags, source_page_analysis_id
+            List of flashcard dicts with front, back, tags
         """
         # Prepare initial state
         initial_state = {
@@ -1511,6 +1722,11 @@ You must respond with a valid JSON object matching this structure:
             "classification": None,
             "classification_confidence": None,
             "classification_reasoning": None,
+            # Deduplication config
+            "deduplicate_course": deduplicate_course,
+            "existing_anki_fronts": [],
+            "parent_deck_name": parent_deck_name,
+            "target_deck_name": target_deck_name,
         }
         
         # Use thread_id if provided (for resumability), otherwise generate new

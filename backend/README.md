@@ -159,6 +159,34 @@ Once Anki is running and synced, the agent can:
   - New cards waiting to be studied
   - Retention rate issues
 
+### Flashcard Deduplication
+
+The system prevents duplicate flashcard generation across an entire course:
+
+- **Course-wide deduplication**: When generating cards for a lecture, checks against ALL existing cards in the course
+- **Similarity matching**: Uses SequenceMatcher with 85% threshold to catch near-duplicates
+- **Anki as source of truth**: Queries Anki directly for existing cards, with local cache fallback
+- **Bidirectional sync**: Manual edits in Anki are synced to local cache before generation
+
+Enable via API:
+```bash
+POST /flashcards/generate?course_material_id=X&user_id=Y&deduplicate_course=true
+```
+
+Manual sync (pulls changes from Anki → cache):
+```bash
+POST /flashcards/sync?course_id=X&user_id=Y
+```
+
+### Safety Measures
+
+All destructive operations on Anki are protected:
+
+- **Delete operations require explicit confirmation**: `i_understand_this_is_permanent=True`
+- **Prominent warning logs** for all delete operations
+- **Sync never auto-deletes**: Cards deleted in Anki are preserved in cache as backup
+- **Agent cannot accidentally delete** decks or cards
+
 ### Agent Tools
 
 The following tools are available to agents:
@@ -196,28 +224,96 @@ The following tools are available to agents:
 backend/
   app/
     agents/          # AI agents (TutorAgent, FlashcardAgent, QuizAgent)
+      flashcards/    # Flashcard generation with deduplication
     api/            # FastAPI endpoints
     core/           # Configuration and settings
     services/       # Business logic services
       anki/         # Anki integration (AnkiClient, KnowledgeService)
+      storage.py    # Database operations including flashcard cache
     tools/          # LangChain tools for agents
   credentials/      # Google Cloud credentials (gitignored)
   supabase/        # Database migrations
-  tests/           # Test files
+  test_*.py        # Test files
   requirements.txt # Python dependencies
 ```
+
+## Flashcard Data Flow
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                        FLASHCARD GENERATION                          │
+└──────────────────────────────────────────────────────────────────────┘
+
+  [PDF Upload] → [Page Analysis] → [Agent generates cards]
+                                           │
+                     ┌─────────────────────┴─────────────────────┐
+                     │           DEDUPLICATION                    │
+                     │  1. Sync Anki → Cache (pull manual edits) │
+                     │  2. Load existing fronts from Anki        │
+                     │  3. Filter duplicates (85% similarity)    │
+                     └─────────────────────┬─────────────────────┘
+                                           │
+                                           ▼
+                     ┌─────────────────────────────────────────────┐
+                     │              SAVE UNIQUE CARDS              │
+                     │  1. Add to Anki (AnkiConnect API)          │
+                     │  2. Sync to AnkiWeb                         │
+                     │  3. Cache in flashcard_cache table          │
+                     └─────────────────────────────────────────────┘
+```
+
+### Persistence During Generation
+
+**Important**: Cards are batched and saved only after 100% completion:
+
+- During generation (0-99%): Cards accumulate in LangGraph state, NOT in Anki
+- At completion (100%): All cards are written to Anki, then cached to database
+- If backend crashes mid-generation: Generated cards are lost (they're only in memory/checkpoint)
+
+**What persists across restarts:**
+- LangGraph checkpoints (graph state after each node)
+- Already-completed flashcard batches
+
+**What is lost on restart:**
+- In-memory task status (pending/running/completed)
+- Progress tracking callbacks
+- Cards generated but not yet saved (0-99% progress)
+
+**Recovery**: Manual resumption is possible by calling `generate_flashcards()` with the same `thread_id`, but there is no automatic recovery.
 
 ## Development
 
 ### Running Tests
 
 ```bash
-# TTS functionality test
-python test_tts.py
+# Activate virtual environment first
+source .venv/bin/activate
 
-# Other tests
-python -m pytest tests/
+# TTS functionality test
+python test_tts_service.py
+
+# Anki integration tests (requires Anki Docker running)
+python test_anki_integration.py
+
+# Flashcard deduplication tests (pre-migration, no DB required)
+python test_standalone.py
+
+# Full integration tests (requires DB + Anki running)
+python test_full_integration.py
+
+# PDF processing test
+python test_pdf_processing.py
 ```
+
+### Test Coverage
+
+| Test File | What It Tests |
+|-----------|---------------|
+| `test_standalone.py` | Deduplication logic, tag extraction (no deps) |
+| `test_pre_migration.py` | AnkiClient methods, imports |
+| `test_full_integration.py` | Complete flow: Anki + Cache + Dedup + Sync |
+| `test_anki_integration.py` | AnkiClient core functionality |
+| `test_tts_service.py` | Text-to-speech generation |
 
 ### Database Migrations
 

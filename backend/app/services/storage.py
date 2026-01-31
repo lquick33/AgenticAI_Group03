@@ -875,6 +875,592 @@ def get_flashcards_for_material(
         raise Exception(f"Failed to get flashcards for material: {str(e)}")
 
 
+# =============================================================================
+# Flashcard Cache Functions (Anki-aligned storage)
+# =============================================================================
+
+def cache_flashcards(
+    cards: List[dict],
+    anki_note_ids: List[int],
+    user_id: str,
+    deck_name: str,
+    course_id: Optional[str] = None
+) -> None:
+    """
+    Cache flashcards after adding to Anki.
+    
+    Tags already contain metadata (page:N, source:uuid) - no separate columns needed.
+    
+    Args:
+        cards: List of card dicts with front, back, tags
+        anki_note_ids: List of Anki note IDs (from add_notes response)
+        user_id: User ID (UUID)
+        deck_name: Full deck name (e.g., "Course::Lecture")
+        course_id: Optional course ID for faster DB joins
+    """
+    if not cards or not anki_note_ids:
+        return
+    
+    client = get_supabase_client()
+    
+    records = []
+    for card, note_id in zip(cards, anki_note_ids):
+        if note_id:  # Only cache if Anki add succeeded
+            records.append({
+                "user_id": user_id,
+                "anki_note_id": note_id,
+                "deck_name": deck_name,
+                "front": card["front"],
+                "back": card["back"],
+                "tags": card.get("tags", []),
+                "course_id": course_id,
+            })
+    
+    if records:
+        try:
+            client.table("flashcard_cache").upsert(
+                records, 
+                on_conflict="user_id,anki_note_id"
+            ).execute()
+        except Exception as e:
+            # Log but don't fail - Anki is source of truth, cache is backup
+            import logging
+            logging.warning(f"Failed to cache flashcards: {e}")
+
+
+def get_cached_flashcards_for_material(
+    deck_name: str,
+    user_id: str
+) -> List[dict]:
+    """
+    Get cached flashcards for a specific lecture deck.
+    
+    Args:
+        deck_name: Full deck name (e.g., "Marketing 101::Lecture 3")
+        user_id: User ID (UUID)
+        
+    Returns:
+        List of flashcard dicts with front, back, tags, anki_note_id
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = (
+            client.table("flashcard_cache")
+            .select("id, anki_note_id, front, back, tags, created_at")
+            .eq("user_id", user_id)
+            .eq("deck_name", deck_name)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return response.data if response.data else []
+    except Exception as e:
+        raise Exception(f"Failed to get cached flashcards: {str(e)}")
+
+
+def get_cached_flashcards_for_course(
+    course_id: str,
+    user_id: str
+) -> List[dict]:
+    """
+    Get all cached flashcards for a course (all lectures).
+    Used as fallback for deduplication when Anki is unavailable.
+    
+    Args:
+        course_id: Course ID (UUID)
+        user_id: User ID (UUID)
+        
+    Returns:
+        List of flashcard dicts with front, back, tags
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = (
+            client.table("flashcard_cache")
+            .select("id, anki_note_id, deck_name, front, back, tags")
+            .eq("user_id", user_id)
+            .eq("course_id", course_id)
+            .execute()
+        )
+        return response.data if response.data else []
+    except Exception as e:
+        raise Exception(f"Failed to get cached flashcards for course: {str(e)}")
+
+
+def get_cached_flashcards_by_deck_pattern(
+    deck_pattern: str,
+    user_id: str
+) -> List[dict]:
+    """
+    Get cached flashcards matching a deck name pattern.
+    Useful for getting all flashcards in a course hierarchy.
+    
+    Args:
+        deck_pattern: Deck name pattern (e.g., "Marketing 101::%")
+        user_id: User ID (UUID)
+        
+    Returns:
+        List of flashcard dicts
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = (
+            client.table("flashcard_cache")
+            .select("id, anki_note_id, deck_name, front, back, tags")
+            .eq("user_id", user_id)
+            .like("deck_name", deck_pattern)
+            .execute()
+        )
+        return response.data if response.data else []
+    except Exception as e:
+        raise Exception(f"Failed to get cached flashcards by pattern: {str(e)}")
+
+
+def delete_cached_flashcards_for_deck(
+    deck_name: str,
+    user_id: str
+) -> int:
+    """
+    Delete cached flashcards for a specific deck.
+    
+    Args:
+        deck_name: Deck name to delete
+        user_id: User ID (UUID)
+        
+    Returns:
+        Number of deleted records
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = (
+            client.table("flashcard_cache")
+            .delete()
+            .eq("user_id", user_id)
+            .eq("deck_name", deck_name)
+            .execute()
+        )
+        return len(response.data) if response.data else 0
+    except Exception as e:
+        raise Exception(f"Failed to delete cached flashcards: {str(e)}")
+
+
+def update_cached_deck_names(
+    old_pattern: str,
+    new_prefix: str,
+    old_prefix: str,
+    user_id: str
+) -> int:
+    """
+    Update deck names in cache when course or material is renamed.
+    
+    Args:
+        old_pattern: Pattern to match (e.g., "Old Course::%")
+        new_prefix: New prefix to replace with
+        old_prefix: Old prefix to replace
+        user_id: User ID (UUID)
+        
+    Returns:
+        Number of updated records
+    """
+    client = get_supabase_client()
+    
+    try:
+        # Get matching records
+        response = (
+            client.table("flashcard_cache")
+            .select("id, deck_name")
+            .eq("user_id", user_id)
+            .like("deck_name", old_pattern)
+            .execute()
+        )
+        
+        if not response.data:
+            return 0
+        
+        # Update each record with new deck name
+        count = 0
+        for record in response.data:
+            old_deck = record["deck_name"]
+            new_deck = old_deck.replace(old_prefix, new_prefix, 1)
+            
+            client.table("flashcard_cache").update(
+                {"deck_name": new_deck}
+            ).eq("id", record["id"]).execute()
+            count += 1
+        
+        return count
+    except Exception as e:
+        raise Exception(f"Failed to update cached deck names: {str(e)}")
+
+
+def sync_cache_from_anki(
+    parent_deck: str,
+    user_id: str,
+    course_id: Optional[str] = None
+) -> dict:
+    """
+    Sync cache from Anki - pull changes from Anki into flashcard_cache.
+    
+    This ensures the cache reflects any manual edits/deletions in Anki.
+    Should be called before flashcard generation for accurate deduplication.
+    
+    Args:
+        parent_deck: Parent deck name (course) - syncs all sub-decks
+        user_id: User ID
+        course_id: Optional course ID for new inserts
+        
+    Returns:
+        Dict with sync stats: inserted, updated, deleted, unchanged
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    stats = {
+        "inserted": 0,
+        "updated": 0,
+        "deleted": 0,
+        "unchanged": 0,
+        "errors": []
+    }
+    
+    try:
+        from app.services.anki.client import AnkiClient
+        anki = AnkiClient()
+        
+        # Get all notes from Anki
+        anki_notes = anki.get_deck_notes_with_info(parent_deck)
+        anki_note_map = {note["noteId"]: note for note in anki_notes}
+        anki_note_ids = set(anki_note_map.keys())
+        
+        logger.info(f"Sync: Found {len(anki_notes)} notes in Anki deck '{parent_deck}'")
+        
+        # Get all cached notes for this deck pattern
+        client = get_supabase_client()
+        cache_response = (
+            client.table("flashcard_cache")
+            .select("id, anki_note_id, anki_mod, front, back, tags, deck_name")
+            .eq("user_id", user_id)
+            .like("deck_name", f"{parent_deck}::%")
+            .execute()
+        )
+        
+        cached_notes = cache_response.data or []
+        cache_map = {note["anki_note_id"]: note for note in cached_notes}
+        cached_note_ids = set(cache_map.keys())
+        
+        logger.info(f"Sync: Found {len(cached_notes)} notes in cache")
+        
+        # 1. Find notes to INSERT (in Anki but not in cache)
+        to_insert = anki_note_ids - cached_note_ids
+        for note_id in to_insert:
+            anki_note = anki_note_map[note_id]
+            fields = anki_note.get("fields", {})
+            front = fields.get("Front", {}).get("value", "")
+            back = fields.get("Back", {}).get("value", "")
+            
+            # Determine deck name from cards
+            cards = anki_note.get("cards", [])
+            deck_name = parent_deck  # Default
+            if cards:
+                # Get the deck of the first card
+                card_info = anki._request("cardsInfo", {"cards": [cards[0]]})
+                if card_info:
+                    deck_name = card_info[0].get("deckName", parent_deck)
+            
+            try:
+                client.table("flashcard_cache").insert({
+                    "user_id": user_id,
+                    "anki_note_id": note_id,
+                    "deck_name": deck_name,
+                    "front": front,
+                    "back": back,
+                    "tags": anki_note.get("tags", []),
+                    "anki_mod": anki_note.get("mod"),
+                    "course_id": course_id,
+                }).execute()
+                stats["inserted"] += 1
+            except Exception as e:
+                stats["errors"].append(f"Insert {note_id}: {e}")
+        
+        # 2. Find notes to UPDATE (mod timestamp changed)
+        to_check = anki_note_ids & cached_note_ids
+        for note_id in to_check:
+            anki_note = anki_note_map[note_id]
+            cached_note = cache_map[note_id]
+            
+            anki_mod = anki_note.get("mod")
+            cached_mod = cached_note.get("anki_mod")
+            
+            if anki_mod != cached_mod:
+                # Note was modified in Anki - update cache
+                fields = anki_note.get("fields", {})
+                front = fields.get("Front", {}).get("value", "")
+                back = fields.get("Back", {}).get("value", "")
+                
+                try:
+                    client.table("flashcard_cache").update({
+                        "front": front,
+                        "back": back,
+                        "tags": anki_note.get("tags", []),
+                        "anki_mod": anki_mod,
+                        "cached_at": "now()",
+                    }).eq("id", cached_note["id"]).execute()
+                    stats["updated"] += 1
+                except Exception as e:
+                    stats["errors"].append(f"Update {note_id}: {e}")
+            else:
+                stats["unchanged"] += 1
+        
+        # 3. Find notes in cache but not in Anki (possibly deleted)
+        # SAFETY: We do NOT auto-delete from cache. Instead, we log for user review.
+        # The cache acts as a backup in case cards were accidentally deleted from Anki.
+        orphaned = cached_note_ids - anki_note_ids
+        if orphaned:
+            logger.warning(
+                f"⚠️  SYNC WARNING: {len(orphaned)} cards in cache but NOT in Anki. "
+                f"These may have been deleted from Anki. Note IDs: {list(orphaned)[:5]}..."
+            )
+            stats["orphaned_in_cache"] = len(orphaned)
+            # Cards are preserved in cache - user can manually review/delete if desired
+        
+        logger.info(f"Sync complete: {stats}")
+        return stats
+        
+    except Exception as e:
+        stats["errors"].append(f"Sync failed: {e}")
+        logger.error(f"Sync failed: {e}")
+        return stats
+
+
+def extract_source_from_tags(tags: List[str]) -> Optional[str]:
+    """
+    Extract page_analysis_id from tags (source:uuid format).
+    
+    Args:
+        tags: List of tag strings
+        
+    Returns:
+        UUID string or None if not found
+    """
+    if not tags:
+        return None
+    for tag in tags:
+        if tag.startswith("source:"):
+            return tag[7:]  # Remove "source:" prefix
+    return None
+
+
+def extract_page_from_tags(tags: List[str]) -> Optional[int]:
+    """
+    Extract page number from tags (page:N format).
+    
+    Args:
+        tags: List of tag strings
+        
+    Returns:
+        Page number or None if not found
+    """
+    if not tags:
+        return None
+    for tag in tags:
+        if tag.startswith("page:"):
+            try:
+                return int(tag[5:])  # Remove "page:" prefix
+            except ValueError:
+                pass
+    return None
+
+
+# =============================================================================
+# Anki Deck Rename Handlers
+# =============================================================================
+
+def on_course_renamed(
+    course_id: str,
+    old_title: str,
+    new_title: str,
+    user_id: str
+) -> dict:
+    """
+    Handle course rename - update all lecture decks in Anki and cache.
+    
+    Call this when a course title is changed.
+    
+    Args:
+        course_id: Course ID
+        old_title: Previous course title
+        new_title: New course title
+        user_id: User ID
+        
+    Returns:
+        Dict with counts of updated items
+    """
+    from pathlib import Path
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    result = {
+        "anki_decks_renamed": 0,
+        "cache_entries_updated": 0,
+        "errors": []
+    }
+    
+    try:
+        # Get all materials for this course
+        client = get_supabase_client()
+        materials_response = (
+            client.table("course_materials")
+            .select("id, file_name")
+            .eq("course_id", course_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        
+        materials = materials_response.data or []
+        
+        # Rename each deck in Anki
+        try:
+            from app.services.anki.client import AnkiClient
+            anki = AnkiClient()
+            
+            for material in materials:
+                lecture_name = Path(material["file_name"]).stem
+                old_deck = f"{old_title}::{lecture_name}"
+                new_deck = f"{new_title}::{lecture_name}"
+                
+                try:
+                    if anki.rename_deck(old_deck, new_deck):
+                        result["anki_decks_renamed"] += 1
+                except Exception as e:
+                    result["errors"].append(f"Anki rename failed for {old_deck}: {e}")
+            
+            # Sync changes
+            anki.sync()
+        except Exception as e:
+            result["errors"].append(f"Anki connection failed: {e}")
+        
+        # Update cache
+        try:
+            updated = update_cached_deck_names(
+                old_pattern=f"{old_title}::%",
+                new_prefix=new_title,
+                old_prefix=old_title,
+                user_id=user_id
+            )
+            result["cache_entries_updated"] = updated
+        except Exception as e:
+            result["errors"].append(f"Cache update failed: {e}")
+        
+        logger.info(f"Course renamed: {old_title} -> {new_title}, "
+                   f"Anki: {result['anki_decks_renamed']}, Cache: {result['cache_entries_updated']}")
+        
+    except Exception as e:
+        result["errors"].append(f"Course rename failed: {e}")
+    
+    return result
+
+
+def on_material_renamed(
+    material_id: str,
+    old_file_name: str,
+    new_file_name: str,
+    user_id: str
+) -> dict:
+    """
+    Handle lecture file rename - update deck name in Anki and cache.
+    
+    Call this when a course material file name is changed.
+    
+    Args:
+        material_id: Course material ID
+        old_file_name: Previous file name
+        new_file_name: New file name
+        user_id: User ID
+        
+    Returns:
+        Dict with update status
+    """
+    from pathlib import Path
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    result = {
+        "anki_deck_renamed": False,
+        "cache_entries_updated": 0,
+        "errors": []
+    }
+    
+    try:
+        # Get course title
+        client = get_supabase_client()
+        material_response = (
+            client.table("course_materials")
+            .select("course_id")
+            .eq("id", material_id)
+            .single()
+            .execute()
+        )
+        
+        if not material_response.data:
+            result["errors"].append("Material not found")
+            return result
+        
+        course_id = material_response.data["course_id"]
+        
+        course_response = (
+            client.table("courses")
+            .select("title")
+            .eq("id", course_id)
+            .single()
+            .execute()
+        )
+        
+        if not course_response.data:
+            result["errors"].append("Course not found")
+            return result
+        
+        course_title = course_response.data["title"]
+        old_lecture = Path(old_file_name).stem
+        new_lecture = Path(new_file_name).stem
+        
+        old_deck = f"{course_title}::{old_lecture}"
+        new_deck = f"{course_title}::{new_lecture}"
+        
+        # Rename in Anki
+        try:
+            from app.services.anki.client import AnkiClient
+            anki = AnkiClient()
+            
+            if anki.rename_deck(old_deck, new_deck):
+                result["anki_deck_renamed"] = True
+                anki.sync()
+        except Exception as e:
+            result["errors"].append(f"Anki rename failed: {e}")
+        
+        # Update cache
+        try:
+            updated = update_cached_deck_names(
+                old_pattern=old_deck,
+                new_prefix=new_deck,
+                old_prefix=old_deck,
+                user_id=user_id
+            )
+            result["cache_entries_updated"] = updated
+        except Exception as e:
+            result["errors"].append(f"Cache update failed: {e}")
+        
+        logger.info(f"Material renamed: {old_deck} -> {new_deck}, "
+                   f"Anki: {result['anki_deck_renamed']}, Cache: {result['cache_entries_updated']}")
+        
+    except Exception as e:
+        result["errors"].append(f"Material rename failed: {e}")
+    
+    return result
+
+
 def delete_course_material(
     material_id: str,
     user_id: str

@@ -984,6 +984,33 @@ class AnkiClient:
             return []
         return self.get_notes_info(note_ids)
     
+    def get_deck_notes_with_info(self, parent_deck: str) -> list[dict]:
+        """
+        Get all notes in a deck hierarchy with full info including mod timestamp.
+        
+        Used for syncing Anki → Cache.
+        
+        Args:
+            parent_deck: Parent deck name (queries parent::*)
+            
+        Returns:
+            List of note info dicts with: noteId, fields, tags, mod, etc.
+        """
+        # Query all notes in deck hierarchy
+        escaped_name = parent_deck.replace('"', '\\"')
+        query = f'"deck:{escaped_name}::*"'
+        
+        note_ids = self.find_notes(query)
+        
+        if not note_ids:
+            # Also try exact deck match
+            query = f'"deck:{escaped_name}"'
+            note_ids = self.find_notes(query)
+            if not note_ids:
+                return []
+        
+        return self.get_notes_info(note_ids)
+    
     # =========================================================================
     # Sync
     # =========================================================================
@@ -1035,6 +1062,177 @@ class AnkiClient:
             raise ValueError("Must provide data, path, or url")
         
         return self._request("storeMediaFile", params)
+    
+    # =========================================================================
+    # Deduplication & Deck Management
+    # =========================================================================
+    
+    def get_deck_card_fronts(self, parent_deck: str) -> list[str]:
+        """
+        Get all card front texts from a parent deck and its sub-decks.
+        
+        Used for deduplication during flashcard generation.
+        
+        Args:
+            parent_deck: Parent deck name (course), e.g., "Marketing 101"
+                        Queries all sub-decks (lectures) within it.
+        
+        Returns:
+            List of front text from all cards in the deck hierarchy
+        """
+        # Query all notes in deck hierarchy (parent::*)
+        # Escape quotes in deck name
+        escaped_name = parent_deck.replace('"', '\\"')
+        query = f'"deck:{escaped_name}::*"'
+        
+        note_ids = self.find_notes(query)
+        
+        if not note_ids:
+            # Also try exact deck match (in case there are cards directly in parent)
+            query = f'"deck:{escaped_name}"'
+            note_ids = self.find_notes(query)
+            if not note_ids:
+                return []
+        
+        # Get note info including fields
+        notes_info = self.get_notes_info(note_ids)
+        
+        # Extract front field values
+        fronts = []
+        for note in notes_info:
+            fields = note.get("fields", {})
+            front_field = fields.get("Front", {})
+            if front_field:
+                value = front_field.get("value", "")
+                if value:
+                    fronts.append(value)
+        
+        return fronts
+    
+    def rename_deck(self, old_name: str, new_name: str) -> bool:
+        """
+        Rename an Anki deck by moving all cards to a new deck.
+        
+        Preserves all card history, scheduling, and learning state.
+        
+        Args:
+            old_name: Current deck name
+            new_name: New deck name
+            
+        Returns:
+            True if successful, False if no cards found
+        """
+        # Find all cards in the old deck
+        escaped_old = old_name.replace('"', '\\"')
+        card_ids = self.find_cards(f'"deck:{escaped_old}"')
+        
+        if not card_ids:
+            return False
+        
+        # Create the new deck (Anki auto-creates parent hierarchy)
+        self.create_deck(new_name)
+        
+        # Move all cards to the new deck
+        self._request("changeDeck", {"cards": card_ids, "deck": new_name})
+        
+        # Optionally delete the old empty deck
+        # self._request("deleteDecks", {"decks": [old_name], "cardsToo": False})
+        
+        return True
+    
+    def delete_deck_with_cards(
+        self, 
+        deck_name: str, 
+        i_understand_this_is_permanent: bool = False
+    ) -> bool:
+        """
+        ⚠️  DANGEROUS: Delete a deck and ALL its cards from Anki.
+        
+        This action is IRREVERSIBLE and will delete from AnkiWeb on next sync!
+        
+        Args:
+            deck_name: Deck name to delete
+            i_understand_this_is_permanent: Must be True to proceed
+            
+        Returns:
+            True if successful, False if blocked
+            
+        Raises:
+            ValueError: If confirmation not provided
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not i_understand_this_is_permanent:
+            logger.error(
+                f"⛔ BLOCKED: Attempted to delete deck '{deck_name}' without confirmation. "
+                f"Set i_understand_this_is_permanent=True to proceed."
+            )
+            raise ValueError(
+                f"Deletion of deck '{deck_name}' blocked. "
+                f"This would permanently delete all cards from Anki AND AnkiWeb. "
+                f"Set i_understand_this_is_permanent=True if you really want this."
+            )
+        
+        # Get card count before deletion for logging
+        try:
+            card_ids = self.find_cards(f'"deck:{deck_name}"')
+            card_count = len(card_ids) if card_ids else 0
+        except:
+            card_count = "unknown"
+        
+        logger.warning(
+            f"🗑️  DELETING DECK: '{deck_name}' with {card_count} cards. "
+            f"This will sync to AnkiWeb and is PERMANENT!"
+        )
+        
+        self._request("deleteDecks", {"decks": [deck_name], "cardsToo": True})
+        
+        logger.warning(f"🗑️  DELETED: Deck '{deck_name}' has been permanently deleted.")
+        return True
+    
+    def delete_notes(
+        self, 
+        note_ids: list[int],
+        i_understand_this_is_permanent: bool = False
+    ) -> bool:
+        """
+        ⚠️  DANGEROUS: Delete notes from Anki.
+        
+        This action is IRREVERSIBLE and will delete from AnkiWeb on next sync!
+        
+        Args:
+            note_ids: List of note IDs to delete
+            i_understand_this_is_permanent: Must be True to proceed
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            ValueError: If confirmation not provided
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if not i_understand_this_is_permanent:
+            logger.error(
+                f"⛔ BLOCKED: Attempted to delete {len(note_ids)} notes without confirmation."
+            )
+            raise ValueError(
+                f"Deletion of {len(note_ids)} notes blocked. "
+                f"This would permanently delete from Anki AND AnkiWeb. "
+                f"Set i_understand_this_is_permanent=True if you really want this."
+            )
+        
+        logger.warning(
+            f"🗑️  DELETING {len(note_ids)} NOTES. "
+            f"This will sync to AnkiWeb and is PERMANENT!"
+        )
+        
+        self._request("deleteNotes", {"notes": note_ids})
+        
+        logger.warning(f"🗑️  DELETED: {len(note_ids)} notes permanently deleted.")
+        return True
 
 
 def print_first_run_instructions():

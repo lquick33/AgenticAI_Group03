@@ -576,11 +576,15 @@ START → initialize → classify → [check_more_pages]
   - Loggt Fortschritt
 
 **9. save_cards_node** (Zeilen 749-773)
-- **Zweck**: Speichert Flashcards in Datenbank falls gewünscht
+- **Zweck**: Speichert alle akkumulierten Flashcards am ENDE der Generierung
+- **Wichtig**: Dieser Node läuft NUR wenn alle Seiten verarbeitet wurden (nicht inkrementell!)
 - **Logik**:
   - Prüft `save_to_db` Flag
-  - Falls true und Cards existieren, ruft `save_flashcards()` mit allen akkumulierten Cards auf
-  - Loggt Erfolg/Fehler
+  - Falls true und Cards existieren:
+    1. Dedupliziert gegen bestehende Anki-Cards (wenn aktiviert)
+    2. Fügt alle Cards zu Anki hinzu (Batch-Add via AnkiConnect)
+    3. Cached Cards in `flashcard_cache` Tabelle
+  - Falls Backend während Generierung (0-99%) abstürzt: Cards sind NICHT in Anki!
 
 **10. check_more_pages** (Zeilen 417-432)
 - **Zweck**: Bedingtes Routing um zu prüfen ob noch Seiten vorhanden sind
@@ -612,6 +616,12 @@ START → initialize → classify → [check_more_pages]
 - Nutzt **PostgresSaver** (falls DATABASE_URL konfiguriert) oder **MemorySaver** (Fallback)
 - State wird nach jedem Node automatisch gecheckpointed
 - Ermöglicht **Resumability**: Fehlgeschlagene Tasks können von letztem Checkpoint mit `thread_id` fortgesetzt werden
+
+**Wichtige Einschränkungen**:
+- **Cards werden NICHT inkrementell gespeichert**: Während der Generierung (0-99%) befinden sich Cards nur im LangGraph State, nicht in Anki
+- **Task-Status ist flüchtig**: Task-Metadaten (status, progress) werden im Speicher gehalten und gehen bei Backend-Neustart verloren
+- **Keine automatische Wiederaufnahme**: Bei Absturz bleiben LangGraph-Checkpoints erhalten, aber die Task-Wiederaufnahme erfordert manuellen Aufruf mit derselben `thread_id`
+- **Generierte Cards bei Absturz verloren**: Wenn das Backend bei 80% abstürzt, sind die generierten Cards nicht in Anki gespeichert
 
 **Fortschritts-Tracking**:
 - `current_page_index`: Aktuelle Seite die verarbeitet wird
@@ -674,9 +684,10 @@ START → initialize → classify → [check_more_pages]
 - **Datenbank-Save-Fehler**: Loggt Warning aber macht weiter
 
 **State Recovery**:
-- Checkpointing ermöglicht automatische Recovery von Fehlern
+- Checkpointing ermöglicht manuelle Recovery von Fehlern (nicht automatisch!)
 - Kann mit gleichem `thread_id` fortgesetzt werden
-- Fortschritt bleibt über Restarts erhalten
+- **Wichtig**: Task-Status (pending/running/completed) ist flüchtig und geht bei Restart verloren
+- LangGraph-State bleibt in PostgreSQL erhalten, aber generierte Cards sind erst bei 100% in Anki
 
 ##### Performance-Überlegungen
 
@@ -692,6 +703,7 @@ START → initialize → classify → [check_more_pages]
 **Batch Processing**:
 - Verarbeitet Seiten sequenziell (eine nach der anderen)
 - Cards werden im State akkumuliert bis zum Abschluss
+- **Anki-Speicherung erfolgt NUR am Ende (100%)** - nicht inkrementell während der Generierung
 - Datenbank-Save passiert einmal am Ende (falls `save_to_db=True`)
 
 ##### Datenfluss-Zusammenfassung
