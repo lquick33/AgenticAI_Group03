@@ -14,6 +14,7 @@ from typing import Optional, AsyncGenerator
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from pdf2image import convert_from_bytes, pdfinfo_from_bytes
 from PIL import Image
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
@@ -62,7 +63,7 @@ from app.services.storage import (
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_apkg
-from app.services.anki import AnkiClient, AnkiConnectionError, DailyStudyStats
+from app.services.anki import AnkiClient, AnkiConnectionError, AnkiError, DailyStudyStats
 from app.services.flashcard_task_service import get_flashcard_task_service
 from app.services.observability import get_langfuse_client
 from app.services.session_storage import (
@@ -3695,4 +3696,175 @@ async def get_anki_study_history(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get study history: {str(e)}"
+        )
+
+
+# =============================================================================
+# Anki Sync Management
+# =============================================================================
+
+@router.get("/anki/sync-status")
+async def get_anki_sync_status():
+    """
+    Check the current sync status with AnkiWeb.
+    
+    Returns:
+    - status: "ok" | "full_sync_required" | "not_logged_in" | "not_connected" | "error"
+    - message: Human-readable status message
+    - can_sync: Whether normal sync is possible
+    - action_required: What action the user needs to take (if any)
+    """
+    try:
+        client = AnkiClient()
+        
+        # First check if Anki is running
+        if not client.is_running():
+            return {
+                "status": "not_connected",
+                "message": "Anki is not running. Please start the Docker container.",
+                "can_sync": False,
+                "action_required": "start_anki"
+            }
+        
+        # Check sync status
+        sync_status = client.get_sync_status()
+        
+        # Add action_required based on status
+        action_required = None
+        if sync_status["status"] == "full_sync_required":
+            action_required = "resolve_conflict"
+        elif sync_status["status"] == "not_logged_in":
+            action_required = "login_ankiweb"
+        
+        return {
+            **sync_status,
+            "action_required": action_required
+        }
+        
+    except Exception as e:
+        logger.error(f"Error checking sync status: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check sync status: {str(e)}"
+        )
+
+
+@router.post("/anki/sync")
+async def trigger_anki_sync():
+    """
+    Trigger a normal sync with AnkiWeb.
+    
+    This will fail if a full sync is required (conflict).
+    Use GET /anki/sync-status first to check, and POST /anki/force-sync
+    to resolve conflicts.
+    """
+    try:
+        client = AnkiClient()
+        
+        if not client.is_running():
+            raise HTTPException(
+                status_code=503,
+                detail="Anki is not running. Please start the Docker container."
+            )
+        
+        # Attempt sync
+        client.sync()
+        
+        return {
+            "status": "success",
+            "message": "Sync completed successfully"
+        }
+        
+    except AnkiError as e:
+        error_msg = str(e)
+        if "Sync status 2" in error_msg:
+            raise HTTPException(
+                status_code=409,  # Conflict
+                detail="Full sync required. Use POST /anki/force-sync with mode='upload' or 'download' to resolve."
+            )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Sync failed: {error_msg}"
+        )
+    except AnkiConnectionError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot connect to Anki: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error during sync: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Sync failed: {str(e)}"
+        )
+
+
+class ForceSyncRequest(BaseModel):
+    mode: str = Field(
+        ...,
+        description="Sync direction: 'upload' (local→server) or 'download' (server→local)"
+    )
+
+
+@router.post("/anki/force-sync")
+async def force_anki_sync(request: ForceSyncRequest):
+    """
+    Force a full sync in a specific direction to resolve conflicts.
+    
+    Args:
+        mode: 
+            - "upload": Overwrite AnkiWeb with local Docker Anki data
+            - "download": Overwrite local Docker Anki with AnkiWeb data
+    
+    ⚠️  WARNING: This is destructive! One side's data will be lost.
+    
+    - Use "upload" if you want to KEEP the generated flashcards from this app
+    - Use "download" if you want to KEEP changes from your phone/other devices
+    """
+    try:
+        if request.mode not in ("upload", "download"):
+            raise HTTPException(
+                status_code=400,
+                detail="Mode must be 'upload' or 'download'"
+            )
+        
+        client = AnkiClient()
+        
+        if not client.is_running():
+            raise HTTPException(
+                status_code=503,
+                detail="Anki is not running. Please start the Docker container."
+            )
+        
+        # Attempt force sync
+        result = client.force_sync(request.mode)
+        
+        if result["success"]:
+            return {
+                "status": "success",
+                "message": result["message"]
+            }
+        else:
+            # Check if the custom addon is not installed
+            if "not available" in result["message"].lower():
+                raise HTTPException(
+                    status_code=501,  # Not Implemented
+                    detail=(
+                        "Force sync not available via API. The Docker container needs "
+                        "to be restarted to load the custom addon. "
+                        "Alternatively, resolve the conflict manually via VNC at localhost:5900"
+                    )
+                )
+            raise HTTPException(
+                status_code=500,
+                detail=result["message"]
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during force sync: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Force sync failed: {str(e)}"
         )

@@ -259,6 +259,14 @@ class AnkiClient:
         if self.is_running():
             return True
         
+        # Check if Docker mode is forced via config
+        use_docker = True  # Default to Docker
+        try:
+            from app.core.config import settings
+            use_docker = settings.ANKI_USE_DOCKER
+        except Exception:
+            pass  # Fall back to Docker if config unavailable
+        
         # Detect platform
         import platform
         is_apple_silicon = (
@@ -266,8 +274,27 @@ class AnkiClient:
             platform.machine() == "arm64"
         )
         
-        if is_apple_silicon:
-            # Try to open native Anki app on macOS
+        # Use Docker if configured or not on Apple Silicon
+        if use_docker or not is_apple_silicon:
+            # Try Docker
+            print("Starting Anki container (Docker mode)...")
+            try:
+                subprocess.run(
+                    ["docker", "compose", "up", "-d"],
+                    cwd=self._project_root,
+                    check=True,
+                    capture_output=True
+                )
+            except subprocess.CalledProcessError as e:
+                raise AnkiConnectionError(
+                    f"Failed to start Anki container: {e.stderr.decode()}"
+                ) from e
+            except FileNotFoundError:
+                raise AnkiConnectionError(
+                    "Docker not found. Please install Docker Desktop."
+                )
+        else:
+            # Try to open native Anki app on macOS (only if ANKI_USE_DOCKER=False)
             print("Starting native Anki app...")
             try:
                 subprocess.run(
@@ -284,24 +311,6 @@ class AnkiClient:
                 raise AnkiConnectionError(
                     "Anki not found. Please install from https://apps.ankiweb.net/"
                 )
-        else:
-            # Try Docker on other platforms
-            print("Starting Anki container...")
-            try:
-                subprocess.run(
-                    ["docker", "compose", "up", "-d"],
-                    cwd=self._project_root,
-                    check=True,
-                    capture_output=True
-                )
-            except subprocess.CalledProcessError as e:
-                raise AnkiConnectionError(
-                    f"Failed to start Anki container: {e.stderr.decode()}"
-                ) from e
-            except FileNotFoundError:
-                raise AnkiConnectionError(
-                    "Docker not found. Please install Docker Desktop."
-                )
         
         # Wait for AnkiConnect to be ready
         start_time = time.time()
@@ -311,14 +320,14 @@ class AnkiClient:
                 return True
             time.sleep(1)
         
-        if is_apple_silicon:
+        if use_docker or not is_apple_silicon:
             raise AnkiConnectionError(
-                f"AnkiConnect did not respond within {max_wait} seconds. "
-                "Please ensure Anki is running and AnkiConnect add-on is installed (code: 2055492159)"
+                f"Anki container did not start within {max_wait} seconds"
             )
         else:
             raise AnkiConnectionError(
-                f"Anki container did not start within {max_wait} seconds"
+                f"AnkiConnect did not respond within {max_wait} seconds. "
+                "Please ensure Anki is running and AnkiConnect add-on is installed (code: 2055492159)"
             )
     
     def stop(self) -> None:
@@ -1038,8 +1047,110 @@ class AnkiClient:
         
         Note: Requires AnkiWeb login to be configured first.
         Use the VNC interface (localhost:5900) for initial setup.
+        
+        Raises:
+            AnkiError: If sync fails, including if full sync is required.
+                       Check error message for "Sync status 2" to detect
+                       full sync requirement.
         """
         self._request("sync")
+    
+    def get_sync_status(self) -> dict:
+        """
+        Check Anki connection status without triggering a sync.
+        
+        Note: Due to AnkiConnect limitations, we cannot check if full sync
+        is required without actually attempting a sync. This method only
+        checks if Anki is running and responds to requests.
+        
+        Returns:
+            dict with keys:
+            - status: "ok" | "not_connected" | "error"
+            - message: Human-readable status message
+            - can_sync: Boolean indicating if Anki is available
+        """
+        # Check if Anki is responding
+        if not self.is_running():
+            return {
+                "status": "not_connected",
+                "message": "Anki is not running. Start Docker container or Anki app.",
+                "can_sync": False
+            }
+        
+        # Get basic info to verify connection
+        try:
+            version = self._request("version")
+            deck_count = len(self._request("deckNames"))
+            
+            return {
+                "status": "ok",
+                "message": f"Anki connected (v{version}, {deck_count} decks)",
+                "can_sync": True
+            }
+        except AnkiError as e:
+            return {
+                "status": "error",
+                "message": f"Anki error: {e}",
+                "can_sync": False
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"Error checking Anki status: {e}",
+                "can_sync": False
+            }
+    
+    def force_sync(self, mode: str) -> dict:
+        """
+        Force a full sync in a specific direction.
+        
+        This resolves sync conflicts by choosing which data to keep.
+        
+        Args:
+            mode: "upload" (local → server) or "download" (server → local)
+            
+        Returns:
+            dict with keys:
+            - success: Boolean
+            - message: Result message
+            
+        Note: This requires the custom forceSyncUpload/forceSyncDownload
+              actions to be installed in AnkiConnect (via addon).
+        """
+        if mode not in ("upload", "download"):
+            return {
+                "success": False,
+                "message": f"Invalid mode: {mode}. Must be 'upload' or 'download'."
+            }
+        
+        action = "forceSyncUpload" if mode == "upload" else "forceSyncDownload"
+        
+        try:
+            result = self._request(action)
+            return {
+                "success": True,
+                "message": f"Force {mode} completed successfully.",
+                "result": result
+            }
+        except AnkiError as e:
+            error_msg = str(e)
+            if "unsupported action" in error_msg.lower():
+                return {
+                    "success": False,
+                    "message": (
+                        f"Force sync not available. The custom AnkiConnect extension "
+                        f"is not installed. Please resolve the conflict manually via VNC (localhost:5900)."
+                    )
+                }
+            return {
+                "success": False,
+                "message": f"Force sync failed: {error_msg}"
+            }
+        except AnkiConnectionError as e:
+            return {
+                "success": False,
+                "message": f"Cannot connect to Anki: {e}"
+            }
     
     # =========================================================================
     # Utility Methods

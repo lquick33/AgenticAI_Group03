@@ -4,6 +4,7 @@ import { DashboardSidebar } from '@/components/dashboard/sidebar'
 import { KPICards } from '@/components/dashboard/kpi-cards'
 import { ProgressChart } from '@/components/dashboard/progress-chart'
 import { LearningUnitsTable } from '@/components/dashboard/learning-units-table'
+import { AnkiSyncStatus } from '@/components/dashboard/anki-sync-status'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
 
@@ -56,6 +57,9 @@ export default async function DashboardPage() {
         <div className="flex flex-1 flex-col">
           <div className="@container/main flex flex-1 flex-col gap-2">
             <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+              <div className="px-4 lg:px-6">
+                <AnkiSyncStatus />
+              </div>
               <KPICards userId={user.id} courseCount={courses?.length ?? 0} />
               <div className="px-4 lg:px-6">
                 <ProgressChart userId={user.id} />

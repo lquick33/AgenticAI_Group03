@@ -1,0 +1,7 @@
+{
+    "package": "force_sync",
+    "name": "Force Sync Extension",
+    "mod": 1706745600,
+    "conflicts": [],
+    "min_point_version": 45
+}

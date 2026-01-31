@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     TTS_AUDIO_ENCODING: str = "MP3"  # Audio encoding format
     TTS_SPEAKING_RATE: float = 1.0  # Speaking rate (0.25 to 4.0)
     
+    # Anki Configuration
+    ANKI_USE_DOCKER: bool = True  # Force Docker mode even on Apple Silicon
+    
     model_config = SettingsConfigDict(
         # Try .env in current directory, then parent directory (project root)
         env_file=[
