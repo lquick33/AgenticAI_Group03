@@ -1,0 +1,19 @@
+# Headless Anki Container Configuration
+# NOTE: This only works on x86_64 (Intel) Linux/Windows.
+# For Apple Silicon Macs (M1/M2/M3), use the native macOS Anki app instead.
+# See: start_anki.sh for automatic platform detection
+
+services:
+  anki:
+    image: thisisnttheway/headless-anki:latest
+    container_name: anki-agent
+    platform: linux/amd64  # Required for x86_64 emulation
+    ports:
+      - "8765:8765"   # AnkiConnect API
+      - "5900:5900"   # VNC for first-time AnkiWeb login setup
+    volumes:
+      - ./anki-data:/data
+    environment:
+      - ANKICONNECT_WILDCARD_ORIGIN=1
+      - QT_QPA_PLATFORM=vnc
+    restart: unless-stopped
