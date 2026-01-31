@@ -40,6 +40,7 @@ import {
   type FlashcardTaskStatus,
 } from '@/lib/api/study'
 import { EditableFilename } from '@/components/courses/editable-filename'
+import { DeckCompletionDialog } from '@/components/study/deck-completion-dialog'
 import { toast } from 'sonner'
 import { deleteMaterial } from '@/lib/api/materials'
 
@@ -66,6 +67,11 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
   const [materialIdForDeletion, setMaterialIdForDeletion] = useState<string | null>(null)
   const [materialNameForDeletion, setMaterialNameForDeletion] = useState<string | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [showCompletionDialog, setShowCompletionDialog] = useState(false)
+  const [completedMaterialId, setCompletedMaterialId] = useState<string | null>(null)
+  const [completedStatus, setCompletedStatus] = useState<FlashcardTaskStatus | null>(null)
+  const [isDialogDownloading, setIsDialogDownloading] = useState(false)
+  const [dialogDownloadSuccess, setDialogDownloadSuccess] = useState(false)
   const startPollingRef = useRef<((materialId: string, taskId: string) => void) | null>(null)
 
   // Update local materials when props change
@@ -87,11 +93,11 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
   const handleDownloadFlashcards = async (materialId: string) => {
     setLoadingFlashcards(prev => ({ ...prev, [materialId]: true }))
     try {
-      const blob = await downloadFlashcardsFromDb(materialId, userId)
+      const { blob, filename } = await downloadFlashcardsFromDb(materialId, userId)
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `flashcards_${materialId}.apkg`
+      a.download = filename
       document.body.appendChild(a)
       a.click()
       window.URL.revokeObjectURL(url)
@@ -114,24 +120,11 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     setIsGenerating(prev => ({ ...prev, [materialId]: false }))
     setFlashcardsStatus(prev => ({ ...prev, [materialId]: true }))
     
-    // Show appropriate toast based on sync status
-    // No auto-download - user clicks download button manually if needed
-    if (status.ankiweb_synced) {
-      // Cards synced to AnkiWeb successfully
-      toast.success('Karteikarten mit AnkiWeb synchronisiert', {
-        description: `${status.cards_generated} Karteikarten wurden erfolgreich generiert und synchronisiert.`,
-      })
-    } else if (status.anki_synced) {
-      // Cards added to local Anki but AnkiWeb sync failed/pending
-      toast.info('Karteikarten lokal gespeichert', {
-        description: `${status.cards_generated} Karteikarten wurden generiert. AnkiWeb-Sync steht noch aus.`,
-      })
-    } else {
-      // Cards generated but not added to Anki (Anki not connected)
-      toast.success('Karteikarten generiert', {
-        description: `${status.cards_generated} Karteikarten stehen zum Download bereit.`,
-      })
-    }
+    // Show completion dialog with sync status
+    setCompletedMaterialId(materialId)
+    setCompletedStatus(status)
+    setDialogDownloadSuccess(false)
+    setShowCompletionDialog(true)
   }, [])
 
   const startPolling = useCallback((materialId: string, taskId: string) => {
@@ -437,6 +430,42 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     }
   }
 
+  const handleDialogDownload = async () => {
+    if (!completedMaterialId) return
+
+    setIsDialogDownloading(true)
+    try {
+      const { blob, filename } = await downloadFlashcardsFromDb(completedMaterialId, userId)
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+      
+      setDialogDownloadSuccess(true)
+      toast.success('Flashcards heruntergeladen', {
+        description: 'Die Karteikarten wurden erfolgreich heruntergeladen.',
+      })
+    } catch (error) {
+      console.error('Error downloading flashcards:', error)
+      toast.error('Fehler beim Download', {
+        description: error instanceof Error ? error.message : 'Die Karteikarten konnten nicht heruntergeladen werden.',
+      })
+    } finally {
+      setIsDialogDownloading(false)
+    }
+  }
+
+  const handleCloseCompletionDialog = () => {
+    setShowCompletionDialog(false)
+    setCompletedMaterialId(null)
+    setCompletedStatus(null)
+    setDialogDownloadSuccess(false)
+  }
+
   if (localMaterials.length === 0) {
     return (
       <div className="rounded-lg border p-6">
@@ -639,6 +668,15 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <DeckCompletionDialog
+        isOpen={showCompletionDialog}
+        onClose={handleCloseCompletionDialog}
+        status={completedStatus}
+        onDownload={handleDialogDownload}
+        isDownloading={isDialogDownloading}
+        downloadSuccess={dialogDownloadSuccess}
+      />
     </>
   )
 }

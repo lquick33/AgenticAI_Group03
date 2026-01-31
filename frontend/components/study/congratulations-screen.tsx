@@ -13,6 +13,7 @@ import {
   type FlashcardTaskStatus 
 } from '@/lib/api/study'
 import { toast } from 'sonner'
+import { DeckCompletionDialog } from './deck-completion-dialog'
 
 interface CongratulationsScreenProps {
   materialId: string
@@ -29,9 +30,12 @@ export function CongratulationsScreen({
 }: CongratulationsScreenProps) {
   const [isGenerating, setIsGenerating] = useState(false)
   const [downloadSuccess, setDownloadSuccess] = useState(false)
+  const [isDownloading, setIsDownloading] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null)
   const [taskStatus, setTaskStatus] = useState<FlashcardTaskStatus | null>(null)
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null)
+  const [showCompletionDialog, setShowCompletionDialog] = useState(false)
+  const [completedStatus, setCompletedStatus] = useState<FlashcardTaskStatus | null>(null)
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -51,7 +55,9 @@ export function CongratulationsScreen({
         if (status.status === 'completed') {
           clearInterval(interval)
           setPollingInterval(null)
-          await handleDownload(status)
+          setIsGenerating(false)
+          setCompletedStatus(status)
+          setShowCompletionDialog(true)
         } else if (status.status === 'failed' || status.status === 'cancelled') {
           clearInterval(interval)
           setPollingInterval(null)
@@ -74,14 +80,13 @@ export function CongratulationsScreen({
     setPollingInterval(interval)
   }
 
-  const handleDownload = async (status: FlashcardTaskStatus) => {
+  const handleDownload = async () => {
     if (!taskId) return
 
+    setIsDownloading(true)
     try {
-      const blob = await downloadFlashcards(taskId, userId)
+      const { blob, filename } = await downloadFlashcards(taskId, userId)
       
-      // Get filename from status or use default (.apkg format)
-      const filename = status.filename || `flashcards_${materialId}.apkg`
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -92,7 +97,6 @@ export function CongratulationsScreen({
       window.URL.revokeObjectURL(url)
 
       setDownloadSuccess(true)
-      setIsGenerating(false)
       toast.success('Flashcards heruntergeladen', {
         description: 'Die Karteikarten wurden erfolgreich heruntergeladen.',
       })
@@ -101,7 +105,8 @@ export function CongratulationsScreen({
       toast.error('Fehler beim Download', {
         description: error instanceof Error ? error.message : 'Die Karteikarten konnten nicht heruntergeladen werden.',
       })
-      setIsGenerating(false)
+    } finally {
+      setIsDownloading(false)
     }
   }
 
@@ -150,9 +155,22 @@ export function CongratulationsScreen({
     }
   }
 
+  const handleCloseCompletionDialog = () => {
+    setShowCompletionDialog(false)
+  }
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-      <Card className="w-full max-w-2xl mx-4 bg-white/85">
+    <>
+      <DeckCompletionDialog
+        isOpen={showCompletionDialog}
+        onClose={handleCloseCompletionDialog}
+        status={completedStatus}
+        onDownload={handleDownload}
+        isDownloading={isDownloading}
+        downloadSuccess={downloadSuccess}
+      />
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+        <Card className="w-full max-w-2xl mx-4 bg-white/85">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-4">
             <CheckCircle2 className="h-16 w-16 text-green-500" />
@@ -193,7 +211,7 @@ export function CongratulationsScreen({
 
             <Button
               onClick={handleGenerateFlashcards}
-              disabled={isGenerating || downloadSuccess}
+              disabled={isGenerating || completedStatus !== null}
               size="lg"
               className="w-full"
             >
@@ -202,10 +220,10 @@ export function CongratulationsScreen({
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Karteikarten werden erstellt...
                 </>
-              ) : downloadSuccess ? (
+              ) : completedStatus !== null ? (
                 <>
                   <CheckCircle2 className="mr-2 h-4 w-4" />
-                  Erfolgreich heruntergeladen
+                  Karteikarten erstellt
                 </>
               ) : (
                 <>
@@ -214,6 +232,17 @@ export function CongratulationsScreen({
                 </>
               )}
             </Button>
+
+            {completedStatus !== null && (
+              <Button
+                onClick={() => setShowCompletionDialog(true)}
+                variant="outline"
+                size="lg"
+                className="w-full"
+              >
+                Status anzeigen
+              </Button>
+            )}
 
             {isGenerating && taskId && (
               <Button
@@ -248,6 +277,7 @@ export function CongratulationsScreen({
           </div>
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </>
   )
 }
