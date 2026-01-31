@@ -79,8 +79,9 @@ class FlashcardState(MessagesState):
     parent_deck_name: Optional[str] = None  # Course deck (e.g., "Marketing 101")
     target_deck_name: Optional[str] = None  # Full deck (e.g., "Marketing 101::Lecture 3")
     
-    # Anki sync result
-    anki_synced: bool = False  # Whether cards were successfully synced to Anki
+    # Anki sync results
+    anki_synced: bool = False  # Whether cards were successfully added to local Anki
+    ankiweb_synced: bool = False  # Whether cards were successfully synced to AnkiWeb
 
 
 def deduplicate_flashcards(
@@ -276,6 +277,11 @@ class FlashcardGeneratorAgent(BaseAgent):
         
         # Load existing card fronts from Anki if deduplication is enabled
         existing_anki_fronts = []
+        # #region agent log
+        import json as _json, time as _time
+        with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+            _f.write(_json.dumps({"location": "flashcard_agent.py:initialize_node:dedup_check", "message": "Checking deduplication config", "data": {"deduplicate_course": state.get("deduplicate_course", False), "parent_deck_name": state.get("parent_deck_name", ""), "target_deck_name": state.get("target_deck_name", "")}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "DEDUP"}) + "\n")
+        # #endregion
         if state.get("deduplicate_course", False):
             parent_deck = state.get("parent_deck_name", "")
             if parent_deck:
@@ -284,6 +290,10 @@ class FlashcardGeneratorAgent(BaseAgent):
                     state["course_id"],
                     state["user_id"]
                 )
+                # #region agent log
+                with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                    _f.write(_json.dumps({"location": "flashcard_agent.py:initialize_node:fronts_loaded", "message": "Loaded existing fronts for dedup", "data": {"fronts_count": len(existing_anki_fronts), "fronts_sample": existing_anki_fronts[:5] if existing_anki_fronts else []}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "DEDUP"}) + "\n")
+                # #endregion
                 logger.info(f"Loaded {len(existing_anki_fronts)} existing fronts for deduplication")
         
         return {
@@ -895,13 +905,27 @@ Respond with a JSON object matching this structure:
         save_to_db = state.get("save_to_db", False)
         all_cards = state.get("all_cards", [])
         
+        # #region agent log
+        import json as _json, time as _time
+        with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+            _f.write(_json.dumps({"location": "flashcard_agent.py:save_cards_node:entry", "message": "save_cards_node started", "data": {"save_to_db": save_to_db, "all_cards_count": len(all_cards), "deduplicate_course": state.get("deduplicate_course", False), "target_deck_name": state.get("target_deck_name"), "existing_anki_fronts_count": len(state.get("existing_anki_fronts", []))}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "DEDUP"}) + "\n")
+        # #endregion
+        
         if not all_cards:
             return state
         
         # 1. Apply deduplication if enabled
         if state.get("deduplicate_course", False):
             existing_fronts = state.get("existing_anki_fronts", [])
+            # #region agent log
+            with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                _f.write(_json.dumps({"location": "flashcard_agent.py:save_cards_node:before_dedup", "message": "Before deduplication", "data": {"cards_before": len(all_cards), "existing_fronts_count": len(existing_fronts), "existing_fronts_sample": existing_fronts[:5] if existing_fronts else []}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "DEDUP"}) + "\n")
+            # #endregion
             all_cards, removed_count = deduplicate_flashcards(all_cards, existing_fronts)
+            # #region agent log
+            with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                _f.write(_json.dumps({"location": "flashcard_agent.py:save_cards_node:after_dedup", "message": "After deduplication", "data": {"cards_after": len(all_cards), "removed_count": removed_count}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "DEDUP"}) + "\n")
+            # #endregion
             if removed_count > 0:
                 logger.info(f"Deduplication removed {removed_count} similar cards")
         
@@ -912,16 +936,30 @@ Respond with a JSON object matching this structure:
         # 2. Add to Anki (source of truth)
         target_deck = state.get("target_deck_name")
         note_ids = []
-        anki_synced = False
+        anki_synced = False  # Cards added to local Anki
+        ankiweb_synced = False  # Cards synced to AnkiWeb
+        
+        # #region agent log
+        with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+            _f.write(_json.dumps({"location": "flashcard_agent.py:save_cards_node:before_anki", "message": "About to add to Anki", "data": {"target_deck": target_deck, "cards_count": len(all_cards), "has_target_deck": bool(target_deck)}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+        # #endregion
         
         if target_deck:
             try:
-                note_ids = self._add_cards_to_anki(all_cards, target_deck)
+                note_ids, ankiweb_synced = self._add_cards_to_anki(all_cards, target_deck)
                 successful_adds = len([n for n in note_ids if n])
-                logger.info(f"Added {successful_adds} cards to Anki deck '{target_deck}'")
-                # Consider Anki sync successful if at least one card was added
+                # #region agent log
+                with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                    _f.write(_json.dumps({"location": "flashcard_agent.py:save_cards_node:after_anki", "message": "Anki add result", "data": {"note_ids_count": len(note_ids), "successful_adds": successful_adds, "ankiweb_synced": ankiweb_synced, "note_ids_sample": note_ids[:5] if note_ids else []}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+                # #endregion
+                logger.info(f"Added {successful_adds} cards to Anki deck '{target_deck}', AnkiWeb synced: {ankiweb_synced}")
+                # Consider local Anki sync successful if at least one card was added
                 anki_synced = successful_adds > 0
             except Exception as e:
+                # #region agent log
+                with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                    _f.write(_json.dumps({"location": "flashcard_agent.py:save_cards_node:anki_exception", "message": "Anki add threw exception", "data": {"error": str(e), "error_type": type(e).__name__}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+                # #endregion
                 logger.error(f"Failed to add cards to Anki: {e}")
                 # Continue to cache even if Anki fails
         
@@ -940,15 +978,20 @@ Respond with a JSON object matching this structure:
                         note_ids,
                         user_id,
                         target_deck or "Default",
-                        course_id
+                        course_id,
+                        synced_to_ankiweb=ankiweb_synced
                     )
-                    logger.info(f"Cached {len(all_cards)} flashcards to database")
+                    logger.info(f"Cached {len(all_cards)} flashcards to database (ankiweb_synced={ankiweb_synced})")
                 except Exception as e:
                     logger.warning(f"Failed to cache flashcards: {str(e)}")
             else:
                 logger.warning("No Anki note IDs - cards not cached (Anki integration may have failed)")
         
-        return {**state, "all_cards": all_cards, "anki_synced": anki_synced}
+        # #region agent log
+        with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+            _f.write(_json.dumps({"location": "flashcard_agent.py:save_cards_node:exit", "message": "save_cards_node completed", "data": {"final_cards_count": len(all_cards), "note_ids_count": len(note_ids), "anki_synced": anki_synced, "ankiweb_synced": ankiweb_synced}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "COMPLETE"}) + "\n")
+        # #endregion
+        return {**state, "all_cards": all_cards, "anki_synced": anki_synced, "ankiweb_synced": ankiweb_synced}
     
     def _load_existing_fronts_from_anki(
         self, 
@@ -1004,7 +1047,7 @@ Respond with a JSON object matching this structure:
         self, 
         cards: List[Dict[str, Any]], 
         deck_name: str
-    ) -> List[Optional[int]]:
+    ) -> Tuple[List[Optional[int]], bool]:
         """
         Add cards to Anki and sync to AnkiWeb.
         
@@ -1013,11 +1056,30 @@ Respond with a JSON object matching this structure:
             deck_name: Target deck name (e.g., "Course::Lecture")
             
         Returns:
-            List of Anki note IDs (None for failed cards)
+            Tuple of (note_ids, ankiweb_synced):
+            - note_ids: List of Anki note IDs (None for failed cards)
+            - ankiweb_synced: Whether sync to AnkiWeb succeeded
         """
+        # #region agent log
+        import json as _json, time as _time
+        with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+            _f.write(_json.dumps({"location": "flashcard_agent.py:_add_cards_to_anki:entry", "message": "Starting Anki add", "data": {"cards_count": len(cards), "deck_name": deck_name}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+        # #endregion
+        
         from app.services.anki.client import AnkiClient
         
-        anki = AnkiClient()
+        try:
+            anki = AnkiClient()
+            # #region agent log
+            with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                _f.write(_json.dumps({"location": "flashcard_agent.py:_add_cards_to_anki:client_created", "message": "AnkiClient created", "data": {"client_type": type(anki).__name__}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+            # #endregion
+        except Exception as e:
+            # #region agent log
+            with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                _f.write(_json.dumps({"location": "flashcard_agent.py:_add_cards_to_anki:client_error", "message": "AnkiClient creation failed", "data": {"error": str(e), "error_type": type(e).__name__}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+            # #endregion
+            raise
         
         # Prepare notes for batch add
         notes = []
@@ -1029,16 +1091,42 @@ Respond with a JSON object matching this structure:
                 "tags": card.get("tags", [])
             })
         
+        # #region agent log
+        with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+            _f.write(_json.dumps({"location": "flashcard_agent.py:_add_cards_to_anki:notes_prepared", "message": "Notes prepared for Anki", "data": {"notes_count": len(notes), "first_note_front": notes[0]["front"][:50] if notes else None}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+        # #endregion
+        
         # Add notes to Anki
-        note_ids = anki.add_notes(notes)
+        try:
+            note_ids = anki.add_notes(notes)
+            # #region agent log
+            with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                _f.write(_json.dumps({"location": "flashcard_agent.py:_add_cards_to_anki:add_notes_success", "message": "add_notes completed", "data": {"note_ids_count": len(note_ids) if note_ids else 0, "successful_ids": len([n for n in note_ids if n]) if note_ids else 0, "sample_ids": note_ids[:5] if note_ids else []}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+            # #endregion
+        except Exception as e:
+            # #region agent log
+            with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                _f.write(_json.dumps({"location": "flashcard_agent.py:_add_cards_to_anki:add_notes_error", "message": "add_notes failed", "data": {"error": str(e), "error_type": type(e).__name__}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+            # #endregion
+            raise
         
         # Sync to AnkiWeb
+        ankiweb_synced = False
         try:
             anki.sync()
+            ankiweb_synced = True
+            # #region agent log
+            with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                _f.write(_json.dumps({"location": "flashcard_agent.py:_add_cards_to_anki:sync_success", "message": "AnkiWeb sync succeeded", "data": {}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+            # #endregion
         except Exception as e:
-            logger.warning(f"Anki sync failed (cards still added locally): {e}")
+            # #region agent log
+            with open("/Users/milan/on mac/cursor AAI/.cursor/debug.log", "a") as _f:
+                _f.write(_json.dumps({"location": "flashcard_agent.py:_add_cards_to_anki:sync_error", "message": "AnkiWeb sync failed", "data": {"error": str(e), "error_type": type(e).__name__}, "timestamp": _time.time()*1000, "sessionId": "debug-session", "hypothesisId": "ANKI"}) + "\n")
+            # #endregion
+            logger.warning(f"AnkiWeb sync failed (cards still added locally): {e}")
         
-        return note_ids
+        return note_ids, ankiweb_synced
     
     def _prepare_snippet_info(self, snippet_image_urls: Optional[List[str]]) -> str:
         """
@@ -1860,8 +1948,9 @@ You must respond with a valid JSON object matching this structure:
             # Return cards and sync status from final state
             all_cards = final_state.get("all_cards", [])
             anki_synced = final_state.get("anki_synced", False)
-            logger.info(f"Flashcard generation completed: {len(all_cards)} cards generated, anki_synced={anki_synced}")
-            return {"cards": all_cards, "anki_synced": anki_synced}
+            ankiweb_synced = final_state.get("ankiweb_synced", False)
+            logger.info(f"Flashcard generation completed: {len(all_cards)} cards generated, anki_synced={anki_synced}, ankiweb_synced={ankiweb_synced}")
+            return {"cards": all_cards, "anki_synced": anki_synced, "ankiweb_synced": ankiweb_synced}
             
         except Exception as e:
             # Update span with error

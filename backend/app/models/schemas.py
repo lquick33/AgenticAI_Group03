@@ -187,6 +187,8 @@ class FlashcardTaskStatusResponse(BaseModel):
     cards_generated: int
     error_message: Optional[str] = None
     filename: Optional[str] = None
+    anki_synced: bool = False  # Cards added to local Anki
+    ankiweb_synced: bool = False  # Cards synced to AnkiWeb
     created_at: float
     completed_at: Optional[float] = None
 

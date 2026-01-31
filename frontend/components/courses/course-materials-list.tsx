@@ -109,53 +109,30 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     }
   }
 
-  const handleDownloadAfterGeneration = useCallback(async (materialId: string, status: FlashcardTaskStatus) => {
-    // If Anki sync succeeded, just show success and don't prompt download
-    if (status.anki_synced) {
-      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
-      setFlashcardsStatus(prev => ({ ...prev, [materialId]: true }))
-      toast.success('Karteikarten mit Anki synchronisiert', {
-        description: `${status.cards_generated} Karteikarten wurden erfolgreich generiert und mit AnkiWeb synchronisiert.`,
-      })
-      return
-    }
-
-    // Anki sync failed or not connected - offer download
-    const taskId = status.task_id
+  const handleGenerationComplete = useCallback(async (materialId: string, status: FlashcardTaskStatus) => {
+    // Update state - generation is complete
+    setIsGenerating(prev => ({ ...prev, [materialId]: false }))
+    setFlashcardsStatus(prev => ({ ...prev, [materialId]: true }))
     
-    if (!taskId) {
-      console.error('No task ID available for download')
-      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
-      return
-    }
-
-    try {
-      const blob = await downloadFlashcards(taskId, userId)
-      
-      // Get filename from status or use default
-      const filename = status.filename || `flashcards_${materialId}.apkg`
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      window.URL.revokeObjectURL(url)
-
-      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
-      setFlashcardsStatus(prev => ({ ...prev, [materialId]: true }))
-      toast.success('Flashcards heruntergeladen', {
-        description: 'Die Karteikarten wurden erfolgreich generiert und heruntergeladen.',
+    // Show appropriate toast based on sync status
+    // No auto-download - user clicks download button manually if needed
+    if (status.ankiweb_synced) {
+      // Cards synced to AnkiWeb successfully
+      toast.success('Karteikarten mit AnkiWeb synchronisiert', {
+        description: `${status.cards_generated} Karteikarten wurden erfolgreich generiert und synchronisiert.`,
       })
-    } catch (error) {
-      console.error('Error downloading flashcards:', error)
-      toast.error('Fehler beim Download', {
-        description: error instanceof Error ? error.message : 'Die Karteikarten konnten nicht heruntergeladen werden.',
+    } else if (status.anki_synced) {
+      // Cards added to local Anki but AnkiWeb sync failed/pending
+      toast.info('Karteikarten lokal gespeichert', {
+        description: `${status.cards_generated} Karteikarten wurden generiert. AnkiWeb-Sync steht noch aus.`,
       })
-      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
+    } else {
+      // Cards generated but not added to Anki (Anki not connected)
+      toast.success('Karteikarten generiert', {
+        description: `${status.cards_generated} Karteikarten stehen zum Download bereit.`,
+      })
     }
-  }, [userId])
+  }, [])
 
   const startPolling = useCallback((materialId: string, taskId: string) => {
     const interval = setInterval(async () => {
@@ -170,7 +147,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
             delete newIntervals[materialId]
             return newIntervals
           })
-          await handleDownloadAfterGeneration(materialId, status)
+          await handleGenerationComplete(materialId, status)
         } else if (status.status === 'failed' || status.status === 'cancelled') {
           clearInterval(interval)
           setPollingIntervals(prev => {
@@ -199,7 +176,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     }, 2000) // Poll every 2 seconds
 
     setPollingIntervals(prev => ({ ...prev, [materialId]: interval }))
-  }, [userId, handleDownloadAfterGeneration])
+  }, [userId, handleGenerationComplete])
 
   // Store startPolling in ref so it can be accessed in useEffect
   startPollingRef.current = startPolling
@@ -233,8 +210,8 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
               if (activeTask.status === 'pending' || activeTask.status === 'running') {
                 startPollingRef.current?.(material.id, activeTask.task_id)
               } else if (activeTask.status === 'completed') {
-                // Task completed but we just loaded - download automatically
-                await handleDownloadAfterGeneration(material.id, activeTask)
+                // Task completed but we just loaded - show completion status
+                await handleGenerationComplete(material.id, activeTask)
               } else if (activeTask.status === 'failed' || activeTask.status === 'cancelled') {
                 // Task failed or was cancelled - reset state
                 setIsGenerating(prev => ({ ...prev, [material.id]: false }))
@@ -254,7 +231,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     if (localMaterials.length > 0) {
       checkFlashcardsAndActiveTasks()
     }
-  }, [localMaterials, userId, handleDownloadAfterGeneration])
+  }, [localMaterials, userId, handleGenerationComplete])
 
   // Cleanup polling intervals on unmount
   useEffect(() => {

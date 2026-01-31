@@ -884,7 +884,8 @@ def cache_flashcards(
     anki_note_ids: List[int],
     user_id: str,
     deck_name: str,
-    course_id: Optional[str] = None
+    course_id: Optional[str] = None,
+    synced_to_ankiweb: bool = False
 ) -> None:
     """
     Cache flashcards after adding to Anki.
@@ -897,6 +898,7 @@ def cache_flashcards(
         user_id: User ID (UUID)
         deck_name: Full deck name (e.g., "Course::Lecture")
         course_id: Optional course ID for faster DB joins
+        synced_to_ankiweb: Whether cards have been synced to AnkiWeb
     """
     if not cards or not anki_note_ids:
         return
@@ -914,6 +916,7 @@ def cache_flashcards(
                 "back": card["back"],
                 "tags": card.get("tags", []),
                 "course_id": course_id,
+                "synced_to_ankiweb": synced_to_ankiweb,
             })
     
     if records:
@@ -1094,6 +1097,59 @@ def update_cached_deck_names(
         return count
     except Exception as e:
         raise Exception(f"Failed to update cached deck names: {str(e)}")
+
+
+def get_unsynced_flashcard_count(user_id: str) -> int:
+    """
+    Get the count of flashcards that haven't been synced to AnkiWeb.
+    
+    Args:
+        user_id: User ID (UUID)
+        
+    Returns:
+        Count of unsynced flashcards
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = (
+            client.table("flashcard_cache")
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .eq("synced_to_ankiweb", False)
+            .execute()
+        )
+        return response.count if response.count else 0
+    except Exception as e:
+        logger.warning(f"Failed to get unsynced flashcard count: {e}")
+        return 0
+
+
+def mark_flashcards_as_synced(user_id: str) -> int:
+    """
+    Mark all unsynced flashcards as synced to AnkiWeb.
+    Called after a successful AnkiWeb sync.
+    
+    Args:
+        user_id: User ID (UUID)
+        
+    Returns:
+        Number of updated records
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = (
+            client.table("flashcard_cache")
+            .update({"synced_to_ankiweb": True})
+            .eq("user_id", user_id)
+            .eq("synced_to_ankiweb", False)
+            .execute()
+        )
+        return len(response.data) if response.data else 0
+    except Exception as e:
+        logger.warning(f"Failed to mark flashcards as synced: {e}")
+        return 0
 
 
 def sync_cache_from_anki(

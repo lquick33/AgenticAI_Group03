@@ -268,7 +268,8 @@ export interface FlashcardTaskStatus {
   cards_generated: number
   error_message?: string
   filename?: string
-  anki_synced?: boolean
+  anki_synced?: boolean  // Cards added to local Anki
+  ankiweb_synced?: boolean  // Cards synced to AnkiWeb
   created_at: number
   completed_at?: number
 }
@@ -435,6 +436,26 @@ export async function getActiveFlashcardTask(
   }
 
   return data as FlashcardTaskStatus
+}
+
+/**
+ * Retry syncing unsynced flashcards to AnkiWeb
+ */
+export async function retryAnkiWebSync(
+  userId: string
+): Promise<{ status: string; message: string; synced_count?: number; unsynced_count?: number }> {
+  const url = `${API_URL}/api/flashcards/retry-ankiweb-sync?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'POST',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
 }
 
 /**

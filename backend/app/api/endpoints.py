@@ -2511,6 +2511,71 @@ async def sync_flashcards_from_anki(
         raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
 
 
+@router.post("/flashcards/retry-ankiweb-sync", status_code=200)
+async def retry_ankiweb_sync(
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> dict:
+    """
+    Retry syncing unsynced flashcards to AnkiWeb.
+    
+    Call this when AnkiWeb connection is restored to sync any cards
+    that were added to local Anki but failed to sync to AnkiWeb.
+    
+    Args:
+        user_id: User ID (UUID)
+        
+    Returns:
+        Dict with sync status and count of synced cards
+    """
+    from app.services.storage import get_unsynced_flashcard_count, mark_flashcards_as_synced
+    from app.services.anki.client import AnkiClient
+    
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first.",
+            )
+        
+        # Check how many cards need syncing
+        unsynced_count = get_unsynced_flashcard_count(user_id)
+        
+        if unsynced_count == 0:
+            return {
+                "status": "success",
+                "message": "No unsynced cards found",
+                "synced_count": 0
+            }
+        
+        # Try to sync to AnkiWeb
+        try:
+            anki = AnkiClient()
+            anki.sync()
+            
+            # Mark all cards as synced
+            synced_count = mark_flashcards_as_synced(user_id)
+            
+            return {
+                "status": "success",
+                "message": f"Successfully synced {synced_count} cards to AnkiWeb",
+                "synced_count": synced_count
+            }
+        except Exception as e:
+            logger.warning(f"AnkiWeb sync failed: {e}")
+            return {
+                "status": "failed",
+                "message": f"AnkiWeb sync failed: {str(e)}",
+                "unsynced_count": unsynced_count
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Retry sync failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Retry sync failed: {str(e)}")
+
+
 @router.get("/flashcards/status/{task_id}", response_model=FlashcardTaskStatusResponse, status_code=200)
 async def get_flashcard_task_status(
     task_id: str = Path(..., description="Task ID"),

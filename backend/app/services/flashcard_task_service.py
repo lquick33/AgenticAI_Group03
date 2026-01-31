@@ -93,7 +93,8 @@ class FlashcardTask:
         self.error_message: Optional[str] = None
         self.apkg_bytes: Optional[bytes] = None
         self.filename: Optional[str] = None
-        self.anki_synced: bool = False
+        self.anki_synced: bool = False  # Cards added to local Anki
+        self.ankiweb_synced: bool = False  # Cards synced to AnkiWeb
         self.created_at = time.time()
         self.completed_at: Optional[float] = None
         self._cancelled = False
@@ -110,6 +111,7 @@ class FlashcardTask:
             "error_message": self.error_message,
             "filename": self.filename,
             "anki_synced": self.anki_synced,
+            "ankiweb_synced": self.ankiweb_synced,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
         }
@@ -297,9 +299,10 @@ class FlashcardTaskService:
                 task.completed_at = time.time()
                 return
             
-            # Extract cards and anki_synced from result
+            # Extract cards and sync statuses from result
             cards = result.get("cards", []) if isinstance(result, dict) else result
             task.anki_synced = result.get("anki_synced", False) if isinstance(result, dict) else False
+            task.ankiweb_synced = result.get("ankiweb_synced", False) if isinstance(result, dict) else False
             
             if not cards:
                 task.status = TaskStatus.FAILED
