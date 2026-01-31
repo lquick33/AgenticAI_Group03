@@ -102,15 +102,104 @@ If successful, you'll see:
 - ✓ All 5 tests passed
 - MP3 audio files generated in `backend/test_outputs/`
 
+## Anki Integration (Docker)
+
+The Anki integration enables the agent to track user knowledge levels and sync flashcards to the user's Anki account via AnkiConnect.
+
+### Prerequisites
+
+- Docker and Docker Compose installed
+- An AnkiWeb account (free at https://ankiweb.net/)
+
+### Quick Start
+
+1. **Start the Anki Docker container**:
+   ```bash
+   # From the project root (where docker-compose.yml is located)
+   docker compose up -d
+   ```
+
+2. **First-time AnkiWeb login** (required once):
+   - Connect to the VNC server: `open vnc://localhost:5900`
+   - Or use a VNC client (RealVNC Viewer recommended) to connect to `localhost:5900`
+   - In the Anki window, go to **Tools > Preferences > Syncing**
+   - Click **Login to AnkiWeb** and enter your credentials
+   - Click **Sync** to complete the initial sync
+
+3. **Verify the connection**:
+   ```bash
+   curl http://localhost:8765 -X POST -d '{"action": "version", "version": 6}'
+   # Should return: {"result": 6, "error": null}
+   ```
+
+### Docker Services
+
+The `docker-compose.yml` includes:
+
+| Service | Port | Description |
+|---------|------|-------------|
+| `anki` | 8765 | AnkiConnect API (for flashcard operations) |
+| `anki` | 5900 | VNC server (for GUI access and AnkiWeb login) |
+
+### Knowledge Tracking Features
+
+Once Anki is running and synced, the agent can:
+
+- **Track mastery levels** per deck with detailed metrics:
+  - Card distribution (new, learning, young, mature)
+  - Mastery score (0.0-1.0) based on spaced repetition data
+  - Retention rate, average ease factor, intervals
+  
+- **Course-aware flashcard creation**:
+  - Auto-generates deck names: "Course Title::Lecture Name"
+  - Links cards to course materials in the database
+  
+- **Study recommendations** based on:
+  - Low-mastery decks needing attention
+  - New cards waiting to be studied
+  - Retention rate issues
+
+### Agent Tools
+
+The following tools are available to agents:
+
+| Tool | Description |
+|------|-------------|
+| `get_knowledge_levels()` | Get mastery for all Anki decks |
+| `get_course_knowledge_levels()` | Per-lecture breakdown for a course |
+| `create_course_flashcard()` | Create card with auto deck naming |
+| `create_course_flashcards_batch()` | Bulk card creation |
+
+### Troubleshooting
+
+**Container won't start**:
+- Check Docker is running: `docker ps`
+- Check logs: `docker compose logs anki`
+
+**AnkiConnect not responding**:
+- Ensure container is running: `docker compose ps`
+- Check port isn't in use: `lsof -i :8765`
+
+**VNC connection issues**:
+- Use a proper VNC client (macOS Screen Sharing may have issues)
+- Try RealVNC Viewer or TigerVNC
+- VNC has no password by default
+
+**Sync fails**:
+- Ensure you're logged into AnkiWeb via VNC
+- Check internet connectivity in the container
+- Try manual sync via VNC: Tools > Sync
+
 ## Project Structure
 
 ```
 backend/
   app/
-    agents/          # AI agents (TutorAgent, FlashcardAgent)
+    agents/          # AI agents (TutorAgent, FlashcardAgent, QuizAgent)
     api/            # FastAPI endpoints
     core/           # Configuration and settings
     services/       # Business logic services
+      anki/         # Anki integration (AnkiClient, KnowledgeService)
     tools/          # LangChain tools for agents
   credentials/      # Google Cloud credentials (gitignored)
   supabase/        # Database migrations

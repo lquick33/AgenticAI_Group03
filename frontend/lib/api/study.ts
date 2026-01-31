@@ -492,3 +492,126 @@ export async function submitQuiz(
 
   return response.json()
 }
+
+// =============================================================================
+// Knowledge Tracking API
+// =============================================================================
+
+/**
+ * Knowledge level data for a single deck
+ */
+export interface DeckKnowledge {
+  mastery_score: number
+  total_cards: number
+  new_cards: number
+  learning_cards: number
+  young_cards: number
+  mature_cards: number
+  avg_ease: number
+  avg_interval_days: number
+  retention_rate: number
+  status: 'mastered' | 'progressing' | 'needs_review' | 'not_started' | 'no_cards'
+  is_leaf: boolean
+}
+
+/**
+ * Response from get_knowledge_levels endpoint
+ */
+export interface KnowledgeLevelsResponse {
+  status: 'success' | 'error'
+  overall_mastery: number
+  total_cards: number
+  decks: Record<string, DeckKnowledge>
+  recommendations: string[]
+  error?: string
+}
+
+/**
+ * Knowledge level data for a single lecture
+ */
+export interface LectureKnowledge {
+  material_id: string | null
+  name: string
+  deck_name: string
+  mastery_score: number
+  total_cards: number
+  new_cards: number
+  learning_cards: number
+  young_cards: number
+  mature_cards: number
+  avg_ease: number
+  avg_interval_days: number
+  retention_rate: number
+  status: string
+}
+
+/**
+ * Response from get_course_knowledge_levels endpoint
+ */
+export interface CourseKnowledgeResponse {
+  status: 'success' | 'error'
+  course: {
+    id: string
+    title: string
+    overall_mastery: number
+    total_cards: number
+  }
+  lectures: LectureKnowledge[]
+  weakest_lecture: string | null
+  strongest_lecture: string | null
+  recommendations: string[]
+  error?: string
+}
+
+/**
+ * Get knowledge levels for all Anki decks
+ * 
+ * Returns comprehensive mastery information for all decks:
+ * - Mastery score (0.0-1.0) based on card states, ease factors, and retention
+ * - Card distribution (new, learning, young, mature)
+ * - Status labels (mastered, progressing, needs_review, not_started)
+ * - Study recommendations
+ */
+export async function getKnowledgeLevels(
+  userId: string
+): Promise<KnowledgeLevelsResponse> {
+  const url = `${API_URL}/api/knowledge/levels?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * Get knowledge levels for all lectures within a specific course
+ * 
+ * Returns per-lecture mastery breakdown:
+ * - Course-level overall mastery (weighted by card count)
+ * - Per-lecture mastery scores and card distributions
+ * - Identifies weakest and strongest lectures
+ * - Targeted study recommendations
+ */
+export async function getCourseKnowledgeLevels(
+  courseId: string,
+  userId: string
+): Promise<CourseKnowledgeResponse> {
+  const url = `${API_URL}/api/knowledge/course/${encodeURIComponent(courseId)}?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}

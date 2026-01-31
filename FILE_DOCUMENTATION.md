@@ -4396,3 +4396,301 @@ image_bytes = download_snippet_image(snippet["image_path"])
 - Database change "Allow Multiple Snippets Per Page (2026-01-27)" - Applied via Supabase MCP
 
 ---
+
+## Anki Knowledge Tracking System
+
+### `supabase/migrations/20260131000000_add_knowledge_tracking.sql`
+
+**Purpose**: Migration that adds tables for tracking Anki deck knowledge levels per user. Enables the agent to analyze user mastery based on Anki spaced repetition data.
+
+**Key Components**:
+- **course_deck_mappings**: Links courses and course_materials to Anki deck names
+  - `user_id`, `course_id`, `course_material_id` - Foreign keys
+  - `deck_name` - Hierarchical deck name (e.g., "Marketing 101::Lecture 1 - Introduction")
+  - `UNIQUE(user_id, deck_name)` - One mapping per user per deck
+- **deck_knowledge_snapshots**: Stores periodic snapshots of deck knowledge for trend analysis
+  - Card counts: `total_cards`, `new_cards`, `learning_cards`, `young_cards`, `mature_cards`, `suspended_cards`
+  - Metrics: `avg_ease_factor`, `avg_interval_days`, `retention_rate`, `mastery_score`
+  - Optional course links for faster queries
+  - `captured_at` - Timestamp for historical tracking
+- **anki_card_mappings**: Links agent-generated flashcards to Anki note IDs
+  - `flashcard_id` - Optional link to internal flashcard table
+  - `anki_note_id` - Anki's unique note identifier
+  - `deck_name` - Which deck the card belongs to
+  - `UNIQUE(user_id, anki_note_id)` - One mapping per user per Anki note
+
+**RLS Policies**: All three tables have Row Level Security enabled with policies ensuring users can only access their own data.
+
+**Indexes**: Optimized for common query patterns (user+deck, course, captured_at DESC)
+
+**Dependencies**: Requires existing `profiles`, `courses`, `course_materials`, `flashcards` tables from initial schema.
+
+**Usage**: Apply via Supabase SQL editor or CLI: `supabase db push`
+
+---
+
+### `backend/app/services/anki/__init__.py`
+
+**Purpose**: Package exports for the Anki integration service. Updated to export knowledge tracking classes and helper functions.
+
+**Exports**:
+- **Client Classes**: `AnkiClient`, `AnkiError`, `AnkiConnectionError`
+- **Data Classes**: `DeckStats`, `ReviewStats`, `CardKnowledge`, `DeckKnowledge`, `CourseKnowledge`
+- **Knowledge Service**: `KnowledgeService`, `LectureKnowledge`, `CourseKnowledgeResult`
+- **Helper Functions**: `build_deck_name`, `parse_deck_name`
+
+**Usage**: 
+```python
+from app.services.anki import (
+    AnkiClient,
+    KnowledgeService,
+    CardKnowledge,
+    DeckKnowledge,
+    build_deck_name,
+)
+```
+
+---
+
+### `backend/app/services/anki/client.py` (Knowledge Tracking Extensions)
+
+**Purpose**: Extended AnkiConnect API wrapper with knowledge tracking capabilities. Queries Anki for detailed card states and calculates deck-level mastery metrics.
+
+**New Data Classes**:
+- **CardKnowledge**: Knowledge state for a single card
+  - `card_id`, `note_id`, `deck_name` - Identifiers
+  - `ease_factor` - Card difficulty (1.3-2.5+, higher = easier)
+  - `interval` - Days until next review
+  - `queue` - Card queue (0=new, 1=learning, 2=review, -1=suspended, -2=buried)
+  - `card_type` - Type (0=new, 1=learning, 2=review, 3=relearning)
+  - `reviews`, `lapses` - Total review count and times forgotten
+  - Properties: `is_mature` (interval >= 21 days), `is_young` (interval < 21 days), `is_learning`, `is_new`
+
+- **DeckKnowledge**: Aggregated knowledge metrics for a deck
+  - Card counts: `total_cards`, `new_cards`, `learning_cards`, `young_cards`, `mature_cards`, `suspended_cards`
+  - Metrics: `avg_ease`, `avg_interval`, `total_reviews`, `total_lapses`, `mastery_score`
+  - `is_leaf` - **Critical flag**: True if deck has no subdecks (counted in totals), False for parent decks (excluded to prevent double-counting)
+  - Properties: `retention_rate` (1 - lapses/reviews), `status` (mastered/progressing/needs_review/not_started)
+
+**New Methods**:
+- **find_cards(query)**: Find card IDs matching Anki search query
+- **get_cards_info(card_ids)**: Get detailed info for specific cards
+- **get_cards_knowledge(deck_name)**: Get CardKnowledge list for a deck
+- **get_deck_knowledge(deck_name)**: Get aggregated DeckKnowledge for a deck
+- **get_all_decks_knowledge()**: Get knowledge for all decks with parent detection
+  - **Important**: Parent decks (those with `::` subdecks) are marked `is_leaf=False`
+  - This prevents double-counting when calculating totals (parent deck cards are duplicates of subdeck cards)
+
+**Mastery Score Calculation**:
+```python
+# Weighted combination of:
+# - Progress: (mature + young + learning) / total_cards (40%)
+# - Maturity: mature_cards / studied_cards (30%)
+# - Ease: normalized ease factor (15%)
+# - Retention: 1 - (lapses / reviews) (15%)
+mastery_score = 0.4 * progress + 0.3 * maturity + 0.15 * ease_norm + 0.15 * retention
+```
+
+**Usage**: 
+```python
+from app.services.anki import AnkiClient
+
+client = AnkiClient()
+all_knowledge = client.get_all_decks_knowledge()
+
+# Filter leaf decks for accurate totals
+leaf_decks = {n: dk for n, dk in all_knowledge.items() if dk.is_leaf}
+total_cards = sum(dk.total_cards for dk in leaf_decks.values())
+```
+
+---
+
+### `backend/app/services/anki/knowledge_service.py`
+
+**Purpose**: High-level service for tracking user knowledge levels based on Anki data. Provides course-aware knowledge aggregation and study recommendations.
+
+**Helper Functions**:
+- **build_deck_name(course_title, material_name)**: Builds hierarchical deck name
+  - Input: `"Marketing 101"`, `"Lecture 1 - Introduction.pdf"`
+  - Output: `"Marketing 101::Lecture 1 - Introduction"`
+- **parse_deck_name(deck_name)**: Parses deck name into course and lecture parts
+  - Input: `"Marketing 101::Lecture 1 - Introduction"`
+  - Output: `("Marketing 101", "Lecture 1 - Introduction")`
+
+**Data Classes**:
+- **LectureKnowledge**: Knowledge metrics for a single lecture/material
+  - `material_id`, `name`, `deck_name` - Identifiers
+  - Same metrics as DeckKnowledge plus `status`
+- **CourseKnowledgeResult**: Complete knowledge result for a course
+  - `status`, `course_id`, `course_title`, `overall_mastery`, `total_cards`
+  - `lectures` - List of LectureKnowledge
+  - `weakest_lecture`, `strongest_lecture` - Quick identification
+  - `recommendations` - Study suggestions
+
+**KnowledgeService Class**:
+- **get_all_knowledge_levels()**: Get knowledge for all Anki decks
+  - Returns dict with `status`, `overall_mastery`, `total_cards`, `decks`, `recommendations`
+  - **Important**: Only counts leaf decks in totals to prevent double-counting
+  - Includes `is_leaf` flag in deck data for consumers
+- **get_course_knowledge(course_id, course_title, materials)**: Get per-lecture breakdown for a course
+  - Maps course materials to deck names using `build_deck_name()`
+  - Calculates weighted overall mastery
+  - Identifies weakest/strongest lectures
+  - Generates course-specific recommendations
+- **_generate_recommendations()**: Study recommendations based on deck states
+- **_generate_course_recommendations()**: Course-specific study suggestions
+- **to_snapshot_dict()**: Convert DeckKnowledge to database storage format
+
+**Usage**: 
+```python
+from app.services.anki import KnowledgeService
+
+service = KnowledgeService()
+
+# Global knowledge
+result = service.get_all_knowledge_levels()
+print(f"Overall mastery: {result['overall_mastery']:.0%}")
+print(f"Total cards: {result['total_cards']}")
+
+# Course-specific knowledge
+course_result = service.get_course_knowledge(
+    course_id="...",
+    course_title="Marketing 101",
+    materials=[{"id": "...", "file_name": "Lecture 1.pdf"}, ...]
+)
+print(f"Weakest lecture: {course_result.weakest_lecture}")
+```
+
+---
+
+### `backend/app/tools/anki_tools.py` (Knowledge Tracking Tools)
+
+**Purpose**: Extended with agent tools for knowledge tracking. Allows agents to query user mastery levels and create course-aware flashcards.
+
+**New Tools**:
+- **get_knowledge_levels(save_snapshot, user_id)**: Get knowledge level per Anki deck
+  - Returns comprehensive mastery info for all decks
+  - Card distribution (new, learning, young, mature)
+  - Status labels (mastered, progressing, needs_review, not_started)
+  - Study recommendations
+  - Optional: Save snapshot to database for trend tracking
+
+- **get_course_knowledge_levels(course_id, user_id, save_snapshot)**: Per-lecture breakdown for a course
+  - Course-level overall mastery (weighted by card count)
+  - Per-lecture mastery scores and card distributions
+  - Identifies weakest and strongest lectures
+  - Targeted study recommendations
+  - Optional: Save snapshots and deck mappings to database
+
+- **create_course_flashcard(course_id, user_id, material_id, question, answer, tags, sync_immediately)**: Create flashcard with auto deck naming
+  - Deck name generated from course structure: "Course Title::Lecture Name"
+  - Saves deck mapping and card mapping to database
+  - Returns note_id, deck_name, course_title, lecture_name
+
+- **create_course_flashcards_batch(course_id, user_id, material_id, cards, sync_after)**: Bulk flashcard creation
+  - Same auto deck naming as single card creation
+  - Efficient batch creation with single sync
+  - Saves all mappings to database
+
+**Dependencies**: 
+- `app.services.anki.KnowledgeService` - Knowledge aggregation
+- `app.services.storage` - Database operations for mappings and snapshots
+
+**Usage**: 
+```python
+from app.tools.anki_tools import get_knowledge_levels, get_course_knowledge_levels
+
+# Agent can call these tools to understand user's knowledge state
+levels = get_knowledge_levels()
+if levels["status"] == "success":
+    for deck_name, deck_info in levels["decks"].items():
+        if deck_info["is_leaf"]:  # Only leaf decks in totals
+            print(f"{deck_name}: {deck_info['mastery_score']:.0%}")
+```
+
+---
+
+### `backend/app/tools/knowledge_tool.py`
+
+**Purpose**: LangChain-compatible tool wrapper for the KnowledgeService. Enables integration with LangGraph agents.
+
+**Key Components**:
+- **GetCourseKnowledgeInput**: Pydantic model for tool input validation
+  - `course_id`, `user_id` - Required UUIDs
+  - `save_snapshot` - Optional boolean for persistence
+- **GetCourseKnowledgeTool**: Tool class wrapping KnowledgeService
+  - `name`, `description` - Tool metadata for agent discovery
+  - `run()` - Executes knowledge query
+  - `to_langchain_tool()` - Converts to StructuredTool for LangGraph
+
+**Usage**: 
+```python
+from app.tools.knowledge_tool import GetCourseKnowledgeTool
+
+tool = GetCourseKnowledgeTool()
+langchain_tool = tool.to_langchain_tool()
+
+# Add to agent's tool list
+tools = [langchain_tool, ...]
+```
+
+**Integration with TutorAgent**: The knowledge tool can be added to the TutorAgent's toolset to enable personalized tutoring based on the user's actual Anki study data.
+
+---
+
+### `backend/app/services/storage.py` (Knowledge Tracking Functions)
+
+**Purpose**: Extended with database operations for knowledge tracking tables.
+
+**New Functions**:
+- **save_deck_mapping(user_id, course_id, deck_name, course_material_id)**: 
+  - Creates or updates course-to-deck mapping
+  - Uses upsert with `on_conflict` for idempotency
+- **get_deck_mappings_for_course(user_id, course_id)**: 
+  - Retrieves all deck mappings for a course
+  - Returns list of mapping dicts
+- **save_knowledge_snapshot(user_id, deck_name, ...)**: 
+  - Saves a point-in-time snapshot of deck knowledge
+  - Includes all card counts and metrics
+  - Optional course_id and course_material_id for linking
+- **get_latest_knowledge_snapshot(user_id, deck_name)**: 
+  - Retrieves most recent snapshot for a deck
+  - Ordered by captured_at DESC
+- **get_knowledge_snapshots_for_course(user_id, course_id, limit)**: 
+  - Retrieves snapshots for all decks in a course
+  - Useful for trend analysis
+- **save_anki_card_mapping(user_id, anki_note_id, deck_name, flashcard_id)**: 
+  - Links agent-created cards to Anki note IDs
+  - Optional flashcard_id for internal linking
+- **get_course_with_materials(user_id, course_id)**: 
+  - Helper to fetch course with its materials
+  - Used by knowledge tools to resolve course structure
+
+**Usage**: 
+```python
+from app.services.storage import (
+    save_deck_mapping,
+    save_knowledge_snapshot,
+    get_course_with_materials,
+)
+
+# Save deck mapping when creating flashcards
+save_deck_mapping(
+    user_id="...",
+    course_id="...",
+    deck_name="Marketing 101::Lecture 1",
+    course_material_id="...",
+)
+
+# Save knowledge snapshot for trend tracking
+save_knowledge_snapshot(
+    user_id="...",
+    deck_name="Marketing 101::Lecture 1",
+    total_cards=50,
+    mature_cards=35,
+    mastery_score=0.75,
+    ...
+)
+```
+
+---
