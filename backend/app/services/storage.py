@@ -1347,3 +1347,174 @@ def get_course_with_materials(user_id: str, course_id: str) -> Optional[dict]:
         logger.error(f"Error getting course with materials: {e}")
         return None
 
+
+# =============================================================================
+# Anki Study History
+# =============================================================================
+
+def upsert_study_history(
+    user_id: str,
+    study_date: str,
+    cards_reviewed: int,
+    time_spent_seconds: int = 0,
+    again_count: int = 0,
+    hard_count: int = 0,
+    good_count: int = 0,
+    easy_count: int = 0,
+    new_cards: int = 0,
+    review_cards: int = 0,
+    relearn_cards: int = 0,
+    avg_time_per_card_ms: int = 0,
+) -> Optional[dict]:
+    """
+    Insert or update a study history entry for a specific date.
+    
+    Args:
+        user_id: User ID
+        study_date: Date string in "yyyy-MM-dd" format
+        cards_reviewed: Total reviews on this day
+        time_spent_seconds: Total study time in seconds
+        again_count: "Again" button presses
+        hard_count: "Hard" button presses
+        good_count: "Good" button presses
+        easy_count: "Easy" button presses
+        new_cards: New cards learned
+        review_cards: Regular reviews
+        relearn_cards: Relearning reviews
+        avg_time_per_card_ms: Average time per review
+        
+    Returns:
+        The upserted record, or None on error
+    """
+    client = get_supabase_client()
+    
+    try:
+        data = {
+            "user_id": user_id,
+            "study_date": study_date,
+            "cards_reviewed": cards_reviewed,
+            "time_spent_seconds": time_spent_seconds,
+            "again_count": again_count,
+            "hard_count": hard_count,
+            "good_count": good_count,
+            "easy_count": easy_count,
+            "new_cards": new_cards,
+            "review_cards": review_cards,
+            "relearn_cards": relearn_cards,
+            "avg_time_per_card_ms": avg_time_per_card_ms,
+        }
+        
+        response = client.table("anki_study_history").upsert(
+            data,
+            on_conflict="user_id,study_date"
+        ).execute()
+        
+        return response.data[0] if response.data else None
+    except Exception as e:
+        logger.error(f"Error upserting study history: {e}")
+        return None
+
+
+def sync_anki_study_history(
+    user_id: str,
+    stats_list: list,
+) -> dict:
+    """
+    Bulk sync study history from Anki.
+    
+    Args:
+        user_id: User ID
+        stats_list: List of DailyStudyStats objects or dicts
+        
+    Returns:
+        Dict with 'synced' count and any 'errors'
+    """
+    client = get_supabase_client()
+    synced = 0
+    errors = []
+    
+    for stats in stats_list:
+        try:
+            # Handle both DailyStudyStats objects and dicts
+            if hasattr(stats, 'date'):
+                data = {
+                    "user_id": user_id,
+                    "study_date": stats.date,
+                    "cards_reviewed": stats.cards_reviewed,
+                    "time_spent_seconds": stats.time_spent_seconds,
+                    "again_count": stats.again_count,
+                    "hard_count": stats.hard_count,
+                    "good_count": stats.good_count,
+                    "easy_count": stats.easy_count,
+                    "new_cards": stats.new_cards,
+                    "review_cards": stats.review_cards,
+                    "relearn_cards": stats.relearn_cards,
+                    "avg_time_per_card_ms": stats.avg_time_per_card_ms,
+                }
+            else:
+                data = {
+                    "user_id": user_id,
+                    "study_date": stats["date"],
+                    "cards_reviewed": stats["cards_reviewed"],
+                    "time_spent_seconds": stats.get("time_spent_seconds", 0),
+                    "again_count": stats.get("again_count", 0),
+                    "hard_count": stats.get("hard_count", 0),
+                    "good_count": stats.get("good_count", 0),
+                    "easy_count": stats.get("easy_count", 0),
+                    "new_cards": stats.get("new_cards", 0),
+                    "review_cards": stats.get("review_cards", 0),
+                    "relearn_cards": stats.get("relearn_cards", 0),
+                    "avg_time_per_card_ms": stats.get("avg_time_per_card_ms", 0),
+                }
+            
+            client.table("anki_study_history").upsert(
+                data,
+                on_conflict="user_id,study_date"
+            ).execute()
+            synced += 1
+        except Exception as e:
+            errors.append(str(e))
+            logger.error(f"Error syncing study history for date {stats}: {e}")
+    
+    return {"synced": synced, "errors": errors}
+
+
+def get_study_history(
+    user_id: str,
+    days: int = 90,
+) -> list[dict]:
+    """
+    Get study history for a user.
+    
+    Args:
+        user_id: User ID
+        days: Number of days to retrieve (default 90)
+        
+    Returns:
+        List of study history records sorted by date (oldest first)
+    """
+    from datetime import datetime, timedelta
+    
+    client = get_supabase_client()
+    
+    # Calculate cutoff date
+    cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    
+    try:
+        response = client.table("anki_study_history").select(
+            "study_date, cards_reviewed, time_spent_seconds, "
+            "again_count, hard_count, good_count, easy_count, "
+            "new_cards, review_cards, relearn_cards, avg_time_per_card_ms"
+        ).eq(
+            "user_id", user_id
+        ).gte(
+            "study_date", cutoff_date
+        ).order(
+            "study_date", desc=False
+        ).execute()
+        
+        return response.data or []
+    except Exception as e:
+        logger.error(f"Error getting study history: {e}")
+        return []
+

@@ -1,8 +1,9 @@
 "use client"
 
 import * as React from "react"
-import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
-import { format, subDays } from "date-fns"
+import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts"
+import { format } from "date-fns"
+import { Loader2 } from "lucide-react"
 
 import { useIsMobile } from "@/hooks/use-mobile"
 import {
@@ -29,40 +30,59 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@/components/ui/toggle-group"
+import { getStudyHistory, type StudyHistoryEntry } from "@/lib/api/study"
 
-// Generate dummy data for the last 3 months
-const generateChartData = () => {
-  const data = []
+interface ChartDataPoint {
+  date: string
+  cardsStudied: number
+  timeSpentMinutes: number
+}
+
+// Generate demo data for new users
+function generateDemoData(): ChartDataPoint[] {
+  const data: ChartDataPoint[] = []
   const today = new Date()
   
   for (let i = 89; i >= 0; i--) {
-    const date = subDays(today, i)
+    const date = new Date(today)
+    date.setDate(date.getDate() - i)
+    
+    // Generate realistic-looking study pattern
+    // Lower on weekends, variable on weekdays
+    const dayOfWeek = date.getDay()
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6
+    const baseCards = isWeekend ? 30 : 60
+    const variance = Math.floor(Math.random() * 40)
+    const cardsStudied = baseCards + variance
+    
     data.push({
-      date: format(date, "yyyy-MM-dd"),
-      progress: Math.floor(Math.random() * 40) + 60, // 60-100%
-      target: Math.floor(Math.random() * 20) + 70, // 70-90%
+      date: date.toISOString().split('T')[0],
+      cardsStudied,
+      timeSpentMinutes: Math.round(cardsStudied * 0.5), // ~30 sec per card
     })
   }
   
   return data
 }
 
-const chartData = generateChartData()
-
 const chartConfig = {
-  progress: {
-    label: "Fortschritt",
+  cardsStudied: {
+    label: "Karten gelernt",
     color: "hsl(var(--chart-1))",
-  },
-  target: {
-    label: "Ziel",
-    color: "hsl(var(--chart-2))",
   },
 } satisfies ChartConfig
 
-export function ProgressChart() {
+interface ProgressChartProps {
+  userId: string
+}
+
+export function ProgressChart({ userId }: ProgressChartProps) {
   const isMobile = useIsMobile()
-  const [timeRange, setTimeRange] = React.useState("90d")
+  const [timeRange, setTimeRange] = React.useState("30d")
+  const [chartData, setChartData] = React.useState<ChartDataPoint[]>([])
+  const [isLoading, setIsLoading] = React.useState(true)
+  const [error, setError] = React.useState<string | null>(null)
+  const [dataSource, setDataSource] = React.useState<"anki" | "cache" | "demo" | null>(null)
 
   React.useEffect(() => {
     if (isMobile) {
@@ -70,8 +90,75 @@ export function ProgressChart() {
     }
   }, [isMobile])
 
-  const filteredData = chartData.filter((item) => {
-    const date = new Date(item.date)
+  // Fetch study history data with stale-while-revalidate pattern
+  React.useEffect(() => {
+    if (!userId) return
+    
+    let isMounted = true
+    let hasRealData = false
+    
+    async function fetchData() {
+      // Step 1: Immediately fetch cached data (fast)
+      try {
+        const cachedResponse = await getStudyHistory(userId, 90, true)
+        
+        if (isMounted && cachedResponse.status === "success" && cachedResponse.data.length > 0) {
+          hasRealData = true
+          setDataSource(cachedResponse.source)
+          const transformed: ChartDataPoint[] = cachedResponse.data.map((entry: StudyHistoryEntry) => ({
+            date: entry.date,
+            cardsStudied: entry.cards_reviewed,
+            timeSpentMinutes: Math.round(entry.time_spent_seconds / 60),
+          }))
+          setChartData(transformed)
+          setIsLoading(false)
+        }
+      } catch (err) {
+        console.error("Error fetching cached study history:", err)
+      }
+      
+      // Step 2: Fetch fresh data from Anki in the background
+      try {
+        const freshResponse = await getStudyHistory(userId, 90, false)
+        
+        if (isMounted && freshResponse.status === "success") {
+          if (freshResponse.data.length > 0) {
+            hasRealData = true
+            setDataSource(freshResponse.source)
+            const transformed: ChartDataPoint[] = freshResponse.data.map((entry: StudyHistoryEntry) => ({
+              date: entry.date,
+              cardsStudied: entry.cards_reviewed,
+              timeSpentMinutes: Math.round(entry.time_spent_seconds / 60),
+            }))
+            setChartData(transformed)
+          }
+          setError(null)
+        }
+      } catch (err) {
+        console.error("Error fetching fresh study history:", err)
+      } finally {
+        if (isMounted) {
+          // If no real data, show demo data
+          if (!hasRealData) {
+            setChartData(generateDemoData())
+            setDataSource("demo")
+          }
+          setIsLoading(false)
+        }
+      }
+    }
+    
+    fetchData()
+    
+    return () => {
+      isMounted = false
+    }
+  }, [userId])
+
+  // Filter data based on selected time range
+  const filteredData = React.useMemo(() => {
+    if (!chartData.length) return []
+    
     const referenceDate = new Date()
     let daysToSubtract = 90
     if (timeRange === "30d") {
@@ -79,132 +166,170 @@ export function ProgressChart() {
     } else if (timeRange === "7d") {
       daysToSubtract = 7
     }
+    
     const startDate = new Date(referenceDate)
     startDate.setDate(startDate.getDate() - daysToSubtract)
-    return date >= startDate
-  })
+    
+    return chartData.filter((item) => {
+      const date = new Date(item.date)
+      return date >= startDate
+    })
+  }, [chartData, timeRange])
+
+  // Calculate summary stats for the selected period
+  const summaryStats = React.useMemo(() => {
+    if (!filteredData.length) return { totalCards: 0, avgPerDay: 0 }
+    
+    const totalCards = filteredData.reduce((sum, d) => sum + d.cardsStudied, 0)
+    const avgPerDay = Math.round(totalCards / filteredData.length)
+    
+    return { totalCards, avgPerDay }
+  }, [filteredData])
 
   return (
     <Card className="@container/card">
       <CardHeader className="relative">
         <CardTitle>Lernfortschritt</CardTitle>
         <CardDescription>
-          <span className="@[540px]/card:block hidden">
-            Fortschritt über die letzten 3 Monate
-          </span>
-          <span className="@[540px]/card:hidden">Letzte 3 Monate</span>
+          {isLoading ? (
+            <span className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Lade Daten...
+            </span>
+          ) : error ? (
+            <span className="text-destructive">{error}</span>
+          ) : (
+            <>
+              <span className="@[540px]/card:block hidden">
+                {summaryStats.totalCards} Karten in den letzten {timeRange === "90d" ? "3 Monaten" : timeRange === "30d" ? "30 Tagen" : "7 Tagen"}
+                {dataSource === "cache" && " (gecached)"}
+                {dataSource === "demo" && <span className="ml-1 text-muted-foreground/60">(Demo)</span>}
+              </span>
+              <span className="@[540px]/card:hidden">
+                {summaryStats.totalCards} Karten
+                {dataSource === "demo" && <span className="ml-1 text-muted-foreground/60">(Demo)</span>}
+              </span>
+            </>
+          )}
         </CardDescription>
         <div className="absolute right-4 top-4">
           <ToggleGroup
             type="single"
             value={timeRange}
-            onValueChange={setTimeRange}
+            onValueChange={(value) => value && setTimeRange(value)}
             variant="outline"
             className="@[767px]/card:flex hidden"
           >
             <ToggleGroupItem value="90d" className="h-8 px-2.5">
-              Last 3 months
+              Letzte 3 Monate
             </ToggleGroupItem>
             <ToggleGroupItem value="30d" className="h-8 px-2.5">
-              Last 30 days
+              Letzte 30 Tage
             </ToggleGroupItem>
             <ToggleGroupItem value="7d" className="h-8 px-2.5">
-              Last 7 days
+              Letzte 7 Tage
             </ToggleGroupItem>
           </ToggleGroup>
           <Select value={timeRange} onValueChange={setTimeRange}>
             <SelectTrigger
               className="@[767px]/card:hidden flex w-40"
-              aria-label="Select a value"
+              aria-label="Zeitraum auswählen"
             >
-              <SelectValue placeholder="Last 3 months" />
+              <SelectValue placeholder="Letzte 3 Monate" />
             </SelectTrigger>
             <SelectContent className="rounded-xl">
               <SelectItem value="90d" className="rounded-lg">
-                Last 3 months
+                Letzte 3 Monate
               </SelectItem>
               <SelectItem value="30d" className="rounded-lg">
-                Last 30 days
+                Letzte 30 Tage
               </SelectItem>
               <SelectItem value="7d" className="rounded-lg">
-                Last 7 days
+                Letzte 7 Tage
               </SelectItem>
             </SelectContent>
           </Select>
         </div>
       </CardHeader>
       <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
-        <ChartContainer
-          config={chartConfig}
-          className="aspect-auto h-[250px] w-full"
-        >
-          <AreaChart data={filteredData}>
-            <defs>
-              <linearGradient id="fillProgress" x1="0" y1="0" x2="0" y2="1">
-                <stop
-                  offset="5%"
-                  stopColor="var(--color-progress)"
-                  stopOpacity={1.0}
-                />
-                <stop
-                  offset="95%"
-                  stopColor="var(--color-progress)"
-                  stopOpacity={0.1}
-                />
-              </linearGradient>
-              <linearGradient id="fillTarget" x1="0" y1="0" x2="0" y2="1">
-                <stop
-                  offset="5%"
-                  stopColor="var(--color-target)"
-                  stopOpacity={0.8}
-                />
-                <stop
-                  offset="95%"
-                  stopColor="var(--color-target)"
-                  stopOpacity={0.1}
-                />
-              </linearGradient>
-            </defs>
-            <CartesianGrid vertical={false} />
-            <XAxis
-              dataKey="date"
-              tickLine={false}
-              axisLine={false}
-              tickMargin={8}
-              minTickGap={32}
-              tickFormatter={(value) => {
-                const date = new Date(value)
-                return format(date, "MMM d")
-              }}
-            />
-            <ChartTooltip
-              cursor={false}
-              content={
-                <ChartTooltipContent
-                  labelFormatter={(value) => {
-                    return format(new Date(value), "MMM d, yyyy")
-                  }}
-                  indicator="dot"
-                />
-              }
-            />
-            <Area
-              dataKey="target"
-              type="natural"
-              fill="url(#fillTarget)"
-              stroke="var(--color-target)"
-              strokeDasharray="5 5"
-              stackId="a"
-            />
-            <Area
-              dataKey="progress"
-              type="natural"
-              fill="url(#fillProgress)"
-              stroke="var(--color-progress)"
-              stackId="a"
-            />
-          </AreaChart>
-        </ChartContainer>
+        {isLoading ? (
+          <div className="flex h-[250px] items-center justify-center">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : error ? (
+          <div className="flex h-[250px] items-center justify-center text-muted-foreground">
+            Keine Daten verfügbar
+          </div>
+        ) : filteredData.length === 0 ? (
+          <div className="flex h-[250px] items-center justify-center text-muted-foreground">
+            Noch keine Lernaktivitäten aufgezeichnet
+          </div>
+        ) : (
+          <ChartContainer
+            config={chartConfig}
+            className="aspect-auto h-[250px] w-full"
+          >
+            <AreaChart data={filteredData}>
+              <defs>
+                <linearGradient id="fillCardsStudied" x1="0" y1="0" x2="0" y2="1">
+                  <stop
+                    offset="5%"
+                    stopColor="var(--color-cardsStudied)"
+                    stopOpacity={1.0}
+                  />
+                  <stop
+                    offset="95%"
+                    stopColor="var(--color-cardsStudied)"
+                    stopOpacity={0.1}
+                  />
+                </linearGradient>
+              </defs>
+              <CartesianGrid vertical={false} />
+              <XAxis
+                dataKey="date"
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+                minTickGap={32}
+                tickFormatter={(value) => {
+                  const date = new Date(value)
+                  return format(date, "d. MMM")
+                }}
+              />
+              <YAxis
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+                width={40}
+                tickFormatter={(value) => `${value}`}
+              />
+              <ChartTooltip
+                cursor={false}
+                content={
+                  <ChartTooltipContent
+                    labelFormatter={(value) => {
+                      return format(new Date(value), "d. MMMM yyyy")
+                    }}
+                    formatter={(value, name) => {
+                      if (name === "cardsStudied") {
+                        return [`${value} Karten`, "Gelernt"]
+                      }
+                      return [value, name]
+                    }}
+                    indicator="dot"
+                  />
+                }
+              />
+              <Area
+                dataKey="cardsStudied"
+                type="monotone"
+                fill="url(#fillCardsStudied)"
+                stroke="var(--color-cardsStudied)"
+                strokeWidth={2}
+              />
+            </AreaChart>
+          </ChartContainer>
+        )}
       </CardContent>
     </Card>
   )

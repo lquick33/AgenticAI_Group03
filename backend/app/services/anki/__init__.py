@@ -15,6 +15,7 @@ from .client import (
     AnkiConnectionError,
     DeckStats,
     ReviewStats,
+    DailyStudyStats,
     CardKnowledge,
     DeckKnowledge,
     CourseKnowledge,
@@ -35,6 +36,7 @@ __all__ = [
     # Data classes
     "DeckStats",
     "ReviewStats",
+    "DailyStudyStats",
     "CardKnowledge",
     "DeckKnowledge",
     "CourseKnowledge",

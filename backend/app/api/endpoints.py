@@ -57,9 +57,12 @@ from app.services.storage import (
     get_course_material_summary,
     update_course_material_filename,
     delete_course_material,
+    get_study_history,
+    sync_anki_study_history,
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_apkg
+from app.services.anki import AnkiClient, AnkiConnectionError, DailyStudyStats
 from app.services.flashcard_task_service import get_flashcard_task_service
 from app.services.observability import get_langfuse_client
 from app.services.session_storage import (
@@ -3431,4 +3434,120 @@ async def remove_snippet(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to delete snippet: {str(e)}"
+        )
+
+
+# =============================================================================
+# Anki Study History
+# =============================================================================
+
+@router.get("/anki/study-history")
+async def get_anki_study_history(
+    user_id: str = Query(..., description="User ID"),
+    days: int = Query(90, description="Number of days of history to retrieve", ge=1, le=365),
+    cache_only: bool = Query(False, description="If true, only return cached data (fast)"),
+):
+    """
+    Get Anki study history for a user.
+    
+    Returns comprehensive daily study statistics including:
+    - Cards reviewed per day
+    - Time spent studying
+    - Button press breakdown (Again/Hard/Good/Easy)
+    - Card type breakdown (New/Review/Relearn)
+    
+    Use cache_only=true for instant response with cached data.
+    Use cache_only=false (default) to fetch fresh data from Anki and sync to database.
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found"
+            )
+        
+        # Helper to format cached data
+        def format_cached_data(cached_data):
+            return {
+                "status": "success",
+                "source": "cache",
+                "days_requested": days,
+                "data": [
+                    {
+                        "date": record["study_date"],
+                        "cards_reviewed": record["cards_reviewed"],
+                        "time_spent_seconds": record["time_spent_seconds"],
+                        "again_count": record["again_count"],
+                        "hard_count": record["hard_count"],
+                        "good_count": record["good_count"],
+                        "easy_count": record["easy_count"],
+                        "new_cards": record["new_cards"],
+                        "review_cards": record["review_cards"],
+                        "relearn_cards": record["relearn_cards"],
+                        "avg_time_per_card_ms": record["avg_time_per_card_ms"],
+                    }
+                    for record in cached_data
+                ]
+            }
+        
+        # If cache_only, return cached data immediately (fast path)
+        if cache_only:
+            cached_data = get_study_history(user_id, days=days)
+            return format_cached_data(cached_data)
+        
+        # Otherwise, try to get fresh data from Anki
+        anki_available = False
+        fresh_data = []
+        
+        try:
+            client = AnkiClient()
+            if client.is_running():
+                fresh_data = client.get_detailed_study_history(days=days)
+                anki_available = True
+                
+                # Sync to database for future offline access
+                if fresh_data:
+                    sync_result = sync_anki_study_history(user_id, fresh_data)
+                    logger.info(f"Synced {sync_result['synced']} study history records for user {user_id}")
+        except AnkiConnectionError as e:
+            logger.warning(f"Anki not available: {e}")
+        except Exception as e:
+            logger.error(f"Error fetching from Anki: {e}")
+        
+        # If we got fresh data from Anki, convert and return it
+        if anki_available and fresh_data:
+            return {
+                "status": "success",
+                "source": "anki",
+                "days_requested": days,
+                "data": [
+                    {
+                        "date": stats.date,
+                        "cards_reviewed": stats.cards_reviewed,
+                        "time_spent_seconds": stats.time_spent_seconds,
+                        "again_count": stats.again_count,
+                        "hard_count": stats.hard_count,
+                        "good_count": stats.good_count,
+                        "easy_count": stats.easy_count,
+                        "new_cards": stats.new_cards,
+                        "review_cards": stats.review_cards,
+                        "relearn_cards": stats.relearn_cards,
+                        "avg_time_per_card_ms": stats.avg_time_per_card_ms,
+                    }
+                    for stats in fresh_data
+                ]
+            }
+        
+        # Fall back to cached data from database
+        cached_data = get_study_history(user_id, days=days)
+        return format_cached_data(cached_data)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting study history: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get study history: {str(e)}"
         )

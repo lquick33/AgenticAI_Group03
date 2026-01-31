@@ -615,3 +615,67 @@ export async function getCourseKnowledgeLevels(
 
   return response.json()
 }
+
+// =============================================================================
+// Anki Study History API
+// =============================================================================
+
+/**
+ * Comprehensive daily study statistics from Anki
+ */
+export interface StudyHistoryEntry {
+  date: string                    // "yyyy-MM-dd" format
+  cards_reviewed: number          // Total reviews on this day
+  time_spent_seconds: number      // Total study time in seconds
+  again_count: number             // "Again" button presses (forgotten)
+  hard_count: number              // "Hard" button presses
+  good_count: number              // "Good" button presses
+  easy_count: number              // "Easy" button presses
+  new_cards: number               // Cards learned for first time
+  review_cards: number            // Regular reviews
+  relearn_cards: number           // Cards being relearned (lapses)
+  avg_time_per_card_ms: number    // Average time per review in milliseconds
+}
+
+/**
+ * Response from the study history endpoint
+ */
+export interface StudyHistoryResponse {
+  status: 'success' | 'error'
+  source: 'anki' | 'cache'
+  days_requested: number
+  data: StudyHistoryEntry[]
+  error?: string
+}
+
+/**
+ * Get Anki study history for a user
+ * 
+ * Returns comprehensive daily study statistics including:
+ * - Cards reviewed per day
+ * - Time spent studying
+ * - Button press breakdown (Again/Hard/Good/Easy)
+ * - Card type breakdown (New/Review/Relearn)
+ * 
+ * @param userId - User ID
+ * @param days - Number of days of history (default 90)
+ * @param cacheOnly - If true, returns cached data immediately without fetching from Anki (fast)
+ */
+export async function getStudyHistory(
+  userId: string,
+  days: number = 90,
+  cacheOnly: boolean = false
+): Promise<StudyHistoryResponse> {
+  const url = `${API_URL}/api/anki/study-history?user_id=${encodeURIComponent(userId)}&days=${days}&cache_only=${cacheOnly}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}

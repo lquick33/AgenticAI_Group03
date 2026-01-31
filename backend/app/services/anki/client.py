@@ -47,6 +47,29 @@ class ReviewStats:
 
 
 @dataclass
+class DailyStudyStats:
+    """Comprehensive study statistics for a single day"""
+    date: str                    # "yyyy-MM-dd" format
+    cards_reviewed: int          # Total number of reviews
+    time_spent_seconds: int      # Total study time in seconds
+    again_count: int             # "Again" button presses (forgotten)
+    hard_count: int              # "Hard" button presses
+    good_count: int              # "Good" button presses
+    easy_count: int              # "Easy" button presses
+    new_cards: int               # Cards learned for first time (type=0)
+    review_cards: int            # Regular reviews (type=1)
+    relearn_cards: int           # Cards being relearned (type=2)
+    avg_time_per_card_ms: int    # Average time per review in milliseconds
+    
+    @property
+    def retention_rate(self) -> float:
+        """Calculate retention rate: (good + easy) / total"""
+        if self.cards_reviewed == 0:
+            return 0.0
+        return (self.good_count + self.easy_count) / self.cards_reviewed
+
+
+@dataclass
 class CardKnowledge:
     """Knowledge state for a single card"""
     card_id: int
@@ -382,6 +405,124 @@ class AnkiClient:
             cards_reviewed_today=self.get_cards_reviewed_today(),
             reviews_by_day=self.get_reviews_by_day()
         )
+    
+    def get_detailed_study_history(self, days: int = 90) -> list[DailyStudyStats]:
+        """
+        Get detailed study statistics aggregated by day.
+        
+        This method fetches all card reviews and aggregates them by date,
+        providing comprehensive statistics including time spent, button presses,
+        and card type breakdowns.
+        
+        Args:
+            days: Number of days of history to return (default 90)
+            
+        Returns:
+            List of DailyStudyStats sorted by date (oldest first)
+        """
+        from datetime import datetime, timedelta
+        from collections import defaultdict
+        
+        # Calculate cutoff date
+        cutoff_date = datetime.now() - timedelta(days=days)
+        cutoff_timestamp_ms = int(cutoff_date.timestamp() * 1000)
+        
+        # Find all cards that have been reviewed
+        # Using "rated:365" to get cards reviewed in last year (covers our needs)
+        card_ids = self.find_cards("rated:365")
+        
+        if not card_ids:
+            return []
+        
+        # Get review history for all cards
+        reviews_by_card = self.get_reviews_of_cards(card_ids)
+        
+        # Aggregate by date
+        # Each review is a dict with keys:
+        # - id: Unix timestamp (ms) - this is the review time
+        # - ease: Button pressed (1=Again, 2=Hard, 3=Good, 4=Easy)
+        # - time: Review duration (ms)
+        # - type: 0=learn, 1=review, 2=relearn, 3=filtered
+        # - ivl, lastIvl, factor, usn: scheduling data
+        daily_stats: dict[str, dict] = defaultdict(lambda: {
+            "cards_reviewed": 0,
+            "time_spent_ms": 0,
+            "again_count": 0,
+            "hard_count": 0,
+            "good_count": 0,
+            "easy_count": 0,
+            "new_cards": 0,
+            "review_cards": 0,
+            "relearn_cards": 0,
+        })
+        
+        for card_id, reviews in reviews_by_card.items():
+            for review in reviews:
+                # Handle both dict format (newer AnkiConnect) and list format (older)
+                if isinstance(review, dict):
+                    review_time_ms = review.get("id", 0)
+                    ease = review.get("ease", 0)
+                    review_duration_ms = review.get("time", 0)
+                    review_type = review.get("type", 0)
+                else:
+                    # Legacy list format: [reviewTime, ease, ivl, lastIvl, factor, time, type]
+                    review_time_ms = review[0]
+                    ease = review[1]
+                    review_duration_ms = review[5]
+                    review_type = review[6]
+                
+                # Skip reviews before cutoff
+                if review_time_ms < cutoff_timestamp_ms:
+                    continue
+                
+                # Convert timestamp to date string
+                review_date = datetime.fromtimestamp(review_time_ms / 1000).strftime("%Y-%m-%d")
+                
+                stats = daily_stats[review_date]
+                stats["cards_reviewed"] += 1
+                stats["time_spent_ms"] += review_duration_ms
+                
+                # Count by button pressed
+                if ease == 1:
+                    stats["again_count"] += 1
+                elif ease == 2:
+                    stats["hard_count"] += 1
+                elif ease == 3:
+                    stats["good_count"] += 1
+                elif ease == 4:
+                    stats["easy_count"] += 1
+                
+                # Count by review type
+                if review_type == 0:
+                    stats["new_cards"] += 1
+                elif review_type == 1:
+                    stats["review_cards"] += 1
+                elif review_type == 2:
+                    stats["relearn_cards"] += 1
+                # type 3 (filtered) is counted in cards_reviewed but not categorized
+        
+        # Convert to list of DailyStudyStats
+        result = []
+        for date_str in sorted(daily_stats.keys()):
+            stats = daily_stats[date_str]
+            cards = stats["cards_reviewed"]
+            avg_time = stats["time_spent_ms"] // cards if cards > 0 else 0
+            
+            result.append(DailyStudyStats(
+                date=date_str,
+                cards_reviewed=cards,
+                time_spent_seconds=stats["time_spent_ms"] // 1000,
+                again_count=stats["again_count"],
+                hard_count=stats["hard_count"],
+                good_count=stats["good_count"],
+                easy_count=stats["easy_count"],
+                new_cards=stats["new_cards"],
+                review_cards=stats["review_cards"],
+                relearn_cards=stats["relearn_cards"],
+                avg_time_per_card_ms=avg_time,
+            ))
+        
+        return result
     
     # =========================================================================
     # Card-Level Statistics (for Knowledge Tracking)
