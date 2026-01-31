@@ -20,6 +20,10 @@ NC='\033[0m' # No Color
 ARCH=$(uname -m)
 OS=$(uname -s)
 
+# Native app fallback disabled by default
+# Set ANKI_APP_FALLBACK_ENABLED=1 to re-enable
+ANKI_APP_FALLBACK_ENABLED="${ANKI_APP_FALLBACK_ENABLED:-0}"
+
 # =============================================================================
 # FUNCTION: Start native Anki app (macOS only)
 # =============================================================================
@@ -151,6 +155,20 @@ fallback_to_native_app() {
 }
 
 # =============================================================================
+# FUNCTION: Try fallback or show error (respects ANKI_APP_FALLBACK_ENABLED)
+# =============================================================================
+try_fallback_or_error() {
+    if [[ "$ANKI_APP_FALLBACK_ENABLED" == "1" ]]; then
+        fallback_to_native_app
+        return $?
+    else
+        echo -e "${RED}Docker is required. Native app fallback is disabled.${NC}"
+        echo "Set ANKI_APP_FALLBACK_ENABLED=1 to enable native app fallback."
+        return 1
+    fi
+}
+
+# =============================================================================
 # MAIN SCRIPT
 # =============================================================================
 
@@ -182,7 +200,7 @@ echo -e "${BLUE}Trying Docker container (preferred method)...${NC}"
 # Check Docker is installed
 if ! command -v docker &> /dev/null; then
     echo -e "${YELLOW}Docker is not installed.${NC}"
-    fallback_to_native_app
+    try_fallback_or_error
     exit $?
 fi
 
@@ -190,7 +208,7 @@ fi
 if ! docker info > /dev/null 2>&1; then
     echo -e "${YELLOW}Docker is not running.${NC}"
     echo "You can start Docker Desktop, or use the native app fallback."
-    fallback_to_native_app
+    try_fallback_or_error
     exit $?
 fi
 
@@ -202,7 +220,7 @@ echo "(First run will build the image - this may take several minutes)"
 
 if ! docker compose up -d --build 2>&1; then
     echo -e "${YELLOW}Failed to start Docker container.${NC}"
-    fallback_to_native_app
+    try_fallback_or_error
     exit $?
 fi
 
@@ -217,7 +235,7 @@ until curl -s http://localhost:8765 > /dev/null 2>&1; do
         echo -e "${YELLOW}AnkiConnect did not start within ${MAX_WAIT} seconds${NC}"
         echo "Check container logs with: docker logs anki-agent"
         echo ""
-        fallback_to_native_app
+        try_fallback_or_error
         exit $?
     fi
     echo "  Still waiting... (${WAITED}s / ${MAX_WAIT}s)"

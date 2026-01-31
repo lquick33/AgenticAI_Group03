@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     
     # Anki Configuration
     ANKI_USE_DOCKER: bool = True  # Force Docker mode even on Apple Silicon
+    ANKI_APP_FALLBACK_ENABLED: bool = False  # Allow fallback to native Anki app (disabled by default)
     
     model_config = SettingsConfigDict(
         # Try .env in current directory, then parent directory (project root)

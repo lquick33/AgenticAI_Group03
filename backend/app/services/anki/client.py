@@ -274,8 +274,13 @@ class AnkiClient:
             platform.machine() == "arm64"
         )
         
-        # Use Docker if configured or not on Apple Silicon
-        if use_docker or not is_apple_silicon:
+        # Native app fallback is disabled by default - always use Docker
+        # Set ANKI_APP_FALLBACK_ENABLED=True to enable native app fallback
+        from app.core.config import settings
+        allow_app_fallback = getattr(settings, 'ANKI_APP_FALLBACK_ENABLED', False)
+        
+        # Use Docker unless app fallback is explicitly enabled AND on Apple Silicon with use_docker=False
+        if use_docker or not is_apple_silicon or not allow_app_fallback:
             # Try Docker
             print("Starting Anki container (Docker mode)...")
             try:
@@ -320,7 +325,7 @@ class AnkiClient:
                 return True
             time.sleep(1)
         
-        if use_docker or not is_apple_silicon:
+        if use_docker or not is_apple_silicon or not allow_app_fallback:
             raise AnkiConnectionError(
                 f"Anki container did not start within {max_wait} seconds"
             )
