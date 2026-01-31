@@ -1,8 +1,10 @@
 #!/bin/bash
 # Start Anki for agent integration
-# Automatically detects platform and uses appropriate method:
-# - Apple Silicon (M1/M2/M3): Opens native macOS Anki app
-# - Intel Mac/Linux/Windows: Uses Docker container
+# Uses Docker container (ankimcp/headless-anki) which works on:
+# - Apple Silicon (M1/M2/M3) - ARM64 native
+# - Intel Mac/Linux/Windows - x86_64
+#
+# Set FORCE_NATIVE_APP=1 to use native macOS Anki app instead of Docker
 
 set -e
 
@@ -24,10 +26,14 @@ OS=$(uname -s)
 echo "Detected: $OS ($ARCH)"
 
 # =============================================================================
-# Apple Silicon Mac - Use native Anki app
+# Apple Silicon Mac - Can use either Docker or native Anki app
+# Docker with ankimcp/headless-anki now works on ARM64!
 # =============================================================================
-if [[ "$OS" == "Darwin" && "$ARCH" == "arm64" ]]; then
-    echo -e "${BLUE}Apple Silicon detected - using native Anki app${NC}"
+# Uncomment the following line to force native app mode on Apple Silicon:
+# FORCE_NATIVE_APP=1
+
+if [[ "$OS" == "Darwin" && "$ARCH" == "arm64" && "${FORCE_NATIVE_APP:-0}" == "1" ]]; then
+    echo -e "${BLUE}Apple Silicon detected - using native Anki app (forced)${NC}"
     echo ""
     
     # Check if Anki is installed
@@ -121,12 +127,13 @@ fi
 
 echo -e "${GREEN}✓ Docker is running${NC}"
 
-# Start the Anki container
+# Start the Anki container (builds from ankimcp/headless-anki on first run)
 echo "Starting Anki container..."
-docker compose up -d
+echo "(First run will build the image - this may take several minutes)"
+docker compose up -d --build
 
-# Wait for AnkiConnect to be ready (longer timeout for emulation)
-echo "Waiting for AnkiConnect API (this may take a minute on first run)..."
+# Wait for AnkiConnect to be ready
+echo "Waiting for AnkiConnect API..."
 MAX_WAIT=120
 WAITED=0
 until curl -s http://localhost:8765 > /dev/null 2>&1; do
