@@ -5,6 +5,7 @@ import { StudyReader } from '@/components/study/study-reader'
 import { NoPageScroll } from '@/components/study/no-page-scroll'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
+import { SettingsWrapper } from '@/components/settings'
 import { notFound } from 'next/navigation'
 
 interface StudyPageProps {
@@ -71,34 +72,34 @@ export default async function StudyPage({ params }: StudyPageProps) {
   }
 
   return (
-    <>
+    <SettingsWrapper>
       <NoPageScroll />
       <SidebarProvider className="h-svh">
         <DashboardSidebar variant="inset" user={userData} courses={courses || []} />
         <SidebarInset>
-        <header className="group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear z-20 relative">
-          <div className="flex w-full items-center gap-1 px-4 lg:gap-2 lg:px-6">
-            <SidebarTrigger className="-ml-1 relative z-30" />
-            <Separator
-              orientation="vertical"
-              className="mx-2 data-[orientation=vertical]:h-4"
-            />
-            <h1 className="text-base font-medium">{material.file_name}</h1>
+          <header className="group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear z-20 relative">
+            <div className="flex w-full items-center gap-1 px-4 lg:gap-2 lg:px-6">
+              <SidebarTrigger className="-ml-1 relative z-30" />
+              <Separator
+                orientation="vertical"
+                className="mx-2 data-[orientation=vertical]:h-4"
+              />
+              <h1 className="text-base font-medium">{material.file_name}</h1>
+            </div>
+          </header>
+          <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
+            <div className="h-full max-h-full min-h-0 overflow-hidden">
+              <StudyReader
+                materialId={materialId}
+                courseId={courseId}
+                pdfUrl={signedUrlData.signedUrl}
+                pageCount={material.page_count}
+                userId={user.id}
+              />
+            </div>
           </div>
-        </header>
-        <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
-          <div className="h-full max-h-full min-h-0 overflow-hidden">
-            <StudyReader
-              materialId={materialId}
-              courseId={courseId}
-              pdfUrl={signedUrlData.signedUrl}
-              pageCount={material.page_count}
-              userId={user.id}
-            />
-          </div>
-        </div>
-      </SidebarInset>
-    </SidebarProvider>
-    </>
+        </SidebarInset>
+      </SidebarProvider>
+    </SettingsWrapper>
   )
 }

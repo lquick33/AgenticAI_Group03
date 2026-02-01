@@ -5,6 +5,7 @@ import { CoursesTable } from '@/components/courses/courses-table'
 import { CreateCourseDialog } from '@/components/courses/create-course-dialog'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
 import { Separator } from '@/components/ui/separator'
+import { SettingsWrapper } from '@/components/settings'
 import type { CourseWithStats } from '@/types'
 
 export default async function CoursesPage() {
@@ -92,32 +93,34 @@ export default async function CoursesPage() {
   }))
 
   return (
-    <SidebarProvider>
-      <DashboardSidebar variant="inset" user={userData} courses={sidebarCourses} />
-      <SidebarInset>
-        <header className="group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear z-20 relative">
-          <div className="flex w-full items-center justify-between gap-1 px-4 lg:gap-2 lg:px-6">
-            <div className="flex items-center gap-2">
-              <SidebarTrigger className="-ml-1 relative z-30" />
-              <Separator
-                orientation="vertical"
-                className="mx-2 data-[orientation=vertical]:h-4"
-              />
-              <h1 className="text-base font-medium">Kurse</h1>
+    <SettingsWrapper>
+      <SidebarProvider>
+        <DashboardSidebar variant="inset" user={userData} courses={sidebarCourses} />
+        <SidebarInset>
+          <header className="group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear z-20 relative">
+            <div className="flex w-full items-center justify-between gap-1 px-4 lg:gap-2 lg:px-6">
+              <div className="flex items-center gap-2">
+                <SidebarTrigger className="-ml-1 relative z-30" />
+                <Separator
+                  orientation="vertical"
+                  className="mx-2 data-[orientation=vertical]:h-4"
+                />
+                <h1 className="text-base font-medium">Kurse</h1>
+              </div>
+              <CreateCourseDialog userId={user.id} />
             </div>
-            <CreateCourseDialog userId={user.id} />
-          </div>
-        </header>
-        <div className="flex flex-1 flex-col">
-          <div className="@container/main flex flex-1 flex-col gap-2">
-            <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-              <div className="px-4 lg:px-6">
-                <CoursesTable courses={coursesWithStats} />
+          </header>
+          <div className="flex flex-1 flex-col">
+            <div className="@container/main flex flex-1 flex-col gap-2">
+              <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+                <div className="px-4 lg:px-6">
+                  <CoursesTable courses={coursesWithStats} />
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </SidebarInset>
-    </SidebarProvider>
+        </SidebarInset>
+      </SidebarProvider>
+    </SettingsWrapper>
   )
 }

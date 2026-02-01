@@ -8,6 +8,7 @@ import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/s
 import { Separator } from '@/components/ui/separator'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { SettingsWrapper } from '@/components/settings'
 import { notFound } from 'next/navigation'
 import type { Course, CourseMaterial } from '@/types'
 
@@ -101,77 +102,79 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
   }
 
   return (
-    <SidebarProvider>
-      <DashboardSidebar variant="inset" user={userData} courses={courses || []} />
-      <SidebarInset>
-        <header className="group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear z-20 relative">
-          <div className="flex w-full items-center gap-1 px-4 lg:gap-2 lg:px-6">
-            <SidebarTrigger className="-ml-1 relative z-30" />
-            <Separator
-              orientation="vertical"
-              className="mx-2 data-[orientation=vertical]:h-4"
-            />
-            <h1 className="text-base font-medium">{course.title}</h1>
-          </div>
-        </header>
-        <div className="flex flex-1 flex-col">
-          <div className="@container/main flex flex-1 flex-col gap-2">
-            <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-              {/* Course Info Card */}
-              <div className="px-4 lg:px-6 grid gap-4">
-                <Card>
-                  <CardHeader>
-                    <div className="flex items-start justify-between">
-                      <div className="space-y-1">
-                        <CardTitle>{course.title}</CardTitle>
-                        <CardDescription>
-                          {course.description || 'Keine Beschreibung'}
-                        </CardDescription>
-                      </div>
-                      <CourseSettings
-                        courseId={id}
-                        userId={user.id}
-                        initialDeduplicateFlashcards={course.deduplicate_flashcards ?? false}
-                      />
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div>
-                        <p className="text-sm text-muted-foreground">Materialien</p>
-                        <p className="text-2xl font-bold">{materialCount}</p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Gesamt Seiten</p>
-                        <p className="text-2xl font-bold">{totalPages}</p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Progress</p>
-                        <p className="text-2xl font-bold">{progress}%</p>
-                      </div>
-                    </div>
-                    {course.exam_date && (
-                      <div className="mt-4 pt-4 border-t">
-                        <p className="text-sm text-muted-foreground">Prüfungsdatum</p>
-                        <p className="text-lg font-semibold">{formatDate(course.exam_date)}</p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-                <ExamDateEditor courseId={id} userId={user.id} initialDate={course.exam_date} />
-              </div>
-
-              {/* Upload Section and Materials List */}
-              <CourseMaterialsContainer
-                courseId={id}
-                userId={user.id}
-                initialMaterials={(materials || []) as CourseMaterial[]}
-                deduplicateFlashcards={course.deduplicate_flashcards ?? false}
+    <SettingsWrapper>
+      <SidebarProvider>
+        <DashboardSidebar variant="inset" user={userData} courses={courses || []} />
+        <SidebarInset>
+          <header className="group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 flex h-12 shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear z-20 relative">
+            <div className="flex w-full items-center gap-1 px-4 lg:gap-2 lg:px-6">
+              <SidebarTrigger className="-ml-1 relative z-30" />
+              <Separator
+                orientation="vertical"
+                className="mx-2 data-[orientation=vertical]:h-4"
               />
+              <h1 className="text-base font-medium">{course.title}</h1>
+            </div>
+          </header>
+          <div className="flex flex-1 flex-col">
+            <div className="@container/main flex flex-1 flex-col gap-2">
+              <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+                {/* Course Info Card */}
+                <div className="px-4 lg:px-6 grid gap-4">
+                  <Card>
+                    <CardHeader>
+                      <div className="flex items-start justify-between">
+                        <div className="space-y-1">
+                          <CardTitle>{course.title}</CardTitle>
+                          <CardDescription>
+                            {course.description || 'Keine Beschreibung'}
+                          </CardDescription>
+                        </div>
+                        <CourseSettings
+                          courseId={id}
+                          userId={user.id}
+                          initialDeduplicateFlashcards={course.deduplicate_flashcards ?? false}
+                        />
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                          <p className="text-sm text-muted-foreground">Materialien</p>
+                          <p className="text-2xl font-bold">{materialCount}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-muted-foreground">Gesamt Seiten</p>
+                          <p className="text-2xl font-bold">{totalPages}</p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-muted-foreground">Progress</p>
+                          <p className="text-2xl font-bold">{progress}%</p>
+                        </div>
+                      </div>
+                      {course.exam_date && (
+                        <div className="mt-4 pt-4 border-t">
+                          <p className="text-sm text-muted-foreground">Prüfungsdatum</p>
+                          <p className="text-lg font-semibold">{formatDate(course.exam_date)}</p>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                  <ExamDateEditor courseId={id} userId={user.id} initialDate={course.exam_date} />
+                </div>
+
+                {/* Upload Section and Materials List */}
+                <CourseMaterialsContainer
+                  courseId={id}
+                  userId={user.id}
+                  initialMaterials={(materials || []) as CourseMaterial[]}
+                  deduplicateFlashcards={course.deduplicate_flashcards ?? false}
+                />
+              </div>
             </div>
           </div>
-        </div>
-      </SidebarInset>
-    </SidebarProvider>
+        </SidebarInset>
+      </SidebarProvider>
+    </SettingsWrapper>
   )
 }

@@ -21,19 +21,23 @@ import {
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
 
+export interface NavMainItem {
+  title: string
+  url: string
+  icon: LucideIcon
+  isActive?: boolean
+  onClick?: () => void
+  items?: {
+    title: string
+    url: string
+    onClick?: () => void
+  }[]
+}
+
 export function NavMain({
   items,
 }: {
-  items: {
-    title: string
-    url: string
-    icon: LucideIcon
-    isActive?: boolean
-    items?: {
-      title: string
-      url: string
-    }[]
-  }[]
+  items: NavMainItem[]
 }) {
   const pathname = usePathname()
 
@@ -65,11 +69,21 @@ export function NavMain({
                       <SidebarMenuSub>
                         {item.items?.map((subItem) => (
                           <SidebarMenuSubItem key={subItem.title}>
-                            <SidebarMenuSubButton asChild isActive={pathname === subItem.url}>
-                              <Link href={subItem.url}>
+                            {subItem.onClick ? (
+                              <SidebarMenuSubButton
+                                isActive={pathname === subItem.url}
+                                onClick={subItem.onClick}
+                                className="cursor-pointer"
+                              >
                                 <span>{subItem.title}</span>
-                              </Link>
-                            </SidebarMenuSubButton>
+                              </SidebarMenuSubButton>
+                            ) : (
+                              <SidebarMenuSubButton asChild isActive={pathname === subItem.url}>
+                                <Link href={subItem.url}>
+                                  <span>{subItem.title}</span>
+                                </Link>
+                              </SidebarMenuSubButton>
+                            )}
                           </SidebarMenuSubItem>
                         ))}
                       </SidebarMenuSub>
@@ -79,15 +93,31 @@ export function NavMain({
               )
             }
 
+            if (item.onClick) {
+              return (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton
+                    tooltip={item.title}
+                    isActive={isActive}
+                    onClick={item.onClick}
+                    className="cursor-pointer"
+                  >
+                    {item.icon && <item.icon />}
+                    <span>{item.title}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )
+            }
+
             return (
-            <SidebarMenuItem key={item.title}>
+              <SidebarMenuItem key={item.title}>
                 <SidebarMenuButton tooltip={item.title} asChild isActive={isActive}>
                   <Link href={item.url}>
-                {item.icon && <item.icon />}
-                <span>{item.title}</span>
+                    {item.icon && <item.icon />}
+                    <span>{item.title}</span>
                   </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             )
           })}
         </SidebarMenu>

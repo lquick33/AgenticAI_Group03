@@ -14,6 +14,9 @@ export interface UserPreferences {
   learning_style: 'linear' | 'iterative'
   agent_persona: 'strict' | 'humorous' | 'buddy'
   preferred_study_times: string[]
+  default_deduplicate_flashcards?: boolean
+  theme_preference?: 'light' | 'dark' | 'system'
+  ankiweb_username?: string | null
   created_at: string
   updated_at: string
 }
