@@ -97,10 +97,36 @@ class SearchTopicTool:
                     "relevance_score": r.get("rank")
                 })
             
+            # Pick the best introduction page: among highly relevant results, prefer lower page numbers
+            # This ensures the LLM references the page that will actually be opened in the UI
+            def pick_best_intro_page(search_results):
+                if not search_results:
+                    return None
+                max_score = max(r.get("relevance_score", 0) or 0 for r in search_results)
+                if max_score == 0:
+                    return search_results[0]
+                threshold = max_score * 0.7
+                highly_relevant = [
+                    r for r in search_results 
+                    if (r.get("relevance_score", 0) or 0) >= threshold
+                ]
+                if highly_relevant:
+                    return min(highly_relevant, key=lambda r: r.get("page_number", 999))
+                return search_results[0]
+            
+            # Reorder results: put best intro page first, then others by relevance
+            best_intro = pick_best_intro_page(formatted_results)
+            if best_intro:
+                # Move best intro page to front
+                reordered_results = [best_intro] + [r for r in formatted_results if r != best_intro]
+            else:
+                reordered_results = formatted_results
+            
             return json.dumps({
                 "found": True,
-                "message": f"Found {len(formatted_results)} page(s) matching '{query}'.",
-                "results": formatted_results
+                "message": f"Found {len(reordered_results)} page(s) matching '{query}'. The best starting point is page {best_intro.get('page_number') if best_intro else 'unknown'}.",
+                "results": reordered_results,
+                "recommended_page": best_intro.get("page_number") if best_intro else None
             }, ensure_ascii=False)
             
         except Exception as e:

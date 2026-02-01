@@ -2563,40 +2563,30 @@ async def send_quickchat_message(
                                             }
                                             yield f"data: {json.dumps(results_data)}\n\n"
                                             
-                                            # Helper function to pick best introduction page
-                                            def pick_best_intro_page(search_results):
-                                                max_score = max(r.get("relevance_score", 0) for r in search_results)
-                                                threshold = max_score * 0.7
-                                                highly_relevant = [
-                                                    r for r in search_results 
-                                                    if r.get("relevance_score", 0) >= threshold
-                                                ]
-                                                if highly_relevant:
-                                                    return min(highly_relevant, key=lambda r: r.get("page_number", 999))
-                                                return search_results[0]
+                                            # Use the first result (already reordered by search tool to have best intro page first)
+                                            # The search tool now applies pick_best_intro_page logic before returning results
+                                            first_result = results[0] if results else None
                                             
                                             # Auto-open only in discovery mode
-                                            if mode == "discovery" and flat_results:
-                                                first_intro = pick_best_intro_page(results)
+                                            if mode == "discovery" and first_result:
                                                 open_data = {
                                                     "type": "open_material",
-                                                    "course_id": first_intro.get("course", {}).get("id"),
-                                                    "course_title": first_intro.get("course", {}).get("title"),
-                                                    "material_id": first_intro.get("material", {}).get("id"),
-                                                    "material_name": first_intro.get("material", {}).get("name"),
-                                                    "page_number": first_intro.get("page_number")
+                                                    "course_id": first_result.get("course", {}).get("id"),
+                                                    "course_title": first_result.get("course", {}).get("title"),
+                                                    "material_id": first_result.get("material", {}).get("id"),
+                                                    "material_name": first_result.get("material", {}).get("name"),
+                                                    "page_number": first_result.get("page_number")
                                                 }
                                                 yield f"data: {json.dumps(open_data)}\n\n"
                                             
                                             # In tutoring mode, store pending navigation for user confirmation
-                                            elif mode == "tutoring" and flat_results:
-                                                first_intro = pick_best_intro_page(results)
+                                            elif mode == "tutoring" and first_result:
                                                 pending_nav = {
-                                                    "course_id": first_intro.get("course", {}).get("id"),
-                                                    "course_title": first_intro.get("course", {}).get("title"),
-                                                    "material_id": first_intro.get("material", {}).get("id"),
-                                                    "material_name": first_intro.get("material", {}).get("name"),
-                                                    "page_number": first_intro.get("page_number")
+                                                    "course_id": first_result.get("course", {}).get("id"),
+                                                    "course_title": first_result.get("course", {}).get("title"),
+                                                    "material_id": first_result.get("material", {}).get("id"),
+                                                    "material_name": first_result.get("material", {}).get("name"),
+                                                    "page_number": first_result.get("page_number")
                                                 }
                                                 
                                                 # Store in state for next message to check
