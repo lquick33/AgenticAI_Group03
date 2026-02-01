@@ -142,6 +142,35 @@ def test_import_quiz_agent():
     print("   - QuizGeneratorAgent has required methods")
 
 
+@test("Import QuickChatAgent")
+def test_import_quickchat_agent():
+    from app.agents.quickchat.quickchat_agent import QuickChatAgent, QuickChatState
+    print("   - QuickChatAgent imported successfully")
+    print("   - QuickChatState imported successfully")
+    
+    # Check QuickChatState fields
+    annotations = QuickChatState.__annotations__
+    assert "mode" in annotations, "QuickChatState should have 'mode'"
+    assert "current_page" in annotations, "QuickChatState should have 'current_page'"
+    assert "material_id" in annotations, "QuickChatState should have 'material_id'"
+    assert "user_id" in annotations, "QuickChatState should have 'user_id'"
+    print("   - QuickChatState has required fields")
+
+
+@test("Import QuickChat Tools")
+def test_import_quickchat_tools():
+    from app.tools.search_topic_tool import SearchTopicTool, SearchTopicInput
+    from app.tools.user_courses_tool import GetUserCoursesTool, GetUserCoursesInput
+    print("   - SearchTopicTool imported successfully")
+    print("   - GetUserCoursesTool imported successfully")
+    
+    # Check SearchTopicInput fields
+    fields = SearchTopicInput.model_fields
+    assert "query" in fields, "SearchTopicInput should have 'query'"
+    assert "user_id" in fields, "SearchTopicInput should have 'user_id'"
+    print("   - QuickChat tool inputs have required fields")
+
+
 @test("Import Anki Tools")
 def test_import_anki_tools():
     from app.tools.anki_tools import (
@@ -345,6 +374,135 @@ def test_tutor_message_history():
     
     print(f"   - Created {len(messages)} messages (exceeds limit)")
     print("   - Message history sliding window is configured")
+
+
+# =============================================================================
+# SECTION 2.5: QUICKCHAT AGENT TESTS
+# =============================================================================
+
+@test("QuickChatAgent - Initialize with default config")
+def test_quickchat_init_default():
+    from app.agents.quickchat.quickchat_agent import QuickChatAgent
+    from app.services.analyzer import get_gemini_model
+    
+    llm = get_gemini_model()
+    agent = QuickChatAgent(llm=llm)
+    
+    assert agent.name == "QuickChatAgent"
+    assert agent.language == "de"
+    print(f"   - Agent name: {agent.name}")
+    print(f"   - Default language: {agent.language}")
+    print("   - Agent initialized with default config")
+
+
+@test("QuickChatAgent - Tool binding verification")
+def test_quickchat_tool_binding():
+    from app.agents.quickchat.quickchat_agent import QuickChatAgent
+    from app.services.analyzer import get_gemini_model
+    
+    llm = get_gemini_model()
+    agent = QuickChatAgent(llm=llm)
+    
+    # Check that langchain_tools is populated
+    assert hasattr(agent, 'langchain_tools'), "Agent should have langchain_tools"
+    assert len(agent.langchain_tools) >= 6, f"Agent should have at least 6 tools, got {len(agent.langchain_tools)}"
+    
+    # Get tool names
+    tool_names = [t.name for t in agent.langchain_tools]
+    print(f"   - Tools bound: {tool_names}")
+    
+    # Check required tools
+    assert "search_topic" in tool_names, "search_topic tool should be bound"
+    assert "get_user_courses" in tool_names, "get_user_courses tool should be bound"
+    assert "get_page_analysis" in tool_names, "get_page_analysis tool should be bound"
+    print("   - All required tools are bound")
+
+
+@test("QuickChatAgent - State management")
+def test_quickchat_state_management():
+    from app.agents.quickchat.quickchat_agent import QuickChatAgent, QuickChatState
+    from app.services.analyzer import get_gemini_model
+    from langchain_core.messages import HumanMessage
+    
+    llm = get_gemini_model()
+    agent = QuickChatAgent(llm=llm)
+    
+    # Create a test state
+    test_state = QuickChatState(
+        messages=[HumanMessage(content="Find IT security topic")],
+        mode="discovery",
+        current_page=None,
+        material_id=None,
+        user_id="test-user-uuid"
+    )
+    
+    assert test_state["mode"] == "discovery"
+    assert test_state["user_id"] == "test-user-uuid"
+    print("   - QuickChatState created successfully")
+    print(f"   - Mode: {test_state['mode']}")
+    print(f"   - User ID: {test_state['user_id']}")
+
+
+@test("SearchTopicTool - Execute search")
+def test_search_topic_tool_run():
+    from app.tools.search_topic_tool import SearchTopicTool
+    from app.services.storage import get_supabase_client
+    import json
+    
+    tool = SearchTopicTool()
+    
+    # Get a valid user ID
+    client = get_supabase_client()
+    profiles = client.table("profiles").select("id").limit(1).execute()
+    
+    if not profiles.data:
+        print("   - No profiles found, skipping actual search")
+        return
+    
+    user_id = profiles.data[0]["id"]
+    
+    result = tool._run(
+        query="security",
+        user_id=user_id,
+        language="auto",
+        limit=5
+    )
+    
+    result_data = json.loads(result)
+    
+    assert "found" in result_data, "Result should have 'found' key"
+    assert "results" in result_data, "Result should have 'results' key"
+    
+    print(f"   - Found: {result_data['found']}")
+    print(f"   - Results count: {len(result_data['results'])}")
+
+
+@test("GetUserCoursesTool - Execute retrieval")
+def test_get_user_courses_tool_run():
+    from app.tools.user_courses_tool import GetUserCoursesTool
+    from app.services.storage import get_supabase_client
+    import json
+    
+    tool = GetUserCoursesTool()
+    
+    # Get a valid user ID
+    client = get_supabase_client()
+    profiles = client.table("profiles").select("id").limit(1).execute()
+    
+    if not profiles.data:
+        print("   - No profiles found, skipping retrieval")
+        return
+    
+    user_id = profiles.data[0]["id"]
+    
+    result = tool._run(user_id=user_id)
+    result_data = json.loads(result)
+    
+    assert "found" in result_data, "Result should have 'found' key"
+    assert "courses" in result_data, "Result should have 'courses' key"
+    
+    print(f"   - Found: {result_data['found']}")
+    print(f"   - Courses count: {len(result_data['courses'])}")
 
 
 # =============================================================================
@@ -940,6 +1098,26 @@ def test_integration_quiz_graph():
     print("   - QuizGeneratorAgent graph compiled successfully")
 
 
+@test("Integration - Full QuickChatAgent graph compilation")
+def test_integration_quickchat_graph():
+    from app.agents.quickchat.quickchat_agent import QuickChatAgent
+    from app.services.analyzer import get_gemini_model
+    
+    llm = get_gemini_model()
+    agent = QuickChatAgent(llm=llm)
+    
+    # Verify graph is compiled
+    assert hasattr(agent, 'graph'), "Agent should have compiled graph"
+    assert agent.graph is not None, "Graph should not be None"
+    
+    # Verify tool node is state-aware
+    assert hasattr(agent, 'tool_node'), "Agent should have tool_node"
+    assert agent.tool_node is not None, "Tool node should not be None"
+    
+    print("   - QuickChatAgent graph compiled successfully")
+    print("   - StateAwareToolNode configured")
+
+
 # =============================================================================
 # SECTION 7: ERROR HANDLING TESTS
 # =============================================================================
@@ -1103,6 +1281,8 @@ def main():
         test_import_tutor_agent,
         test_import_flashcard_agent,
         test_import_quiz_agent,
+        test_import_quickchat_agent,
+        test_import_quickchat_tools,
         test_import_anki_tools,
         test_import_course_material_tool,
         test_import_knowledge_tool,
@@ -1131,6 +1311,22 @@ def main():
     ]
     
     for test_func in tutor_tests:
+        test_func()
+    
+    # Section 2.5: QuickChatAgent Tests
+    print("\n" + "-"*60)
+    print("SECTION 2.5: QUICKCHAT AGENT TESTS")
+    print("-"*60)
+    
+    quickchat_tests = [
+        test_quickchat_init_default,
+        test_quickchat_tool_binding,
+        test_quickchat_state_management,
+        test_search_topic_tool_run,
+        test_get_user_courses_tool_run,
+    ]
+    
+    for test_func in quickchat_tests:
         test_func()
     
     # Section 3: FlashcardGeneratorAgent Tests
@@ -1199,6 +1395,7 @@ def main():
         test_integration_tutor_graph,
         test_integration_flashcard_graph,
         test_integration_quiz_graph,
+        test_integration_quickchat_graph,
     ]
     
     for test_func in integration_tests:

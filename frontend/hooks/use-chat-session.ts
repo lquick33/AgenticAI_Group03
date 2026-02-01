@@ -8,7 +8,8 @@ import { useTypewriter } from './use-typewriter'
 export function useChatSession(
   materialId: string,
   userId: string,
-  pageCount: number
+  pageCount: number,
+  urlInitialPage?: number  // Optional initial page from URL query param (overrides session lastPage)
 ) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -920,7 +921,12 @@ export function useChatSession(
         const session = await getStudySession(materialId, userId)
         if (!isMounted) return
 
-        const initialPage = session.lastPage && session.lastPage > 0 ? session.lastPage : 1
+        // Use URL initial page if provided, otherwise use session's lastPage
+        const sessionPage = session.lastPage && session.lastPage > 0 ? session.lastPage : 1
+        const initialPage = urlInitialPage && urlInitialPage > 0 && urlInitialPage <= pageCount 
+          ? urlInitialPage 
+          : sessionPage
+        
         if (session.messages && session.messages.length > 0) {
           setMessages(session.messages)
         }
@@ -931,9 +937,13 @@ export function useChatSession(
       } catch (error) {
         console.error('[useChatSession] Failed to load study session:', error)
         if (!isMounted) return
-        setCurrentPage(1)
+        // Use URL initial page if provided, otherwise default to 1
+        const fallbackPage = urlInitialPage && urlInitialPage > 0 && urlInitialPage <= pageCount 
+          ? urlInitialPage 
+          : 1
+        setCurrentPage(fallbackPage)
         isInitializing.current = false
-        await handlePageChange(1, true, true)
+        await handlePageChange(fallbackPage, true, true)
       }
     }
     initSession()
@@ -943,7 +953,7 @@ export function useChatSession(
       if (streamControllerRef.current) streamControllerRef.current.close()
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
     }
-  }, [materialId, userId, handlePageChange, stopTypewriter])
+  }, [materialId, userId, handlePageChange, stopTypewriter, urlInitialPage, pageCount])
 
   // Page change effect
   useEffect(() => {

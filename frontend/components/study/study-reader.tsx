@@ -34,6 +34,7 @@ interface StudyReaderProps {
   pdfUrl: string
   pageCount: number
   userId: string
+  initialPage?: number  // Optional initial page from URL query param (for deep linking from Quick Chat)
 }
 
 export function StudyReader({
@@ -42,6 +43,7 @@ export function StudyReader({
   pdfUrl,
   pageCount,
   userId,
+  initialPage,
 }: StudyReaderProps) {
   const [showCongratulations, setShowCongratulations] = useState(false)
   const [showTools, setShowTools] = useState(() => {
@@ -62,7 +64,7 @@ export function StudyReader({
     handleSendMessage,
     handlePageChange,
     handleQuizComplete
-  } = useChatSession(materialId, userId, pageCount)
+  } = useChatSession(materialId, userId, pageCount, initialPage)
 
   // Track all snippets for the material, and current page's snippets
   const [allSnippets, setAllSnippets] = useState<Snippet[]>([])

@@ -5,6 +5,8 @@ Tools for LangGraph agents.
 from .page_analysis_tool import GetPageAnalysisTool
 from .course_material_tool import GetCourseMaterialSummaryTool
 from .knowledge_tool import GetCourseKnowledgeTool
+from .search_topic_tool import SearchTopicTool
+from .user_courses_tool import GetUserCoursesTool
 from .anki_tools import (
     get_anki_stats,
     create_flashcard,
@@ -23,6 +25,9 @@ __all__ = [
     "GetPageAnalysisTool",
     "GetCourseMaterialSummaryTool",
     "GetCourseKnowledgeTool",
+    # Quick Chat tools
+    "SearchTopicTool",
+    "GetUserCoursesTool",
     # Anki tools
     "get_anki_stats",
     "create_flashcard",

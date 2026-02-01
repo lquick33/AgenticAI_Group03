@@ -364,3 +364,61 @@ class QuizResponse(BaseModel):
     end_page: int
     quiz_data: QuizData
     created_at: str
+
+
+# Quick Chat Models
+
+class QuickChatInitiateRequest(BaseModel):
+    """Request model for initiating a quick chat session."""
+    
+    user_id: str = Field(..., description="User ID (UUID)")
+
+
+class QuickChatWarmupRequest(BaseModel):
+    """Request model for pre-warming the quick chat agent."""
+    
+    user_id: str = Field(..., description="User ID (UUID)")
+    thread_id: str = Field(..., description="Thread ID from initiate response")
+
+
+class QuickChatMessageRequest(BaseModel):
+    """Request model for sending a message in quick chat."""
+    
+    user_id: str = Field(..., description="User ID (UUID)")
+    message: str = Field(..., description="User message content")
+    thread_id: Optional[str] = Field(None, description="Thread ID from initiate (for pre-warmed agent)")
+    # Optional: for tutoring mode after navigation
+    material_id: Optional[str] = Field(None, description="Course material ID (UUID) if in tutoring mode")
+    page_number: Optional[int] = Field(None, description="Current page number if in tutoring mode")
+    course_id: Optional[str] = Field(None, description="Course ID (UUID) if in tutoring mode")
+
+
+class QuickChatSearchRequest(BaseModel):
+    """Request model for direct topic search."""
+    
+    user_id: str = Field(..., description="User ID (UUID)")
+    query: str = Field(..., description="Search query")
+    language: str = Field(default="auto", description="Language: 'de', 'en', or 'auto'")
+    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of results")
+
+
+class QuickChatSearchResult(BaseModel):
+    """Single search result from quick chat topic search."""
+    
+    course_id: str
+    course_title: str
+    course_color: Optional[str] = None
+    material_id: str
+    material_name: str
+    page_number: int
+    summary: str
+    key_terms: List[str]
+    rank: float
+
+
+class QuickChatSearchResponse(BaseModel):
+    """Response model for quick chat topic search."""
+    
+    found: bool
+    message: str
+    results: List[QuickChatSearchResult]

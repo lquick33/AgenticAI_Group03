@@ -697,6 +697,334 @@ def get_course_material_summary(
         raise Exception(f"Failed to get course material summary: {str(e)}")
 
 
+def search_page_analyses(
+    user_id: str,
+    query: str,
+    language: str = "auto",
+    limit: int = 10
+) -> List[dict]:
+    """
+    Search across all page_analyses for a user using full-text search.
+    
+    Uses PostgreSQL full-text search with German and English language support.
+    Returns matching pages with course/material context, ranked by relevance.
+    
+    Args:
+        user_id: User ID for authorization (RLS)
+        query: Search query string
+        language: Language for search - "de", "en", or "auto" (searches both)
+        limit: Maximum number of results to return
+        
+    Returns:
+        List of matching pages with context:
+        - course_id, course_title, course_color
+        - material_id, material_name
+        - page_number, summary, key_terms
+        - rank (relevance score)
+        
+    Raises:
+        Exception: If database operation fails
+    """
+    client = get_supabase_client()
+    
+    if not query or not query.strip():
+        return []
+    
+    # Sanitize query for PostgreSQL tsquery
+    sanitized_query = query.strip()
+    
+    try:
+        # Build the search query based on language
+        # Using raw SQL via RPC for complex full-text search with joins
+        
+        if language == "de":
+            search_sql = """
+                SELECT 
+                    pa.id,
+                    pa.page_number,
+                    pa.summary,
+                    pa.key_terms,
+                    cm.id as material_id,
+                    cm.file_name as material_name,
+                    c.id as course_id,
+                    c.title as course_title,
+                    c.color_code as course_color,
+                    ts_rank(pa.search_vector_de, plainto_tsquery('german', $1)) as rank
+                FROM page_analyses pa
+                JOIN course_materials cm ON pa.course_material_id = cm.id
+                JOIN courses c ON cm.course_id = c.id
+                WHERE pa.user_id = $2
+                AND pa.search_vector_de @@ plainto_tsquery('german', $1)
+                ORDER BY rank DESC
+                LIMIT $3
+            """
+        elif language == "en":
+            search_sql = """
+                SELECT 
+                    pa.id,
+                    pa.page_number,
+                    pa.summary,
+                    pa.key_terms,
+                    cm.id as material_id,
+                    cm.file_name as material_name,
+                    c.id as course_id,
+                    c.title as course_title,
+                    c.color_code as course_color,
+                    ts_rank(pa.search_vector_en, plainto_tsquery('english', $1)) as rank
+                FROM page_analyses pa
+                JOIN course_materials cm ON pa.course_material_id = cm.id
+                JOIN courses c ON cm.course_id = c.id
+                WHERE pa.user_id = $2
+                AND pa.search_vector_en @@ plainto_tsquery('english', $1)
+                ORDER BY rank DESC
+                LIMIT $3
+            """
+        else:
+            # Auto mode: search both German and English, take best rank
+            search_sql = """
+                SELECT DISTINCT ON (pa.id)
+                    pa.id,
+                    pa.page_number,
+                    pa.summary,
+                    pa.key_terms,
+                    cm.id as material_id,
+                    cm.file_name as material_name,
+                    c.id as course_id,
+                    c.title as course_title,
+                    c.color_code as course_color,
+                    GREATEST(
+                        COALESCE(ts_rank(pa.search_vector_de, plainto_tsquery('german', $1)), 0),
+                        COALESCE(ts_rank(pa.search_vector_en, plainto_tsquery('english', $1)), 0)
+                    ) as rank
+                FROM page_analyses pa
+                JOIN course_materials cm ON pa.course_material_id = cm.id
+                JOIN courses c ON cm.course_id = c.id
+                WHERE pa.user_id = $2
+                AND (
+                    pa.search_vector_de @@ plainto_tsquery('german', $1)
+                    OR pa.search_vector_en @@ plainto_tsquery('english', $1)
+                )
+                ORDER BY pa.id, rank DESC
+            """
+        
+        # Execute via Supabase RPC
+        # Note: We need to create an RPC function or use a simpler approach
+        # For now, use a simpler query that works with Supabase client
+        
+        # Alternative: Use ILIKE as fallback if FTS columns don't exist yet
+        # This will be replaced once migration is run
+        
+        # First, try to get all page analyses for the user and filter
+        # This is a simpler approach that works without RPC
+        response = (
+            client.table("page_analyses")
+            .select(
+                "id, page_number, summary, key_terms, course_material_id"
+            )
+            .eq("user_id", user_id)
+            .execute()
+        )
+        
+        if not response.data:
+            return []
+        
+        # Get all course materials for context
+        material_ids = list(set(pa.get("course_material_id") for pa in response.data if pa.get("course_material_id")))
+        
+        if not material_ids:
+            return []
+        
+        materials_response = (
+            client.table("course_materials")
+            .select("id, file_name, course_id")
+            .in_("id", material_ids)
+            .execute()
+        )
+        
+        materials_map = {m["id"]: m for m in (materials_response.data or [])}
+        
+        # Get courses for context
+        course_ids = list(set(m.get("course_id") for m in materials_map.values() if m.get("course_id")))
+        
+        if course_ids:
+            courses_response = (
+                client.table("courses")
+                .select("id, title, color_code")
+                .in_("id", course_ids)
+                .execute()
+            )
+            courses_map = {c["id"]: c for c in (courses_response.data or [])}
+        else:
+            courses_map = {}
+        
+        # Filter and rank results using Python text matching
+        # (Full-text search via SQL will be more efficient once RPC is set up)
+        query_lower = sanitized_query.lower()
+        query_terms = query_lower.split()
+        
+        results = []
+        for pa in response.data:
+            summary = (pa.get("summary") or "").lower()
+            key_terms = [kt.lower() for kt in (pa.get("key_terms") or [])]
+            key_terms_text = " ".join(key_terms)
+            
+            # Calculate simple relevance score
+            score = 0
+            for term in query_terms:
+                if term in summary:
+                    score += 2  # Summary match is weighted higher
+                if any(term in kt for kt in key_terms):
+                    score += 3  # Key term match is weighted highest
+                if term in key_terms_text:
+                    score += 1
+            
+            if score > 0:
+                material = materials_map.get(pa.get("course_material_id"), {})
+                course = courses_map.get(material.get("course_id"), {})
+                
+                results.append({
+                    "id": pa.get("id"),
+                    "page_number": pa.get("page_number"),
+                    "summary": pa.get("summary"),
+                    "key_terms": pa.get("key_terms"),
+                    "material_id": pa.get("course_material_id"),
+                    "material_name": material.get("file_name"),
+                    "course_id": material.get("course_id"),
+                    "course_title": course.get("title"),
+                    "course_color": course.get("color_code"),
+                    "rank": score
+                })
+        
+        # Sort by rank descending and limit
+        results.sort(key=lambda x: x["rank"], reverse=True)
+        return results[:limit]
+        
+    except Exception as e:
+        logger.error(f"Failed to search page analyses: {str(e)}")
+        raise Exception(f"Failed to search page analyses: {str(e)}")
+
+
+def get_user_course_counts(user_id: str) -> tuple[int, int]:
+    """
+    Get course and material counts for a user (lightweight query for Quick Chat initiate).
+    
+    Args:
+        user_id: User ID for authorization (RLS)
+        
+    Returns:
+        Tuple of (course_count, material_count)
+    """
+    client = get_supabase_client()
+    
+    try:
+        # Count courses
+        courses_response = (
+            client.table("courses")
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        course_count = courses_response.count or 0
+        
+        if course_count == 0:
+            return (0, 0)
+        
+        # Count completed materials for this user's courses
+        # Use a subquery via RPC or just get course IDs first
+        course_ids = [c["id"] for c in (courses_response.data or [])]
+        
+        materials_response = (
+            client.table("course_materials")
+            .select("id", count="exact")
+            .in_("course_id", course_ids)
+            .eq("processing_status", "completed")
+            .execute()
+        )
+        material_count = materials_response.count or 0
+        
+        return (course_count, material_count)
+        
+    except Exception as e:
+        logger.error(f"Failed to get user course counts: {str(e)}")
+        return (0, 0)  # Fail gracefully for counts
+
+
+def get_user_courses_with_materials(user_id: str) -> List[dict]:
+    """
+    Get all courses and their materials for a user.
+    
+    Used by Quick Chat to show available courses/lectures.
+    
+    Args:
+        user_id: User ID for authorization (RLS)
+        
+    Returns:
+        List of courses with their materials:
+        - course_id, course_title, course_color, course_description
+        - materials: list of {material_id, material_name, page_count, has_summary}
+        
+    Raises:
+        Exception: If database operation fails
+    """
+    client = get_supabase_client()
+    
+    try:
+        # Get all courses for user
+        courses_response = (
+            client.table("courses")
+            .select("id, title, description, color_code, exam_date")
+            .eq("user_id", user_id)
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        
+        if not courses_response.data:
+            return []
+        
+        course_ids = [c["id"] for c in courses_response.data]
+        
+        # Get all materials for these courses
+        materials_response = (
+            client.table("course_materials")
+            .select("id, course_id, file_name, page_count, processing_status, summary")
+            .in_("course_id", course_ids)
+            .eq("processing_status", "completed")
+            .order("created_at", desc=False)
+            .execute()
+        )
+        
+        # Group materials by course
+        materials_by_course: Dict[str, list] = {}
+        for m in (materials_response.data or []):
+            course_id = m.get("course_id")
+            if course_id not in materials_by_course:
+                materials_by_course[course_id] = []
+            materials_by_course[course_id].append({
+                "material_id": m.get("id"),
+                "material_name": m.get("file_name"),
+                "page_count": m.get("page_count"),
+                "has_summary": bool(m.get("summary"))
+            })
+        
+        # Build result
+        results = []
+        for course in courses_response.data:
+            results.append({
+                "course_id": course.get("id"),
+                "course_title": course.get("title"),
+                "course_description": course.get("description"),
+                "course_color": course.get("color_code"),
+                "exam_date": course.get("exam_date"),
+                "materials": materials_by_course.get(course.get("id"), [])
+            })
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Failed to get user courses with materials: {str(e)}")
+        raise Exception(f"Failed to get user courses with materials: {str(e)}")
+
+
 def get_messages_for_page(
     page_analysis_id: str,
     user_id: str

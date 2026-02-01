@@ -86,13 +86,21 @@ class QuizGeneratorAgent(BaseAgent):
         Build system prompt for quiz generation.
         Loads prompt from Langfuse if available, otherwise uses fallback.
         
+        IMPORTANT: The primary/active prompt is stored in Langfuse under the name
+        'quiz-generator/system-prompt-{language}'. Any changes to the agent's behavior
+        should be made in Langfuse first, and then mirrored here for fallback purposes.
+        
+        Langfuse prompts:
+          - quiz-generator/system-prompt-de (German, production label)
+          - quiz-generator/system-prompt-en (English, production label)
+        
         Args:
             language: Language code (e.g., "de", "en")
             
         Returns:
             System prompt string
         """
-        # Try to load from Langfuse first
+        # Try to load from Langfuse first (PRIMARY source)
         if self.langfuse_client:
             try:
                 prompt_name = f"quiz-generator/system-prompt-{language}"
@@ -116,7 +124,7 @@ class QuizGeneratorAgent(BaseAgent):
             except Exception as e:
                 logger.warning(f"Failed to load Langfuse prompt for quiz-generator: {e}, using fallback")
         
-        # Fallback prompt if Langfuse is not available or fails
+        # FALLBACK PROMPT - Primary prompt is in Langfuse: quiz-generator/system-prompt-{language}
         return """Du bist ein Quiz-Generator für Vorlesungsmaterialien. Deine Aufgabe ist es, Verständnisfragen zu erstellen, die das Verständnis der Studenten prüfen, nicht das Auswendiglernen.
 
 WICHTIGE REGELN:

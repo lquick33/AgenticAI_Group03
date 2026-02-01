@@ -644,7 +644,12 @@ class FlashcardGeneratorAgent(BaseAgent):
             return self._get_fallback_classification_prompt(summaries, key_terms)
     
     def _get_fallback_classification_prompt(self, summaries: List[str], key_terms: List[str]) -> str:
-        """Fallback prompt if Langfuse unavailable."""
+        """
+        Fallback prompt if Langfuse unavailable.
+        
+        IMPORTANT: Primary prompt is in Langfuse: material-classifier/classification
+        """
+        # FALLBACK PROMPT - Primary prompt is in Langfuse: material-classifier/classification
         summaries_text = "\n".join(summaries[:10])
         key_terms_text = ", ".join(key_terms[:50])
         
@@ -1917,7 +1922,12 @@ Respond with a JSON object matching this structure:
         )
     
     def _get_fallback_base_prompt(self) -> str:
-        """Fallback base prompt if Langfuse unavailable."""
+        """
+        Fallback base prompt if Langfuse unavailable.
+        
+        IMPORTANT: Primary prompt is in Langfuse: flashcard-agent/base-prompt
+        """
+        # FALLBACK PROMPT - Primary prompt is in Langfuse: flashcard-agent/base-prompt
         return """You are a flashcard generator that creates educational flashcards from lecture materials.
 
 **General Instructions:**
@@ -1959,8 +1969,12 @@ You must respond with a valid JSON object matching this structure:
         For known classifications, returns base + specific additions.
         For unknown classifications, returns general fallback.
         This makes the system extensible - new classifications fall back to general.
+        
+        IMPORTANT: Primary prompts are in Langfuse:
+          - flashcard-agent/card-generation-{classification} (e.g., language_learning, math, etc.)
+          - flashcard-agent/card-generation (legacy, general purpose)
         """
-        # Load base prompt for fallback
+        # FALLBACK PROMPT - Primary prompt is in Langfuse: flashcard-agent/card-generation-{classification}
         base_prompt = self._get_fallback_base_prompt()
         
         # Known classification-specific additions

@@ -4,6 +4,7 @@ API Endpoints
 FastAPI route handlers for PDF upload and processing.
 """
 
+import asyncio
 import io
 import json
 import logging
@@ -23,6 +24,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, Tool
 from langgraph.checkpoint.memory import MemorySaver
 
 from app.agents.tutor import TutorAgent
+from app.agents.quickchat import QuickChatAgent
 from app.services.analyzer import get_gemini_model
 
 from app.models.schemas import (
@@ -41,6 +43,12 @@ from app.models.schemas import (
     QuizSubmit,
     QuizResult,
     QuizResponse,
+    QuickChatInitiateRequest,
+    QuickChatWarmupRequest,
+    QuickChatMessageRequest,
+    QuickChatSearchRequest,
+    QuickChatSearchResponse,
+    QuickChatSearchResult,
 )
 from app.services.pdf_processor import process_pdf_background
 from app.services.snippet_service import (
@@ -63,6 +71,9 @@ from app.services.storage import (
     delete_course_material,
     get_study_history,
     sync_anki_study_history,
+    search_page_analyses,
+    get_user_courses_with_materials,
+    get_user_course_counts,
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_apkg
@@ -2271,6 +2282,520 @@ async def send_chat_message(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to send message: {str(e)}"
+        )
+
+
+# ============================================================================
+# Quick Chat Endpoints
+# ============================================================================
+
+# Separate checkpointer for quick chat sessions
+_quickchat_checkpointer = MemorySaver()
+
+# Pre-warmed agents storage (thread_id -> agent)
+# Used to speed up first message response by warming agent while user types
+_prewarmed_quickchat_agents: dict[str, QuickChatAgent] = {}
+
+
+@router.post("/quickchat/initiate")
+async def initiate_quickchat(
+    request: QuickChatInitiateRequest = Body(...)
+) -> dict:
+    """
+    Initiate a quick chat session.
+    
+    Returns instant JSON response with greeting and thread_id.
+    No DB calls - designed for minimal latency.
+    
+    Args:
+        request: QuickChatInitiateRequest with user_id
+        
+    Returns:
+        JSON with greeting, thread_id, and mode
+    """
+    # Create thread ID immediately (no DB call needed)
+    thread_id = f"quickchat-{request.user_id}-{uuid.uuid4()}"
+    
+    # Static greeting - no DB lookup
+    greeting = (
+        "Hallo! Ich bin dein Lernassistent. "
+        "Frag mich einfach nach einem Thema, und ich zeige dir, "
+        "wo es in deinen Vorlesungen behandelt wird!"
+    )
+    
+    return {
+        "greeting": greeting,
+        "thread_id": thread_id,
+        "mode": "discovery"
+    }
+
+
+@router.post("/quickchat/warmup")
+async def warmup_quickchat(
+    request: QuickChatWarmupRequest = Body(...)
+) -> dict:
+    """
+    Pre-warm the quick chat agent for faster first response.
+    
+    Called by frontend after receiving thread_id from initiate,
+    while user is typing their first message. This creates the agent
+    in the background so it's ready when the user sends their message.
+    
+    Args:
+        request: QuickChatWarmupRequest with user_id and thread_id
+        
+    Returns:
+        Status indicating warmup success
+    """
+    try:
+        # Check if already warmed
+        if request.thread_id in _prewarmed_quickchat_agents:
+            return {"status": "already_warmed", "thread_id": request.thread_id}
+        
+        # Create agent in background thread to not block
+        def create_agent():
+            llm = get_gemini_model()
+            return QuickChatAgent(llm=llm, checkpointer=_quickchat_checkpointer)
+        
+        agent = await asyncio.to_thread(create_agent)
+        _prewarmed_quickchat_agents[request.thread_id] = agent
+        
+        # Clean up old agents (keep max 100)
+        if len(_prewarmed_quickchat_agents) > 100:
+            oldest_keys = list(_prewarmed_quickchat_agents.keys())[:-100]
+            for key in oldest_keys:
+                _prewarmed_quickchat_agents.pop(key, None)
+        
+        logger.debug(f"Pre-warmed agent for thread {request.thread_id}")
+        return {"status": "warmed", "thread_id": request.thread_id}
+        
+    except Exception as e:
+        logger.warning(f"Failed to pre-warm agent: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@router.post("/quickchat/message")
+async def send_quickchat_message(
+    request: QuickChatMessageRequest = Body(...)
+) -> StreamingResponse:
+    """
+    Send a message in a quick chat session.
+    
+    Handles both discovery mode (searching for topics) and tutoring mode
+    (after navigation to a specific page).
+    
+    Args:
+        request: QuickChatMessageRequest with user_id, message, and optional context
+        
+    Returns:
+        StreamingResponse with SSE events
+    """
+    try:
+        # Validate user
+        if not validate_user_exists(request.user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Use thread_id from request or generate one
+        thread_id = request.thread_id or f"quickchat-{request.user_id}"
+        
+        # Check for pre-warmed agent first (faster startup)
+        agent = _prewarmed_quickchat_agents.pop(thread_id, None)
+        if agent is None:
+            # No pre-warmed agent, create new one
+            llm = get_gemini_model()
+            agent = QuickChatAgent(llm=llm, checkpointer=_quickchat_checkpointer)
+        else:
+            logger.debug(f"Using pre-warmed agent for thread {thread_id}")
+        
+        # Determine mode based on whether material_id is provided
+        mode = "tutoring" if request.material_id else "discovery"
+        
+        async def event_generator() -> AsyncGenerator[str, None]:
+            try:
+                config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+                
+                # Check for pending navigation confirmation
+                # Get current state to check for navigation_request
+                try:
+                    current_state = await agent.graph.aget_state(config)
+                    pending_nav = current_state.values.get("navigation_request") if current_state.values else None
+                except Exception:
+                    pending_nav = None
+                
+                # Check if user is confirming pending navigation
+                if pending_nav and mode == "tutoring":
+                    confirmation_words = ["ja", "yes", "ok", "bitte", "gerne", "mach das", "navigiere", "öffne", "zeig", "switch", "wechsel"]
+                    message_lower = request.message.lower().strip()
+                    is_confirmation = any(word in message_lower for word in confirmation_words) and len(message_lower) < 50
+                    
+                    if is_confirmation:
+                        # User confirmed - emit open_material event
+                        open_data = {
+                            "type": "open_material",
+                            "course_id": pending_nav.get("course_id"),
+                            "course_title": pending_nav.get("course_title"),
+                            "material_id": pending_nav.get("material_id"),
+                            "material_name": pending_nav.get("material_name"),
+                            "page_number": pending_nav.get("page_number")
+                        }
+                        yield f"data: {json.dumps(open_data)}\n\n"
+                        
+                        # Clear pending navigation from state
+                        await agent.graph.aupdate_state(
+                            config,
+                            {"navigation_request": None},
+                            as_node="agent"
+                        )
+                        
+                        # Send confirmation message
+                        confirm_msg = {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": f"Alles klar! Ich öffne jetzt {pending_nav.get('material_name', 'das Material')} auf Seite {pending_nav.get('page_number', 1)}."
+                        }
+                        yield f"data: {json.dumps(confirm_msg)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                
+                # Build initial state
+                initial_state = {
+                    "messages": [HumanMessage(content=request.message)],
+                    "mode": mode,
+                    "user_id": request.user_id,
+                }
+                
+                # Add tutoring context if available
+                if request.material_id:
+                    initial_state["material_id"] = request.material_id
+                    initial_state["current_page"] = request.page_number
+                    initial_state["course_id"] = request.course_id
+                
+                # Stream agent response
+                assistant_response_chunks = []
+                last_sent_content = ""
+                
+                async for event in agent.graph.astream(initial_state, config=config, stream_mode="updates"):
+                    for node_name, node_output in event.items():
+                        if node_name == "agent":
+                            messages = node_output.get("messages", [])
+                            for msg in messages:
+                                if isinstance(msg, AIMessage):
+                                    # Handle tool calls
+                                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                                        for tool_call in msg.tool_calls:
+                                            tool_name = tool_call.get("name", "") if isinstance(tool_call, dict) else getattr(tool_call, "name", "")
+                                            tool_data = {
+                                                "type": "tool_call",
+                                                "tool": tool_name
+                                            }
+                                            yield f"data: {json.dumps(tool_data)}\n\n"
+                                    
+                                    # Handle text content
+                                    content_text = ""
+                                    if hasattr(msg, 'content'):
+                                        if isinstance(msg.content, str):
+                                            content_text = msg.content
+                                        elif isinstance(msg.content, list):
+                                            for part in msg.content:
+                                                if isinstance(part, str):
+                                                    content_text += part
+                                                elif isinstance(part, dict) and part.get("type") == "text":
+                                                    content_text += part.get("text", "")
+                                    
+                                    # Send incremental delta
+                                    if content_text and content_text != last_sent_content:
+                                        if last_sent_content and content_text.startswith(last_sent_content):
+                                            delta = content_text[len(last_sent_content):]
+                                            if delta:
+                                                delta_data = {
+                                                    "type": "delta",
+                                                    "role": "assistant",
+                                                    "delta": delta,
+                                                    "content": content_text
+                                                }
+                                                yield f"data: {json.dumps(delta_data)}\n\n"
+                                                last_sent_content = content_text
+                                        else:
+                                            # Send full message
+                                            msg_data = {
+                                                "type": "message",
+                                                "role": "assistant",
+                                                "content": content_text
+                                            }
+                                            yield f"data: {json.dumps(msg_data)}\n\n"
+                                            last_sent_content = content_text
+                                        
+                                        assistant_response_chunks.append(content_text)
+                        
+                        elif node_name == "tools":
+                            # Handle tool results - check for navigation requests
+                            messages = node_output.get("messages", [])
+                            for msg in messages:
+                                if isinstance(msg, ToolMessage):
+                                    try:
+                                        tool_result = json.loads(msg.content)
+                                        # Check if search found results
+                                        if tool_result.get("found") and tool_result.get("results"):
+                                            results = tool_result.get("results", [])[:5]  # Top 5 results
+                                            
+                                            # Transform nested results to flat structure for frontend
+                                            flat_results = []
+                                            for r in results:
+                                                flat_results.append({
+                                                    "course_id": r.get("course", {}).get("id"),
+                                                    "course_title": r.get("course", {}).get("title"),
+                                                    "course_color": r.get("course", {}).get("color"),
+                                                    "material_id": r.get("material", {}).get("id"),
+                                                    "material_name": r.get("material", {}).get("name"),
+                                                    "page_number": r.get("page_number"),
+                                                    "summary": r.get("summary"),
+                                                    "key_terms": r.get("key_terms", []),
+                                                    "relevance_score": r.get("relevance_score", 0),
+                                                })
+                                            
+                                            # Send search results for frontend to display
+                                            results_data = {
+                                                "type": "search_results",
+                                                "results": flat_results
+                                            }
+                                            yield f"data: {json.dumps(results_data)}\n\n"
+                                            
+                                            # Helper function to pick best introduction page
+                                            def pick_best_intro_page(search_results):
+                                                max_score = max(r.get("relevance_score", 0) for r in search_results)
+                                                threshold = max_score * 0.7
+                                                highly_relevant = [
+                                                    r for r in search_results 
+                                                    if r.get("relevance_score", 0) >= threshold
+                                                ]
+                                                if highly_relevant:
+                                                    return min(highly_relevant, key=lambda r: r.get("page_number", 999))
+                                                return search_results[0]
+                                            
+                                            # Auto-open only in discovery mode
+                                            if mode == "discovery" and flat_results:
+                                                first_intro = pick_best_intro_page(results)
+                                                open_data = {
+                                                    "type": "open_material",
+                                                    "course_id": first_intro.get("course", {}).get("id"),
+                                                    "course_title": first_intro.get("course", {}).get("title"),
+                                                    "material_id": first_intro.get("material", {}).get("id"),
+                                                    "material_name": first_intro.get("material", {}).get("name"),
+                                                    "page_number": first_intro.get("page_number")
+                                                }
+                                                yield f"data: {json.dumps(open_data)}\n\n"
+                                            
+                                            # In tutoring mode, store pending navigation for user confirmation
+                                            elif mode == "tutoring" and flat_results:
+                                                first_intro = pick_best_intro_page(results)
+                                                pending_nav = {
+                                                    "course_id": first_intro.get("course", {}).get("id"),
+                                                    "course_title": first_intro.get("course", {}).get("title"),
+                                                    "material_id": first_intro.get("material", {}).get("id"),
+                                                    "material_name": first_intro.get("material", {}).get("name"),
+                                                    "page_number": first_intro.get("page_number")
+                                                }
+                                                
+                                                # Store in state for next message to check
+                                                try:
+                                                    await agent.graph.aupdate_state(
+                                                        config,
+                                                        {"navigation_request": pending_nav},
+                                                        as_node="agent"
+                                                    )
+                                                except Exception as e:
+                                                    logger.warning(f"Failed to store pending navigation: {e}")
+                                                
+                                                # Emit pending_navigation event for frontend
+                                                pending_data = {
+                                                    "type": "pending_navigation",
+                                                    **pending_nav
+                                                }
+                                                yield f"data: {json.dumps(pending_data)}\n\n"
+                                    except json.JSONDecodeError:
+                                        pass
+                
+                # Send end marker
+                yield "data: [DONE]\n\n"
+                
+            except Exception as e:
+                logger.error(f"Error in quickchat message stream: {str(e)}", exc_info=True)
+                error_data = {"error": str(e)}
+                yield f"data: {json.dumps(error_data)}\n\n"
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending quick chat message: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send message: {str(e)}"
+        )
+
+
+@router.get("/quickchat/search", response_model=QuickChatSearchResponse)
+async def search_quickchat_topics(
+    user_id: str = Query(..., description="User ID (UUID)"),
+    query: str = Query(..., description="Search query"),
+    language: str = Query("auto", description="Language: 'de', 'en', or 'auto'"),
+    limit: int = Query(10, ge=1, le=50, description="Maximum number of results")
+) -> QuickChatSearchResponse:
+    """
+    Direct topic search endpoint for quick chat.
+    
+    Searches across all user's courses and materials without going through
+    the agent. Useful for autocomplete or quick search functionality.
+    
+    Args:
+        user_id: User ID
+        query: Search query string
+        language: Language for search
+        limit: Maximum results
+        
+    Returns:
+        QuickChatSearchResponse with search results
+    """
+    try:
+        # Validate user
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Perform search
+        results = search_page_analyses(
+            user_id=user_id,
+            query=query,
+            language=language,
+            limit=limit
+        )
+        
+        if not results:
+            return QuickChatSearchResponse(
+                found=False,
+                message=f"Keine Ergebnisse für '{query}' gefunden.",
+                results=[]
+            )
+        
+        # Convert to response model
+        search_results = []
+        for r in results:
+            search_results.append(QuickChatSearchResult(
+                course_id=r.get("course_id", ""),
+                course_title=r.get("course_title", ""),
+                course_color=r.get("course_color"),
+                material_id=r.get("material_id", ""),
+                material_name=r.get("material_name", ""),
+                page_number=r.get("page_number", 0),
+                summary=r.get("summary", ""),
+                key_terms=r.get("key_terms", []),
+                rank=float(r.get("rank", 0))
+            ))
+        
+        return QuickChatSearchResponse(
+            found=True,
+            message=f"{len(search_results)} Ergebnis(se) für '{query}' gefunden.",
+            results=search_results
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching topics: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to search topics: {str(e)}"
+        )
+
+
+@router.get("/quickchat/material/{material_id}")
+async def get_quickchat_material_info(
+    material_id: str = Path(..., description="Course material ID (UUID)")
+) -> dict:
+    """
+    Get material info for inline viewing in quick chat.
+    
+    Returns PDF URL (signed) and page count for the material.
+    
+    Args:
+        material_id: Course material ID
+        
+    Returns:
+        Material info including signed PDF URL
+    """
+    try:
+        client = get_supabase_client()
+        
+        # Get material info
+        material_response = (
+            client.table("course_materials")
+            .select("id, file_name, file_path, page_count, processing_status")
+            .eq("id", material_id)
+            .single()
+            .execute()
+        )
+        
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Material not found"
+            )
+        
+        material = material_response.data
+        
+        if material.get("processing_status") != "completed":
+            raise HTTPException(
+                status_code=400,
+                detail="Material is still processing"
+            )
+        
+        # Create signed URL for PDF (1 hour expiry)
+        file_path = material.get("file_path")
+        if not file_path:
+            raise HTTPException(
+                status_code=400,
+                detail="Material has no file path"
+            )
+        
+        signed_url_response = client.storage.from_("course_materials").create_signed_url(
+            file_path, 
+            3600  # 1 hour expiry
+        )
+        
+        if not signed_url_response or not signed_url_response.get("signedURL"):
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create signed URL for PDF"
+            )
+        
+        return {
+            "material_id": material.get("id"),
+            "file_name": material.get("file_name"),
+            "pdf_url": signed_url_response.get("signedURL"),
+            "page_count": material.get("page_count", 0)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting material info: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get material info: {str(e)}"
         )
 
 
