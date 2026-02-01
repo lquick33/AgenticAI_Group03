@@ -389,9 +389,7 @@ def test_quickchat_init_default():
     agent = QuickChatAgent(llm=llm)
     
     assert agent.name == "QuickChatAgent"
-    assert agent.language == "de"
     print(f"   - Agent name: {agent.name}")
-    print(f"   - Default language: {agent.language}")
     print("   - Agent initialized with default config")
 
 

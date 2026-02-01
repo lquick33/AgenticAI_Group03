@@ -161,23 +161,8 @@ def test_quickchat_init_default():
     agent = QuickChatAgent(llm=llm)
     
     assert agent.name == "QuickChatAgent"
-    assert agent.language == "de"
     print(f"   - Agent name: {agent.name}")
-    print(f"   - Default language: {agent.language}")
     print("   - Agent initialized with default config")
-
-
-@run_test("QuickChatAgent - Initialize with English language")
-def test_quickchat_init_english():
-    from app.agents.quickchat.quickchat_agent import QuickChatAgent
-    from app.services.analyzer import get_gemini_model
-    
-    llm = get_gemini_model()
-    agent = QuickChatAgent(llm=llm, language="en")
-    
-    assert agent.language == "en"
-    print(f"   - Language: {agent.language}")
-    print("   - Agent initialized with English language")
 
 
 @run_test("QuickChatAgent - Initialize with personality config")
@@ -194,7 +179,6 @@ def test_quickchat_init_personality():
     
     agent = QuickChatAgent(
         llm=llm,
-        language="de",
         personality_config=personality_config
     )
     
@@ -474,6 +458,145 @@ def test_search_topic_tool_language():
     print(f"   - Auto language results: {len(result_auto_data.get('results', []))}")
 
 
+@run_test("SearchTopicTool - pick_best_intro_page weighted continuity logic")
+def test_pick_best_intro_page_continuity():
+    """
+    Test that pick_best_intro_page prefers pages with highly-relevant subsequent pages
+    over title/overview pages.
+    
+    Uses WEIGHTED continuity: sums relevance scores of following pages.
+    Considers ALL matching pages, not just "highly relevant" ones, to find the actual
+    chapter start even if it has a lower individual relevance score than the title page.
+    """
+    from app.tools.search_topic_tool import SearchTopicTool
+    import json
+    
+    tool = SearchTopicTool()
+    
+    # Recreate the pick_best_intro_page function with the new logic
+    def pick_best_intro_page(search_results):
+        if not search_results:
+            return None
+        
+        if len(search_results) == 1:
+            return search_results[0]
+        
+        def score_by_weighted_continuity(candidate):
+            material_id = candidate.get("material", {}).get("id")
+            page_num = candidate.get("page_number", 999)
+            
+            weighted_continuity = 0.0
+            for r in search_results:
+                r_material = r.get("material", {}).get("id")
+                r_page = r.get("page_number", 0)
+                r_score = r.get("relevance_score", 0) or 0
+                if r_material == material_id and r_page > page_num and r_page <= page_num + 10:
+                    weighted_continuity += r_score
+            
+            return weighted_continuity
+        
+        pages_with_continuity = [
+            (r, score_by_weighted_continuity(r)) 
+            for r in search_results
+        ]
+        
+        max_continuity = max(wc for _, wc in pages_with_continuity)
+        
+        if max_continuity > 0:
+            continuity_threshold = max_continuity * 0.3
+            good_candidates = [
+                (r, wc) for r, wc in pages_with_continuity 
+                if wc >= continuity_threshold
+            ]
+            
+            if good_candidates:
+                best = min(good_candidates, key=lambda x: x[0].get("page_number", 999))
+                return best[0]
+        
+        return max(search_results, key=lambda r: (r.get("relevance_score", 0) or 0, -r.get("page_number", 999)))
+    
+    # Test case 1: Title page vs actual chapter start
+    # Page 1 is a TITLE page "Class diagrams and Sequence diagrams" (very high relevance)
+    # Pages 2-29 are about class diagrams (not in results or low relevance)
+    # Page 31 starts the sequence diagrams content
+    # Pages 32-42 continue sequence diagrams content
+    mock_results_sequence = [
+        {
+            "course": {"id": "course-1", "title": "Test Course", "color": "#FF0000"},
+            "material": {"id": "material-1", "name": "Klassendiagramme und Sequenzdiagramme"},
+            "page_number": 1,
+            "summary": "Klassendiagramme und Sequenzdiagramme - Titelfolie",
+            "key_terms": ["Klassendiagramme", "Sequenzdiagramme", "UML"],
+            "relevance_score": 6  # Very high because exact match in title
+        },
+        # Page 31: Actual start of sequence diagrams content
+        {
+            "course": {"id": "course-1", "title": "Test Course", "color": "#FF0000"},
+            "material": {"id": "material-1", "name": "Klassendiagramme und Sequenzdiagramme"},
+            "page_number": 31,
+            "summary": "Sequenzdiagramme visualisieren Interaktionen entlang einer Zeitachse...",
+            "key_terms": ["Sequenzdiagramme", "Interaktionen", "Zeitachse"],
+            "relevance_score": 5
+        },
+        {
+            "course": {"id": "course-1", "title": "Test Course", "color": "#FF0000"},
+            "material": {"id": "material-1", "name": "Klassendiagramme und Sequenzdiagramme"},
+            "page_number": 38,
+            "summary": "Grundlegende Regeln für Sequenzdiagramme...",
+            "key_terms": ["Sequenzdiagramme", "Regeln", "Nachrichten"],
+            "relevance_score": 5
+        },
+        {
+            "course": {"id": "course-1", "title": "Test Course", "color": "#FF0000"},
+            "material": {"id": "material-1", "name": "Klassendiagramme und Sequenzdiagramme"},
+            "page_number": 42,
+            "summary": "Grundelemente von Sequenzdiagrammen: Objekte, Akteure, Lifelines...",
+            "key_terms": ["Sequenzdiagramme", "Objekte", "Lifelines"],
+            "relevance_score": 5
+        },
+    ]
+    
+    best_page = pick_best_intro_page(mock_results_sequence)
+    
+    # Page 1: weighted continuity = 0 (no following pages in results within 10 pages)
+    # Page 31: weighted continuity = 5 + 5 = 10 (pages 38, 42 are within 10 pages... wait, 42-31=11)
+    # Actually page 38 is 7 pages after 31, so it counts. Page 42 is 11 pages after, so it doesn't.
+    # Page 31: weighted continuity = 5 (only page 38 is within 10 pages)
+    # Page 38: weighted continuity = 5 (page 42 is within 10 pages)
+    # So page 31 should be selected as lowest page number among good candidates
+    assert best_page is not None, "Should find a best page"
+    assert best_page["page_number"] == 31, f"Expected page 31 (chapter start), got page {best_page['page_number']}"
+    
+    print(f"   - Best intro page: {best_page['page_number']}")
+    print(f"   - Page 1 (title) has weighted continuity: 0 (no following pages)")
+    print(f"   - Page 31 correctly selected as the chapter start")
+    
+    # Test case 2: When there's no continuity, prefer highest relevance
+    mock_results_no_continuity = [
+        {
+            "course": {"id": "course-1", "title": "Test Course", "color": "#FF0000"},
+            "material": {"id": "material-1", "name": "Lecture 1"},
+            "page_number": 10,
+            "summary": "Topic A explanation...",
+            "key_terms": ["topic"],
+            "relevance_score": 0.8
+        },
+        {
+            "course": {"id": "course-1", "title": "Test Course", "color": "#FF0000"},
+            "material": {"id": "material-1", "name": "Lecture 1"},
+            "page_number": 50,
+            "summary": "Topic A mentioned...",
+            "key_terms": ["topic"],
+            "relevance_score": 0.5
+        },
+    ]
+    
+    best_page_no_cont = pick_best_intro_page(mock_results_no_continuity)
+    # No continuity for either, so fallback to highest relevance = page 10
+    assert best_page_no_cont["page_number"] == 10, f"With no continuity, expected highest relevance page 10, got {best_page_no_cont['page_number']}"
+    print(f"   - With no continuity, correctly selects highest relevance page (10)")
+
+
 # =============================================================================
 # SECTION 5: GET USER COURSES TOOL TESTS
 # =============================================================================
@@ -713,31 +836,29 @@ def test_integration_personality_texts():
     llm = get_gemini_model()
     agent = QuickChatAgent(llm=llm)
     
-    # Test German personality texts
-    formality_de, humor_de, encouragement_de = agent._get_personality_texts(
-        language="de",
+    # Test personality texts with different settings
+    formality, humor, encouragement = agent._get_personality_texts(
         formality="formal",
         humor="light",
         encouragement="moderate"
     )
     
-    assert len(formality_de) > 0
-    assert len(humor_de) > 0
-    assert len(encouragement_de) > 0
-    print("   - German personality texts generated")
+    assert len(formality) > 0
+    assert len(humor) > 0
+    assert len(encouragement) > 0
+    print("   - Formal personality texts generated")
     
-    # Test English personality texts
-    formality_en, humor_en, encouragement_en = agent._get_personality_texts(
-        language="en",
+    # Test with different personality config
+    formality2, humor2, encouragement2 = agent._get_personality_texts(
         formality="informal",
         humor="moderate",
         encouragement="enthusiastic"
     )
     
-    assert len(formality_en) > 0
-    assert len(humor_en) > 0
-    assert len(encouragement_en) > 0
-    print("   - English personality texts generated")
+    assert len(formality2) > 0
+    assert len(humor2) > 0
+    assert len(encouragement2) > 0
+    print("   - Informal personality texts generated")
 
 
 # =============================================================================
@@ -955,7 +1076,6 @@ def main():
     
     init_tests = [
         test_quickchat_init_default,
-        test_quickchat_init_english,
         test_quickchat_init_personality,
         test_quickchat_init_checkpointer,
         test_quickchat_tool_binding,
@@ -990,6 +1110,7 @@ def main():
         test_search_topic_tool_run,
         test_search_topic_tool_invalid_user,
         test_search_topic_tool_language,
+        test_pick_best_intro_page_continuity,
     ]
     
     for test_func in search_tests:

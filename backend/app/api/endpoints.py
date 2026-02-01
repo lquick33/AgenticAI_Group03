@@ -2296,6 +2296,31 @@ _quickchat_checkpointer = MemorySaver()
 # Used to speed up first message response by warming agent while user types
 _prewarmed_quickchat_agents: dict[str, QuickChatAgent] = {}
 
+# Pending navigation storage (thread_id -> {nav_info, timestamp})
+# Used to persist pending navigation across messages (not stored in agent state which can be overwritten)
+_pending_navigations: dict[str, dict] = {}
+
+def _cleanup_stale_pending_navigations(max_age_seconds: int = 300, max_entries: int = 100) -> None:
+    """Clean up old pending navigations to prevent memory leaks."""
+    now = time.time()
+    
+    # Remove entries older than max_age_seconds
+    stale_keys = [
+        k for k, v in _pending_navigations.items()
+        if now - v.get("_timestamp", 0) > max_age_seconds
+    ]
+    for key in stale_keys:
+        _pending_navigations.pop(key, None)
+    
+    # If still too many, remove oldest
+    if len(_pending_navigations) > max_entries:
+        sorted_items = sorted(
+            _pending_navigations.items(),
+            key=lambda x: x[1].get("_timestamp", 0)
+        )
+        for key, _ in sorted_items[:-max_entries]:
+            _pending_navigations.pop(key, None)
+
 
 @router.post("/quickchat/initiate")
 async def initiate_quickchat(
@@ -2418,12 +2443,8 @@ async def send_quickchat_message(
                 config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
                 
                 # Check for pending navigation confirmation
-                # Get current state to check for navigation_request
-                try:
-                    current_state = await agent.graph.aget_state(config)
-                    pending_nav = current_state.values.get("navigation_request") if current_state.values else None
-                except Exception:
-                    pending_nav = None
+                # Use separate dictionary instead of agent state (which can be overwritten)
+                pending_nav = _pending_navigations.get(thread_id)
                 
                 # Check if user is confirming pending navigation
                 if pending_nav and mode == "tutoring":
@@ -2443,12 +2464,8 @@ async def send_quickchat_message(
                         }
                         yield f"data: {json.dumps(open_data)}\n\n"
                         
-                        # Clear pending navigation from state
-                        await agent.graph.aupdate_state(
-                            config,
-                            {"navigation_request": None},
-                            as_node="agent"
-                        )
+                        # Clear pending navigation from dictionary
+                        _pending_navigations.pop(thread_id, None)
                         
                         # Send confirmation message
                         confirm_msg = {
@@ -2557,17 +2574,11 @@ async def send_quickchat_message(
                                                 })
                                             
                                             # Send search results for frontend to display
-                                            results_data = {
-                                                "type": "search_results",
-                                                "results": flat_results
-                                            }
-                                            yield f"data: {json.dumps(results_data)}\n\n"
-                                            
                                             # Use the first result (already reordered by search tool to have best intro page first)
                                             # The search tool now applies pick_best_intro_page logic before returning results
                                             first_result = results[0] if results else None
                                             
-                                            # Auto-open only in discovery mode
+                                            # Discovery mode: Auto-open the material immediately (no confirmation needed)
                                             if mode == "discovery" and first_result:
                                                 open_data = {
                                                     "type": "open_material",
@@ -2579,7 +2590,8 @@ async def send_quickchat_message(
                                                 }
                                                 yield f"data: {json.dumps(open_data)}\n\n"
                                             
-                                            # In tutoring mode, store pending navigation for user confirmation
+                                            # Tutoring mode (PDF already open): Store pending navigation for user confirmation
+                                            # Agent will ask "Should I switch to [material] page [X]?" and user confirms via chat
                                             elif mode == "tutoring" and first_result:
                                                 pending_nav = {
                                                     "course_id": first_result.get("course", {}).get("id"),
@@ -2589,15 +2601,11 @@ async def send_quickchat_message(
                                                     "page_number": first_result.get("page_number")
                                                 }
                                                 
-                                                # Store in state for next message to check
-                                                try:
-                                                    await agent.graph.aupdate_state(
-                                                        config,
-                                                        {"navigation_request": pending_nav},
-                                                        as_node="agent"
-                                                    )
-                                                except Exception as e:
-                                                    logger.warning(f"Failed to store pending navigation: {e}")
+                                                # Store in dictionary for next message to check
+                                                # Using dictionary instead of agent state which can be overwritten
+                                                pending_nav["_timestamp"] = time.time()
+                                                _pending_navigations[thread_id] = pending_nav
+                                                _cleanup_stale_pending_navigations()
                                                 
                                                 # Emit pending_navigation event for frontend
                                                 pending_data = {

@@ -64,11 +64,16 @@ class SearchTopicTool:
             JSON string with search results
         """
         try:
+            # Fetch more results than requested to enable better continuity calculation
+            # This ensures we can find the actual chapter start even if it's not in the top N by raw relevance
+            # We'll return only the requested limit after reordering
+            internal_limit = max(limit * 3, 30)  # At least 30 or 3x the requested limit
+            
             results = search_page_analyses(
                 user_id=user_id,
                 query=query,
                 language=language,
-                limit=limit
+                limit=internal_limit
             )
             
             if not results:
@@ -97,22 +102,59 @@ class SearchTopicTool:
                     "relevance_score": r.get("rank")
                 })
             
-            # Pick the best introduction page: among highly relevant results, prefer lower page numbers
-            # This ensures the LLM references the page that will actually be opened in the UI
+            # Pick the best introduction page: prefer pages where following pages are also relevant
+            # This avoids selecting title/overview pages that mention a topic but are followed by unrelated content
             def pick_best_intro_page(search_results):
                 if not search_results:
                     return None
-                max_score = max(r.get("relevance_score", 0) or 0 for r in search_results)
-                if max_score == 0:
+                
+                if len(search_results) == 1:
                     return search_results[0]
-                threshold = max_score * 0.7
-                highly_relevant = [
-                    r for r in search_results 
-                    if (r.get("relevance_score", 0) or 0) >= threshold
+                
+                # Score ALL candidates by WEIGHTED continuity: sum of relevance scores of following pages
+                # This finds the actual chapter start, not just the title page
+                def score_by_weighted_continuity(candidate):
+                    material_id = candidate.get("material", {}).get("id")
+                    page_num = candidate.get("page_number", 999)
+                    
+                    # Sum the relevance scores of following pages (within 10 pages, same material)
+                    # Increased window to 10 pages to better capture chapter sections
+                    weighted_continuity = 0.0
+                    for r in search_results:
+                        r_material = r.get("material", {}).get("id")
+                        r_page = r.get("page_number", 0)
+                        r_score = r.get("relevance_score", 0) or 0
+                        # Check if this is a following page (within 10 pages) in same material
+                        if r_material == material_id and r_page > page_num and r_page <= page_num + 10:
+                            weighted_continuity += r_score
+                    
+                    return weighted_continuity
+                
+                # Calculate weighted continuity for all pages
+                pages_with_continuity = [
+                    (r, score_by_weighted_continuity(r)) 
+                    for r in search_results
                 ]
-                if highly_relevant:
-                    return min(highly_relevant, key=lambda r: r.get("page_number", 999))
-                return search_results[0]
+                
+                # Find max weighted continuity
+                max_continuity = max(wc for _, wc in pages_with_continuity)
+                
+                if max_continuity > 0:
+                    # Filter to pages with significant continuity (at least 30% of max)
+                    # This ensures we pick pages that are actually chapter starts
+                    continuity_threshold = max_continuity * 0.3
+                    good_candidates = [
+                        (r, wc) for r, wc in pages_with_continuity 
+                        if wc >= continuity_threshold
+                    ]
+                    
+                    if good_candidates:
+                        # Among pages with good continuity, prefer lower page numbers
+                        best = min(good_candidates, key=lambda x: x[0].get("page_number", 999))
+                        return best[0]
+                
+                # Fallback: if no continuity found, use the page with highest relevance score
+                return max(search_results, key=lambda r: (r.get("relevance_score", 0) or 0, -r.get("page_number", 999)))
             
             # Reorder results: put best intro page first, then others by relevance
             best_intro = pick_best_intro_page(formatted_results)
@@ -122,10 +164,13 @@ class SearchTopicTool:
             else:
                 reordered_results = formatted_results
             
+            # Limit to the requested number of results (we fetched more internally for continuity calculation)
+            final_results = reordered_results[:limit]
+            
             return json.dumps({
                 "found": True,
-                "message": f"Found {len(reordered_results)} page(s) matching '{query}'. The best starting point is page {best_intro.get('page_number') if best_intro else 'unknown'}.",
-                "results": reordered_results,
+                "message": f"Found {len(final_results)} page(s) matching '{query}'. The best starting point is page {best_intro.get('page_number') if best_intro else 'unknown'}.",
+                "results": final_results,
                 "recommended_page": best_intro.get("page_number") if best_intro else None
             }, ensure_ascii=False)
             

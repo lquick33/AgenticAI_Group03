@@ -5,17 +5,13 @@ import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels'
 import { useQuickChatSession, ViewingMaterial } from '@/hooks/use-quickchat-session'
-import { QuickChatSearchResult } from '@/lib/api/quickchat'
 import { ChatMessage } from '@/components/study/chat-message'
 import { Loader } from '@/components/ui/loader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import { 
   Search, 
   Send, 
-  ArrowRight,
   FileText,
   Loader2,
   ChevronLeft,
@@ -45,14 +41,13 @@ export function QuickChatContent({ userId }: QuickChatContentProps) {
   const [inputValue, setInputValue] = useState('')
   
   // Initialize quick chat session
+  // Navigation is handled automatically by the agent through chat confirmation
   const {
     messages,
     isLoading,
     isStreaming,
-    searchResults,
     sessionState,
     sendMessage,
-    openMaterial,
     setCurrentPage,
   } = useQuickChatSession(userId)
   
@@ -90,8 +85,6 @@ export function QuickChatContent({ userId }: QuickChatContentProps) {
         handleKeyDown={handleKeyDown}
         setCurrentPage={setCurrentPage}
         onClose={handleClose}
-        searchResults={searchResults}
-        openMaterial={openMaterial}
       />
     )
   }
@@ -102,12 +95,10 @@ export function QuickChatContent({ userId }: QuickChatContentProps) {
       messages={messages}
       isLoading={isLoading}
       isStreaming={isStreaming}
-      searchResults={searchResults}
       inputValue={inputValue}
       setInputValue={setInputValue}
       handleSubmit={handleSubmit}
       handleKeyDown={handleKeyDown}
-      openMaterial={openMaterial}
     />
   )
 }
@@ -117,24 +108,20 @@ interface DiscoveryModeContentProps {
   messages: { id: string; role: string; content: string }[]
   isLoading: boolean
   isStreaming: boolean
-  searchResults: QuickChatSearchResult[]
   inputValue: string
   setInputValue: (value: string) => void
   handleSubmit: (e: React.FormEvent) => void
   handleKeyDown: (e: React.KeyboardEvent) => void
-  openMaterial: (result: QuickChatSearchResult) => void
 }
 
 function DiscoveryModeContent({
   messages,
   isLoading,
   isStreaming,
-  searchResults,
   inputValue,
   setInputValue,
   handleSubmit,
   handleKeyDown,
-  openMaterial,
 }: DiscoveryModeContentProps) {
   return (
     <div className="flex flex-col h-full bg-[#f6f4f1]">
@@ -156,25 +143,6 @@ function DiscoveryModeContent({
                   isStreaming={isStreaming && message.id === messages[messages.length - 1]?.id && message.role === 'assistant'}
                 />
               ))}
-              
-              {/* Search Results */}
-              {searchResults.length > 0 && (
-                <div className="mt-6">
-                  <h3 className="text-sm font-medium text-muted-foreground mb-3">
-                    Gefundene Stellen in deinen Vorlesungen:
-                  </h3>
-                  <div className="grid gap-3">
-                    {searchResults.map((result, index) => (
-                      <SearchResultCard
-                        key={`${result.material_id}-${result.page_number}`}
-                        result={result}
-                        index={index + 1}
-                        onClick={() => openMaterial(result)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
             </>
           )}
         </div>
@@ -224,8 +192,6 @@ interface ViewingModeContentProps {
   handleKeyDown: (e: React.KeyboardEvent) => void
   setCurrentPage: (page: number) => void
   onClose: () => void
-  searchResults: QuickChatSearchResult[]
-  openMaterial: (result: QuickChatSearchResult) => void
 }
 
 function ViewingModeContent({
@@ -239,8 +205,6 @@ function ViewingModeContent({
   handleKeyDown,
   setCurrentPage,
   onClose,
-  searchResults,
-  openMaterial,
 }: ViewingModeContentProps) {
   const handlePreviousPage = () => {
     if (viewingMaterial.currentPage > 1) {
@@ -301,6 +265,7 @@ function ViewingModeContent({
             {/* PDF Content */}
             <div className="flex-1 overflow-auto">
               <PdfViewer
+                key={`${viewingMaterial.materialId}-${viewingMaterial.currentPage}`}
                 file={viewingMaterial.pdfUrl}
                 pageNumber={viewingMaterial.currentPage}
               />
@@ -331,25 +296,6 @@ function ViewingModeContent({
                         isStreaming={isStreaming && message.id === messages[messages.length - 1]?.id && message.role === 'assistant'}
                       />
                     ))}
-                    
-                    {/* Search Results - shown when agent finds other pages */}
-                    {searchResults.length > 0 && (
-                      <div className="mt-4 p-3 bg-white rounded-lg border">
-                        <h4 className="text-sm font-medium text-muted-foreground mb-2">
-                          Gefundene Seiten (klicken zum Wechseln):
-                        </h4>
-                        <div className="grid gap-2">
-                          {searchResults.slice(0, 3).map((result, index) => (
-                            <SearchResultCard
-                              key={`${result.material_id}-${result.page_number}`}
-                              result={result}
-                              index={index + 1}
-                              onClick={() => openMaterial(result)}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    )}
                   </>
                 )}
               </div>
@@ -380,61 +326,5 @@ function ViewingModeContent({
         </Panel>
       </PanelGroup>
     </div>
-  )
-}
-
-// Search Result Card Component
-interface SearchResultCardProps {
-  result: QuickChatSearchResult
-  index: number
-  onClick: () => void
-}
-
-function SearchResultCard({ result, onClick }: SearchResultCardProps) {
-  return (
-    <Card 
-      className="cursor-pointer hover:bg-accent/50 transition-colors"
-      onClick={onClick}
-    >
-      <CardHeader className="py-3 px-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              <Badge 
-                variant="outline" 
-                className="text-xs flex-shrink-0"
-                style={{ 
-                  borderColor: result.course_color || undefined,
-                  color: result.course_color || undefined 
-                }}
-              >
-                {result.course_title}
-              </Badge>
-              <span className="text-xs text-muted-foreground truncate">
-                {result.material_name}
-              </span>
-            </div>
-            <CardTitle className="text-sm font-medium line-clamp-2">
-              Seite {result.page_number}
-            </CardTitle>
-            <CardDescription className="text-xs line-clamp-2 mt-1">
-              {result.summary}
-            </CardDescription>
-            {result.key_terms.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-2">
-                {result.key_terms.slice(0, 5).map((term, i) => (
-                  <Badge key={i} variant="secondary" className="text-[10px] px-1.5 py-0">
-                    {term}
-                  </Badge>
-                ))}
-              </div>
-            )}
-          </div>
-          <Button variant="ghost" size="icon" className="flex-shrink-0">
-            <ArrowRight className="w-4 h-4" />
-          </Button>
-        </div>
-      </CardHeader>
-    </Card>
   )
 }
