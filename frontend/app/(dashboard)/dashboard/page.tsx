@@ -2,7 +2,7 @@ import { requireAuth } from '@/lib/auth'
 import { createClient } from '@/lib/supabase/server'
 import { DashboardSidebar } from '@/components/dashboard/sidebar'
 import { KPICards } from '@/components/dashboard/kpi-cards'
-import { ProgressChart } from '@/components/dashboard/progress-chart'
+import { ProgressChartLazy } from '@/components/dashboard/progress-chart-lazy'
 import { LearningUnitsTable } from '@/components/dashboard/learning-units-table'
 import { AnkiSyncStatus } from '@/components/dashboard/anki-sync-status'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
@@ -76,7 +76,7 @@ export default async function DashboardPage() {
                 </div>
                 <KPICards userId={user.id} courseCount={courses?.length ?? 0} initialData={studyHistory} />
                 <div className="px-4 lg:px-6">
-                  <ProgressChart userId={user.id} initialData={studyHistory} />
+                  <ProgressChartLazy userId={user.id} initialData={studyHistory} />
                 </div>
                 <LearningUnitsTable />
               </div>

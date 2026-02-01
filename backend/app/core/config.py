@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     TTS_AUDIO_ENCODING: str = "MP3"  # Audio encoding format
     TTS_SPEAKING_RATE: float = 1.0  # Speaking rate (0.25 to 4.0)
     
+    # PDF Processing Configuration
+    PDF_PROCESSING_DPI: int = 200  # DPI for PDF to image conversion (200 = balanced quality/speed)
+    
     # Anki Configuration
     ANKI_USE_DOCKER: bool = True  # Force Docker mode even on Apple Silicon
     ANKI_APP_FALLBACK_ENABLED: bool = False  # Allow fallback to native Anki app (disabled by default)

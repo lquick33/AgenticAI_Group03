@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import { Panel, Group, Separator as PanelResizeHandle } from 'react-resizable-panels'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
@@ -66,9 +66,14 @@ export function StudyReader({
     handleQuizComplete
   } = useChatSession(materialId, userId, pageCount, initialPage)
 
-  // Track all snippets for the material, and current page's snippets
+  // Track all snippets for the material
   const [allSnippets, setAllSnippets] = useState<Snippet[]>([])
-  const [pageSnippets, setPageSnippets] = useState<Snippet[]>([])
+  
+  // OPTIMIZED: Derive pageSnippets with useMemo instead of useState + useEffect
+  const pageSnippets = useMemo(
+    () => allSnippets.filter(s => s.page_number === currentPage),
+    [allSnippets, currentPage]
+  )
 
   // Fetch all snippets for material
   const fetchSnippets = useCallback(async () => {
@@ -88,11 +93,7 @@ export function StudyReader({
     fetchSnippets()
   }, [fetchSnippets])
 
-  // Filter snippets for current page when page or snippets change
-  useEffect(() => {
-    const snippetsForPage = allSnippets.filter(s => s.page_number === currentPage)
-    setPageSnippets(snippetsForPage)
-  }, [currentPage, allSnippets])
+  // Note: pageSnippets is now derived with useMemo above, no useEffect needed
 
   const handleSaveSnippet = async (blob: Blob) => {
     // Check if we've reached the limit

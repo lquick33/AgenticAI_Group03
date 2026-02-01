@@ -11,6 +11,7 @@ from typing import List
 from pdf2image import convert_from_bytes
 from PIL import Image
 
+from app.core.config import settings
 from app.services.analyzer import analyze_pdf_page, generate_material_summary, generate_material_filename, detect_naming_pattern, image_bytes_to_base64
 from app.services.storage import (
     update_processing_status,
@@ -64,7 +65,7 @@ def extract_page_image(pdf_bytes: bytes, page_number: int) -> str:
             pdf_bytes,
             first_page=page_number,
             last_page=page_number,
-            dpi=300,
+            dpi=settings.PDF_PROCESSING_DPI,
             fmt='jpeg'
         )
         
@@ -169,7 +170,7 @@ async def process_pdf_background(
         try:
             images = convert_from_bytes(
                 file_bytes,
-                dpi=300,
+                dpi=settings.PDF_PROCESSING_DPI,
                 fmt='jpeg'
             )
             page_count = len(images)

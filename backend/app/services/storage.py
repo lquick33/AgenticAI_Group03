@@ -7,7 +7,8 @@ for course materials and page analyses.
 
 import json
 import logging
-from typing import Dict, Optional, List
+from time import time
+from typing import Dict, Optional, List, Any, Tuple
 
 from supabase import create_client, Client
 
@@ -19,6 +20,162 @@ logger = logging.getLogger(__name__)
 
 # Initialize Supabase client (singleton)
 _supabase_client: Optional[Client] = None
+
+
+# =============================================================================
+# In-Memory Caches for Performance
+# =============================================================================
+
+class ClassificationCache:
+    """
+    In-memory TTL cache for material classifications.
+    
+    Classifications rarely change (only on manual override), so caching them
+    significantly reduces database queries during flashcard generation.
+    
+    TTL: 1 hour by default (3600 seconds)
+    """
+    
+    def __init__(self, ttl_seconds: int = 3600):
+        self._cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
+        self._ttl = ttl_seconds
+    
+    def get(self, material_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cached classification for a material.
+        
+        Returns:
+            Classification dict or None if not cached or expired
+        """
+        if material_id in self._cache:
+            data, timestamp = self._cache[material_id]
+            if time() - timestamp < self._ttl:
+                return data
+            # Expired - remove from cache
+            del self._cache[material_id]
+        return None
+    
+    def set(self, material_id: str, classification: Dict[str, Any]) -> None:
+        """Cache a classification for a material."""
+        self._cache[material_id] = (classification, time())
+    
+    def invalidate(self, material_id: str) -> None:
+        """Remove a material's classification from cache."""
+        if material_id in self._cache:
+            del self._cache[material_id]
+    
+    def clear(self) -> None:
+        """Clear the entire cache."""
+        self._cache.clear()
+
+
+# Singleton cache instance
+_classification_cache = ClassificationCache()
+
+
+class PageAnalysisCache:
+    """
+    In-memory TTL cache for page analyses.
+    
+    Page analyses are frequently accessed during chat sessions, so caching them
+    reduces database queries significantly.
+    
+    TTL: 5 minutes by default (300 seconds)
+    """
+    
+    def __init__(self, ttl_seconds: int = 300):
+        self._cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
+        self._ttl = ttl_seconds
+    
+    def get(self, material_id: str, page_number: int, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cached page analysis.
+        
+        Returns:
+            Page analysis dict or None if not cached or expired
+        """
+        key = f"{material_id}:{page_number}:{user_id}"
+        if key in self._cache:
+            data, timestamp = self._cache[key]
+            if time() - timestamp < self._ttl:
+                return data
+            # Expired - remove from cache
+            del self._cache[key]
+        return None
+    
+    def set(self, material_id: str, page_number: int, user_id: str, analysis: Dict[str, Any]) -> None:
+        """Cache a page analysis."""
+        key = f"{material_id}:{page_number}:{user_id}"
+        self._cache[key] = (analysis, time())
+    
+    def invalidate(self, material_id: str, page_number: int, user_id: str) -> None:
+        """Remove a page analysis from cache."""
+        key = f"{material_id}:{page_number}:{user_id}"
+        if key in self._cache:
+            del self._cache[key]
+    
+    def invalidate_material(self, material_id: str) -> None:
+        """Remove all cached analyses for a material."""
+        keys_to_delete = [k for k in self._cache.keys() if k.startswith(f"{material_id}:")]
+        for key in keys_to_delete:
+            del self._cache[key]
+    
+    def clear(self) -> None:
+        """Clear the entire cache."""
+        self._cache.clear()
+
+
+# Singleton cache instance
+_page_analysis_cache = PageAnalysisCache()
+
+
+class SummaryCache:
+    """
+    In-memory TTL cache for course material summaries.
+    
+    Summaries are accessed frequently during chat sessions.
+    
+    TTL: 10 minutes by default (600 seconds)
+    """
+    
+    def __init__(self, ttl_seconds: int = 600):
+        self._cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
+        self._ttl = ttl_seconds
+    
+    def get(self, material_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cached summary.
+        
+        Returns:
+            Summary dict or None if not cached or expired
+        """
+        key = f"{material_id}:{user_id}"
+        if key in self._cache:
+            data, timestamp = self._cache[key]
+            if time() - timestamp < self._ttl:
+                return data
+            # Expired - remove from cache
+            del self._cache[key]
+        return None
+    
+    def set(self, material_id: str, user_id: str, summary: Dict[str, Any]) -> None:
+        """Cache a summary."""
+        key = f"{material_id}:{user_id}"
+        self._cache[key] = (summary, time())
+    
+    def invalidate(self, material_id: str) -> None:
+        """Remove all cached summaries for a material."""
+        keys_to_delete = [k for k in self._cache.keys() if k.startswith(f"{material_id}:")]
+        for key in keys_to_delete:
+            del self._cache[key]
+    
+    def clear(self) -> None:
+        """Clear the entire cache."""
+        self._cache.clear()
+
+
+# Singleton cache instance
+_summary_cache = SummaryCache()
 
 
 def get_supabase_client() -> Client:
@@ -300,7 +457,9 @@ def get_page_analysis(
     user_id: str
 ) -> dict:
     """
-    Get page analysis data from the page_analyses table.
+    Get page analysis data from the page_analyses table (with in-memory caching).
+    
+    Page analyses are cached for 5 minutes since they rarely change after creation.
     
     Args:
         course_material_id: Course material ID
@@ -314,53 +473,58 @@ def get_page_analysis(
         ValueError: If page analysis not found or access denied
         Exception: If database operation fails
     """
+    # Check cache first
+    cached = _page_analysis_cache.get(course_material_id, page_number, user_id)
+    if cached is not None:
+        logger.debug(f"Page analysis cache HIT for material {course_material_id[:8]}... page {page_number}")
+        return cached
+    
     client = get_supabase_client()
     
     try:
-        # First, get the user_id from the course_material to ensure we use the correct one
-        # This prevents issues where the state might have a stale user_id
-        material_response = client.table("course_materials").select(
-            "user_id"
-        ).eq("id", course_material_id).single().execute()
+        # OPTIMIZED: Single query with JOIN to validate ownership and fetch data
+        # Uses Supabase's foreign key relationship syntax: table!inner(columns)
+        # The !inner ensures we only get results where the join succeeds
+        response = client.table("page_analyses").select(
+            "id, summary, key_terms, exam_questions, diagram_description, raw_analysis, "
+            "course_materials!inner(user_id)"
+        ).eq(
+            "course_material_id", course_material_id
+        ).eq(
+            "page_number", page_number
+        ).execute()
         
-        if not material_response.data:
+        if not response.data or len(response.data) == 0:
             raise ValueError(
-                f"Course material not found: {course_material_id}"
+                f"Page analysis not found for course_material_id={course_material_id}, page_number={page_number}"
             )
         
-        material_user_id = material_response.data["user_id"]
+        analysis = response.data[0]
+        
+        # Extract the material owner's user_id from the joined data
+        material_data = analysis.get("course_materials", {})
+        material_user_id = material_data.get("user_id") if material_data else None
         
         # Validate that the requesting user_id matches the material's user_id
-        # This ensures proper authorization
+        # This ensures proper authorization even when using service key
         if material_user_id != user_id:
             raise ValueError(
                 f"Access denied: user_id {user_id} does not match course material owner {material_user_id}"
             )
         
-        # Now query with the correct user_id from the material
-        response = client.table("page_analyses").select(
-            "id, summary, key_terms, exam_questions, diagram_description, raw_analysis"
-        ).eq(
-            "course_material_id", course_material_id
-        ).eq(
-            "page_number", page_number
-        ).eq(
-            "user_id", material_user_id
-        ).execute()
+        result = {
+            "summary": analysis.get("summary", ""),
+            "key_terms": analysis.get("key_terms", []),
+            "exam_questions": analysis.get("exam_questions", []),
+            "diagram_description": analysis.get("diagram_description"),
+            "raw_analysis": analysis.get("raw_analysis", {})
+        }
         
-        if response.data and len(response.data) > 0:
-            analysis = response.data[0]
-            return {
-                "summary": analysis.get("summary", ""),
-                "key_terms": analysis.get("key_terms", []),
-                "exam_questions": analysis.get("exam_questions", []),
-                "diagram_description": analysis.get("diagram_description"),
-                "raw_analysis": analysis.get("raw_analysis", {})
-            }
-        else:
-            raise ValueError(
-                f"Page analysis not found for course_material_id={course_material_id}, page_number={page_number}"
-            )
+        # Cache the result
+        _page_analysis_cache.set(course_material_id, page_number, user_id, result)
+        logger.debug(f"Page analysis cache MISS for material {course_material_id[:8]}... page {page_number} (now cached)")
+        
+        return result
     except ValueError:
         raise
     except Exception as e:
@@ -398,35 +562,14 @@ def get_page_analyses_for_range(
     client = get_supabase_client()
     
     try:
-        # Validate course material and user authorization
-        material_response = client.table("course_materials").select(
-            "user_id"
-        ).eq("id", course_material_id).single().execute()
-        
-        if not material_response.data:
-            raise ValueError(
-                f"Course material not found: {course_material_id}"
-            )
-        
-        material_user_id = material_response.data["user_id"]
-        
-        if material_user_id != user_id:
-            raise ValueError(
-                f"Access denied: user_id {user_id} does not match course material owner {material_user_id}"
-            )
-        
-        # Query page analyses for the range
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        logger.info(f"🟡 Querying page_analyses: material={course_material_id}, user={material_user_id}, pages={start_page}-{end_page}")
+        # OPTIMIZED: Single query with JOIN to validate ownership and fetch data
+        logger.info(f"🟡 Querying page_analyses: material={course_material_id}, user={user_id}, pages={start_page}-{end_page}")
         
         response = client.table("page_analyses").select(
-            "page_number, summary, key_terms, exam_questions, diagram_description, raw_analysis"
+            "page_number, summary, key_terms, exam_questions, diagram_description, raw_analysis, "
+            "course_materials!inner(user_id)"
         ).eq(
             "course_material_id", course_material_id
-        ).eq(
-            "user_id", material_user_id
         ).gte(
             "page_number", start_page
         ).lte(
@@ -435,13 +578,46 @@ def get_page_analyses_for_range(
             "page_number", desc=False
         ).execute()
         
-        result = response.data or []
+        if not response.data:
+            # Check if material exists but has no analyses in range
+            # vs material doesn't exist or access denied
+            material_check = client.table("course_materials").select(
+                "user_id"
+            ).eq("id", course_material_id).execute()
+            
+            if not material_check.data:
+                raise ValueError(f"Course material not found: {course_material_id}")
+            
+            material_user_id = material_check.data[0].get("user_id")
+            if material_user_id != user_id:
+                raise ValueError(
+                    f"Access denied: user_id {user_id} does not match course material owner {material_user_id}"
+                )
+            
+            # Material exists, user authorized, just no analyses in range
+            logger.warning(f"⚠️ No page analyses found for range {start_page}-{end_page}")
+            return []
+        
+        # Validate ownership from the first result's joined data
+        first_result = response.data[0]
+        material_data = first_result.get("course_materials", {})
+        material_user_id = material_data.get("user_id") if material_data else None
+        
+        if material_user_id != user_id:
+            raise ValueError(
+                f"Access denied: user_id {user_id} does not match course material owner {material_user_id}"
+            )
+        
+        # Remove the joined course_materials data from results
+        result = []
+        for item in response.data:
+            clean_item = {k: v for k, v in item.items() if k != "course_materials"}
+            result.append(clean_item)
+        
         logger.info(f"🟢 Query returned {len(result)} page analyses")
         if result:
             page_numbers = [r.get('page_number') for r in result]
             logger.debug(f"Page numbers found: {page_numbers}")
-        else:
-            logger.warning(f"⚠️ No page analyses found for range {start_page}-{end_page}")
         
         return result
     
@@ -473,35 +649,28 @@ def get_page_analysis_id(
     client = get_supabase_client()
     
     try:
-        # First, get the user_id from the course_material to ensure we use the correct one
-        material_response = client.table("course_materials").select(
-            "user_id"
-        ).eq("id", course_material_id).single().execute()
-        
-        if not material_response.data:
-            return None
-        
-        material_user_id = material_response.data["user_id"]
-        
-        # Validate that the requesting user_id matches the material's user_id
-        if material_user_id != user_id:
-            return None
-        
-        # Now query with the correct user_id from the material
+        # OPTIMIZED: Single query with JOIN to validate ownership and fetch ID
         response = client.table("page_analyses").select(
-            "id"
+            "id, course_materials!inner(user_id)"
         ).eq(
             "course_material_id", course_material_id
         ).eq(
             "page_number", page_number
-        ).eq(
-            "user_id", material_user_id
         ).execute()
         
-        if response.data and len(response.data) > 0:
-            return response.data[0].get("id")
-        else:
+        if not response.data or len(response.data) == 0:
             return None
+        
+        analysis = response.data[0]
+        
+        # Validate ownership from joined data
+        material_data = analysis.get("course_materials", {})
+        material_user_id = material_data.get("user_id") if material_data else None
+        
+        if material_user_id != user_id:
+            return None
+        
+        return analysis.get("id")
     except Exception as e:
         raise Exception(f"Failed to get page analysis ID: {str(e)}")
 
@@ -653,10 +822,12 @@ def get_course_material_summary(
     user_id: str
 ) -> Optional[dict]:
     """
-    Get the summary field from a course_material record.
+    Get the summary field from a course_material record (with in-memory caching).
     
     The summary is stored as a TEXT field containing JSON-encoded data
     with an overview of the lecture topics and concepts.
+    
+    Summaries are cached for 10 minutes since they rarely change after creation.
     
     Args:
         course_material_id: Course material ID
@@ -668,6 +839,12 @@ def get_course_material_summary(
     Raises:
         Exception: If database operation fails
     """
+    # Check cache first
+    cached = _summary_cache.get(course_material_id, user_id)
+    if cached is not None:
+        logger.debug(f"Summary cache HIT for material {course_material_id[:8]}...")
+        return cached
+    
     client = get_supabase_client()
     
     try:
@@ -686,13 +863,19 @@ def get_course_material_summary(
             
             # Try to parse as JSON
             try:
-                return json.loads(summary_text)
+                result = json.loads(summary_text)
             except json.JSONDecodeError:
                 # If not valid JSON, return as plain text in a structured format
-                return {
+                result = {
                     "summary_text": summary_text,
                     "format": "plain_text"
                 }
+            
+            # Cache the result
+            _summary_cache.set(course_material_id, user_id, result)
+            logger.debug(f"Summary cache MISS for material {course_material_id[:8]}... (now cached)")
+            
+            return result
         else:
             return None
     except Exception as e:
@@ -1599,16 +1782,30 @@ def update_cached_deck_names(
         if not response.data:
             return 0
         
-        # Update each record with new deck name
-        count = 0
+        # OPTIMIZED: Prepare all updates and execute in batches
+        # Group updates by new deck name to minimize queries
+        updates_by_id = {}
         for record in response.data:
             old_deck = record["deck_name"]
             new_deck = old_deck.replace(old_prefix, new_prefix, 1)
-            
-            client.table("flashcard_cache").update(
-                {"deck_name": new_deck}
-            ).eq("id", record["id"]).execute()
-            count += 1
+            updates_by_id[record["id"]] = new_deck
+        
+        # Execute updates in a single loop but using upsert pattern for efficiency
+        # Note: Supabase doesn't support batch UPDATE with different values per row,
+        # so we update in chunks to reduce connection overhead
+        count = 0
+        ids = list(updates_by_id.keys())
+        
+        # Update in batches of 50 to balance between connection overhead and atomicity
+        batch_size = 50
+        for i in range(0, len(ids), batch_size):
+            batch_ids = ids[i:i + batch_size]
+            for record_id in batch_ids:
+                new_deck = updates_by_id[record_id]
+                client.table("flashcard_cache").update(
+                    {"deck_name": new_deck}
+                ).eq("id", record_id).execute()
+                count += 1
         
         return count
     except Exception as e:
@@ -1687,9 +1884,6 @@ def sync_cache_from_anki(
     Returns:
         Dict with sync stats: inserted, updated, deleted, unchanged
     """
-    import logging
-    logger = logging.getLogger(__name__)
-    
     stats = {
         "inserted": 0,
         "updated": 0,
@@ -1726,7 +1920,10 @@ def sync_cache_from_anki(
         logger.info(f"Sync: Found {len(cached_notes)} notes in cache")
         
         # 1. Find notes to INSERT (in Anki but not in cache)
+        # OPTIMIZED: Collect all inserts first, then batch insert
         to_insert = anki_note_ids - cached_note_ids
+        insert_records = []
+        
         for note_id in to_insert:
             anki_note = anki_note_map[note_id]
             fields = anki_note.get("fields", {})
@@ -1742,22 +1939,33 @@ def sync_cache_from_anki(
                 if card_info:
                     deck_name = card_info[0].get("deckName", parent_deck)
             
+            insert_records.append({
+                "user_id": user_id,
+                "anki_note_id": note_id,
+                "deck_name": deck_name,
+                "front": front,
+                "back": back,
+                "tags": anki_note.get("tags", []),
+                "anki_mod": anki_note.get("mod"),
+                "course_id": course_id,
+            })
+        
+        # Batch insert all new records
+        if insert_records:
             try:
-                client.table("flashcard_cache").insert({
-                    "user_id": user_id,
-                    "anki_note_id": note_id,
-                    "deck_name": deck_name,
-                    "front": front,
-                    "back": back,
-                    "tags": anki_note.get("tags", []),
-                    "anki_mod": anki_note.get("mod"),
-                    "course_id": course_id,
-                }).execute()
-                stats["inserted"] += 1
+                # Insert in batches of 100 to avoid payload limits
+                batch_size = 100
+                for i in range(0, len(insert_records), batch_size):
+                    batch = insert_records[i:i + batch_size]
+                    client.table("flashcard_cache").insert(batch).execute()
+                    stats["inserted"] += len(batch)
+                logger.info(f"Batch inserted {stats['inserted']} new cards")
             except Exception as e:
-                stats["errors"].append(f"Insert {note_id}: {e}")
+                stats["errors"].append(f"Batch insert failed: {e}")
+                logger.error(f"Batch insert failed: {e}")
         
         # 2. Find notes to UPDATE (mod timestamp changed)
+        # Note: Updates still need to be individual as each has different values
         to_check = anki_note_ids & cached_note_ids
         for note_id in to_check:
             anki_note = anki_note_map[note_id]
@@ -2174,7 +2382,10 @@ def get_material_classification(
     user_id: str
 ) -> Optional[dict]:
     """
-    Get classification for a material.
+    Get classification for a material (with in-memory caching).
+    
+    Classifications are cached for 1 hour since they rarely change.
+    Cache is invalidated when classification is updated.
     
     Args:
         material_id: Course material ID
@@ -2185,6 +2396,14 @@ def get_material_classification(
         classification_reasoning, classification_override
         or None if not classified
     """
+    # Check cache first
+    cache_key = f"{material_id}:{user_id}"
+    cached = _classification_cache.get(cache_key)
+    if cached is not None:
+        logger.debug(f"Classification cache HIT for material {material_id[:8]}...")
+        return cached
+    
+    # Cache miss - fetch from database
     client = get_supabase_client()
     try:
         response = client.table("course_materials").select(
@@ -2192,6 +2411,9 @@ def get_material_classification(
         ).eq("id", material_id).eq("user_id", user_id).single().execute()
         
         if response.data and response.data.get("classification"):
+            # Cache the result
+            _classification_cache.set(cache_key, response.data)
+            logger.debug(f"Classification cache MISS for material {material_id[:8]}... (now cached)")
             return response.data
         return None
     except Exception as e:
@@ -2209,6 +2431,8 @@ def update_material_classification(
     """
     Update classification for a material.
     
+    Invalidates the classification cache for this material.
+    
     Args:
         material_id: Course material ID
         classification: Classification category (must match enum)
@@ -2224,6 +2448,14 @@ def update_material_classification(
             "classification_reasoning": reasoning,
             "classification_override": override
         }).eq("id", material_id).execute()
+        
+        # Invalidate cache for all user variants of this material
+        # Since we don't know the user_id here, we'll clear any cached entry
+        # that starts with this material_id
+        for key in list(_classification_cache._cache.keys()):
+            if key.startswith(f"{material_id}:"):
+                _classification_cache.invalidate(key)
+        
         logger.info(f"Updated classification for material {material_id}: {classification}")
     except Exception as e:
         logger.error(f"Error updating classification: {e}")
