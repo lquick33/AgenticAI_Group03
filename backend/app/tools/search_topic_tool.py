@@ -140,16 +140,17 @@ class SearchTopicTool:
                 max_continuity = max(wc for _, wc in pages_with_continuity)
                 
                 if max_continuity > 0:
-                    # Filter to pages with significant continuity (at least 30% of max)
-                    # This ensures we pick pages that are actually chapter starts
-                    continuity_threshold = max_continuity * 0.3
+                    # Filter to pages with significant continuity (at least 50% of max)
+                    # Higher threshold (50%) to exclude title pages that just mention the topic
+                    continuity_threshold = max_continuity * 0.5
                     good_candidates = [
                         (r, wc) for r, wc in pages_with_continuity 
                         if wc >= continuity_threshold
                     ]
                     
                     if good_candidates:
-                        # Among pages with good continuity, prefer lower page numbers
+                        # Among pages with good continuity, prefer lowest page number
+                        # This finds the chapter START, not pages in the middle of content
                         best = min(good_candidates, key=lambda x: x[0].get("page_number", 999))
                         return best[0]
                 

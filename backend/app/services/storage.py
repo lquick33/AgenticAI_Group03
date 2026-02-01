@@ -869,11 +869,15 @@ def search_page_analyses(
             key_terms_text = " ".join(key_terms)
             
             # Calculate simple relevance score
+            # Use bidirectional matching to handle singular/plural variations
+            # e.g., "klassendiagramme" matches "klassendiagramm" and vice versa
             score = 0
             for term in query_terms:
-                if term in summary:
+                # Summary match (bidirectional for word stems)
+                if term in summary or any(word.startswith(term[:min(len(term), 6)]) for word in summary.split() if len(word) >= 4):
                     score += 2  # Summary match is weighted higher
-                if any(term in kt for kt in key_terms):
+                # Key term match (bidirectional - term in kt OR kt in term)
+                if any(term in kt or kt in term for kt in key_terms):
                     score += 3  # Key term match is weighted highest
                 if term in key_terms_text:
                     score += 1
