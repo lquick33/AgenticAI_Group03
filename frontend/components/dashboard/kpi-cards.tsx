@@ -12,10 +12,12 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { getStudyHistory, type StudyHistoryEntry } from "@/lib/api/study"
+import { type StudyHistoryServerData } from "./progress-chart"
 
 interface KPICardsProps {
   userId: string
   courseCount: number
+  initialData?: StudyHistoryServerData[] | null
 }
 
 interface KPIData {
@@ -87,6 +89,55 @@ function calculateKPIs(data: StudyHistoryEntry[]): KPIData {
   }
 }
 
+// Calculate KPIs from server-provided data (uses study_date instead of date)
+function calculateKPIsFromServerData(data: StudyHistoryServerData[]): KPIData {
+  const today = new Date()
+  const oneWeekAgo = new Date(today)
+  oneWeekAgo.setDate(oneWeekAgo.getDate() - 7)
+  const twoWeeksAgo = new Date(today)
+  twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14)
+
+  let cardsThisWeek = 0
+  let cardsPreviousWeek = 0
+  let timeThisWeekSeconds = 0
+  let timePreviousWeekSeconds = 0
+  let goodEasyThisWeek = 0
+  let totalThisWeek = 0
+  let goodEasyPreviousWeek = 0
+  let totalPreviousWeek = 0
+
+  for (const entry of data) {
+    const entryDate = new Date(entry.study_date)
+    
+    if (entryDate >= oneWeekAgo) {
+      // This week
+      cardsThisWeek += entry.cards_reviewed
+      timeThisWeekSeconds += entry.time_spent_seconds
+      goodEasyThisWeek += entry.good_count + entry.easy_count
+      totalThisWeek += entry.cards_reviewed
+    } else if (entryDate >= twoWeeksAgo) {
+      // Previous week
+      cardsPreviousWeek += entry.cards_reviewed
+      timePreviousWeekSeconds += entry.time_spent_seconds
+      goodEasyPreviousWeek += entry.good_count + entry.easy_count
+      totalPreviousWeek += entry.cards_reviewed
+    }
+  }
+
+  const retentionThisWeek = totalThisWeek > 0 ? (goodEasyThisWeek / totalThisWeek) * 100 : 0
+  const retentionPreviousWeek = totalPreviousWeek > 0 ? (goodEasyPreviousWeek / totalPreviousWeek) * 100 : 0
+
+  return {
+    cardsThisWeek,
+    cardsPreviousWeek,
+    timeThisWeekMinutes: Math.round(timeThisWeekSeconds / 60),
+    timePreviousWeekMinutes: Math.round(timePreviousWeekSeconds / 60),
+    retentionThisWeek,
+    retentionPreviousWeek,
+    isDemo: false,
+  }
+}
+
 function formatTrend(current: number, previous: number, suffix: string = ""): { text: string; direction: "up" | "down" | "neutral" } {
   const diff = current - previous
   if (diff > 0) {
@@ -112,29 +163,45 @@ function TrendIcon({ direction }: { direction: "up" | "down" | "neutral" }) {
   return <MinusIcon className="size-3" />
 }
 
-export function KPICards({ userId, courseCount }: KPICardsProps) {
-  const [kpiData, setKpiData] = React.useState<KPIData | null>(null)
-  const [isLoading, setIsLoading] = React.useState(true)
+export function KPICards({ userId, courseCount, initialData }: KPICardsProps) {
+  // Calculate initial KPIs from server-provided data for instant rendering
+  const getInitialKpiData = (): KPIData | null => {
+    if (initialData && initialData.length > 0) {
+      const calculated = calculateKPIsFromServerData(initialData)
+      // Use demo data if no activity
+      if (calculated.cardsThisWeek === 0 && calculated.cardsPreviousWeek === 0) {
+        return DEMO_KPI_DATA
+      }
+      return calculated
+    }
+    return null
+  }
+  
+  const hasInitialData = initialData && initialData.length > 0
+  const [kpiData, setKpiData] = React.useState<KPIData | null>(getInitialKpiData)
+  const [isLoading, setIsLoading] = React.useState(!hasInitialData && !kpiData)
 
   React.useEffect(() => {
     if (!userId) return
 
     async function fetchData() {
       try {
-        // Fetch cached data first for instant display
-        const cachedResponse = await getStudyHistory(userId, 14, true)
-        if (cachedResponse.status === "success" && cachedResponse.data.length > 0) {
-          const calculated = calculateKPIs(cachedResponse.data)
-          // Use demo data if no activity this week
-          if (calculated.cardsThisWeek === 0 && calculated.cardsPreviousWeek === 0) {
-            setKpiData(DEMO_KPI_DATA)
-          } else {
-            setKpiData(calculated)
+        // Only fetch cached data if we don't have initial data from server
+        if (!hasInitialData) {
+          const cachedResponse = await getStudyHistory(userId, 14, true)
+          if (cachedResponse.status === "success" && cachedResponse.data.length > 0) {
+            const calculated = calculateKPIs(cachedResponse.data)
+            // Use demo data if no activity this week
+            if (calculated.cardsThisWeek === 0 && calculated.cardsPreviousWeek === 0) {
+              setKpiData(DEMO_KPI_DATA)
+            } else {
+              setKpiData(calculated)
+            }
+            setIsLoading(false)
           }
-          setIsLoading(false)
         }
 
-        // Then fetch fresh data
+        // Then fetch fresh data from Anki in the background
         const freshResponse = await getStudyHistory(userId, 14, false)
         if (freshResponse.status === "success") {
           const calculated = calculateKPIs(freshResponse.data)
@@ -147,15 +214,17 @@ export function KPICards({ userId, courseCount }: KPICardsProps) {
         }
       } catch (err) {
         console.error("Error fetching KPI data:", err)
-        // On error, show demo data
-        setKpiData(DEMO_KPI_DATA)
+        // On error, show demo data if we don't already have data
+        if (!kpiData) {
+          setKpiData(DEMO_KPI_DATA)
+        }
       } finally {
         setIsLoading(false)
       }
     }
 
     fetchData()
-  }, [userId])
+  }, [userId, hasInitialData, kpiData])
 
   const cardsTrend = kpiData ? formatTrend(kpiData.cardsThisWeek, kpiData.cardsPreviousWeek) : null
   const timeTrend = kpiData ? formatTrend(kpiData.timeThisWeekMinutes, kpiData.timePreviousWeekMinutes, "m") : null

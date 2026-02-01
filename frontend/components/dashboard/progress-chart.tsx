@@ -38,6 +38,29 @@ interface ChartDataPoint {
   timeSpentMinutes: number
 }
 
+// Type for data coming from server-side Supabase query
+export interface StudyHistoryServerData {
+  study_date: string
+  cards_reviewed: number
+  time_spent_seconds: number
+  again_count: number
+  hard_count: number
+  good_count: number
+  easy_count: number
+  new_cards: number
+  review_cards: number
+  relearn_cards: number
+}
+
+// Transform server data to chart data points
+function transformServerData(data: StudyHistoryServerData[]): ChartDataPoint[] {
+  return data.map((entry) => ({
+    date: entry.study_date,
+    cardsStudied: entry.cards_reviewed,
+    timeSpentMinutes: Math.round(entry.time_spent_seconds / 60),
+  }))
+}
+
 // Generate demo data for new users
 function generateDemoData(): ChartDataPoint[] {
   const data: ChartDataPoint[] = []
@@ -74,15 +97,23 @@ const chartConfig = {
 
 interface ProgressChartProps {
   userId: string
+  initialData?: StudyHistoryServerData[] | null
 }
 
-export function ProgressChart({ userId }: ProgressChartProps) {
+export function ProgressChart({ userId, initialData }: ProgressChartProps) {
   const isMobile = useIsMobile()
   const [timeRange, setTimeRange] = React.useState("30d")
-  const [chartData, setChartData] = React.useState<ChartDataPoint[]>([])
-  const [isLoading, setIsLoading] = React.useState(true)
+  
+  // Initialize with server-provided data for instant rendering
+  const hasInitialData = initialData && initialData.length > 0
+  const [chartData, setChartData] = React.useState<ChartDataPoint[]>(() => 
+    hasInitialData ? transformServerData(initialData) : []
+  )
+  const [isLoading, setIsLoading] = React.useState(!hasInitialData)
   const [error, setError] = React.useState<string | null>(null)
-  const [dataSource, setDataSource] = React.useState<"anki" | "cache" | "demo" | null>(null)
+  const [dataSource, setDataSource] = React.useState<"anki" | "cache" | "demo" | null>(
+    hasInitialData ? "cache" : null
+  )
 
   React.useEffect(() => {
     if (isMobile) {
@@ -90,31 +121,34 @@ export function ProgressChart({ userId }: ProgressChartProps) {
     }
   }, [isMobile])
 
-  // Fetch study history data with stale-while-revalidate pattern
+  // Fetch fresh study history data (skip cache fetch if we have server-provided initial data)
   React.useEffect(() => {
     if (!userId) return
     
     let isMounted = true
-    let hasRealData = false
+    // Track if we have real data (either from initial props or fetched)
+    let hasRealData = hasInitialData
     
     async function fetchData() {
-      // Step 1: Immediately fetch cached data (fast)
-      try {
-        const cachedResponse = await getStudyHistory(userId, 90, true)
-        
-        if (isMounted && cachedResponse.status === "success" && cachedResponse.data.length > 0) {
-          hasRealData = true
-          setDataSource(cachedResponse.source)
-          const transformed: ChartDataPoint[] = cachedResponse.data.map((entry: StudyHistoryEntry) => ({
-            date: entry.date,
-            cardsStudied: entry.cards_reviewed,
-            timeSpentMinutes: Math.round(entry.time_spent_seconds / 60),
-          }))
-          setChartData(transformed)
-          setIsLoading(false)
+      // Step 1: Only fetch cached data if we don't have initial data from server
+      if (!hasInitialData) {
+        try {
+          const cachedResponse = await getStudyHistory(userId, 90, true)
+          
+          if (isMounted && cachedResponse.status === "success" && cachedResponse.data.length > 0) {
+            hasRealData = true
+            setDataSource(cachedResponse.source)
+            const transformed: ChartDataPoint[] = cachedResponse.data.map((entry: StudyHistoryEntry) => ({
+              date: entry.date,
+              cardsStudied: entry.cards_reviewed,
+              timeSpentMinutes: Math.round(entry.time_spent_seconds / 60),
+            }))
+            setChartData(transformed)
+            setIsLoading(false)
+          }
+        } catch (err) {
+          console.error("Error fetching cached study history:", err)
         }
-      } catch (err) {
-        console.error("Error fetching cached study history:", err)
       }
       
       // Step 2: Fetch fresh data from Anki in the background
@@ -153,7 +187,7 @@ export function ProgressChart({ userId }: ProgressChartProps) {
     return () => {
       isMounted = false
     }
-  }, [userId])
+  }, [userId, hasInitialData])
 
   // Filter data based on selected time range
   const filteredData = React.useMemo(() => {

@@ -34,6 +34,18 @@ export default async function DashboardPage() {
     .eq('user_id', user.id)
     .order('updated_at', { ascending: false })
 
+  // Fetch cached study history for instant chart display (90 days)
+  const cutoffDate = new Date()
+  cutoffDate.setDate(cutoffDate.getDate() - 90)
+  const cutoffDateStr = cutoffDate.toISOString().split('T')[0]
+  
+  const { data: studyHistory } = await supabase
+    .from('anki_study_history')
+    .select('study_date, cards_reviewed, time_spent_seconds, again_count, hard_count, good_count, easy_count, new_cards, review_cards, relearn_cards')
+    .eq('user_id', user.id)
+    .gte('study_date', cutoffDateStr)
+    .order('study_date', { ascending: true })
+
   // Prepare user data for sidebar
   const userData = {
     name: user.email?.split('@')[0] || 'User',
@@ -62,9 +74,9 @@ export default async function DashboardPage() {
                 <div className="px-4 lg:px-6">
                   <AnkiSyncStatus />
                 </div>
-                <KPICards userId={user.id} courseCount={courses?.length ?? 0} />
+                <KPICards userId={user.id} courseCount={courses?.length ?? 0} initialData={studyHistory} />
                 <div className="px-4 lg:px-6">
-                  <ProgressChart userId={user.id} />
+                  <ProgressChart userId={user.id} initialData={studyHistory} />
                 </div>
                 <LearningUnitsTable />
               </div>
