@@ -89,34 +89,33 @@ class StateAwareToolNode(ToolNode):
                     pass  # user_id already injected above
                 
                 # Inject state values for get_page_analysis tool (tutoring mode)
+                # ALWAYS override course_material_id and page_number from state
+                # The LLM often hallucinates similar-looking but incorrect UUIDs
                 elif tool_name == "get_page_analysis":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "page_number" not in args or args.get("page_number") is None:
-                        if input.get("current_page"):
-                            args["page_number"] = input["current_page"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("current_page") is not None:
+                        args["page_number"] = input["current_page"]
                 
                 # Inject state values for get_course_material_summary tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "get_course_material_summary":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
                 
                 # Inject state values for create_quiz tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "create_quiz":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
                 
                 # Inject state values for get_page_image tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "get_page_image":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "page_number" not in args or args.get("page_number") is None:
-                        if input.get("current_page"):
-                            args["page_number"] = input["current_page"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("current_page") is not None:
+                        args["page_number"] = input["current_page"]
                 
                 modified_tool_calls.append({
                     "id": tool_id,
@@ -162,30 +161,30 @@ class StateAwareToolNode(ToolNode):
                 
                 # Same injection logic as sync version
                 if tool_name == "get_page_analysis":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "page_number" not in args or args.get("page_number") is None:
-                        if input.get("current_page"):
-                            args["page_number"] = input["current_page"]
+                    # ALWAYS override course_material_id and page_number from state
+                    # The LLM often hallucinates similar-looking but incorrect UUIDs
+                    # State values are authoritative and come from the frontend
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("current_page") is not None:
+                        args["page_number"] = input["current_page"]
                 
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "get_course_material_summary":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
                 
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "create_quiz":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
                 
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "get_page_image":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "page_number" not in args or args.get("page_number") is None:
-                        if input.get("current_page"):
-                            args["page_number"] = input["current_page"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("current_page") is not None:
+                        args["page_number"] = input["current_page"]
                 
                 modified_tool_calls.append({
                     "id": tool_id,
