@@ -12,7 +12,7 @@ services:
     container_name: anki-agent
     ports:
       - "8765:8765"   # AnkiConnect API
-      - "5900:5900"   # VNC for first-time AnkiWeb login setup
+      - "5900:5900"   # VNC for debugging (login is done via app Settings)
     volumes:
       # Use named volume so Docker initializes from container's /data
       - anki-data:/data

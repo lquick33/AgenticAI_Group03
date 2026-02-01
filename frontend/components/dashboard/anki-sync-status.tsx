@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { AlertCircle, CheckCircle2, CloudOff, Settings, RefreshCw, Upload, Download } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Cloud, CloudOff, Settings, RefreshCw, Upload, Download } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -122,10 +122,15 @@ export function AnkiSyncStatus() {
 
   useEffect(() => {
     checkSyncStatus()
-    // Check every 2 minutes
-    const interval = setInterval(checkSyncStatus, 120000)
-    return () => clearInterval(interval)
   }, [])
+
+  // Adaptive polling: faster when there's a problem, slower when OK
+  useEffect(() => {
+    // Poll every 5 seconds when not connected, every 2 minutes when OK
+    const pollInterval = status?.status === 'ok' ? 120000 : 5000
+    const interval = setInterval(checkSyncStatus, pollInterval)
+    return () => clearInterval(interval)
+  }, [status?.status])
 
   if (loading && !status) {
     return null
@@ -165,35 +170,58 @@ export function AnkiSyncStatus() {
 
       case 'not_logged_in':
         return (
-          <Alert className="mb-4">
-            <CloudOff className="h-4 w-4" />
-            <AlertTitle>AnkiWeb Not Connected</AlertTitle>
-            <AlertDescription className="flex items-center justify-between">
-              <span>
-                Log in to AnkiWeb to sync your flashcards across devices.
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={openSettings}
-                className="flex items-center gap-1"
-              >
-                <Settings className="h-3 w-3" />
-                Open Settings to Login
-              </Button>
-            </AlertDescription>
-          </Alert>
+          <div className="rounded-lg border bg-card p-6 mb-4">
+            <div className="flex flex-col items-center text-center sm:flex-row sm:text-left sm:items-start gap-4">
+              <div className="rounded-full bg-blue-100 p-3 shrink-0">
+                <Cloud className="h-6 w-6 text-blue-600" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-lg">Mit AnkiWeb verbinden</h3>
+                <p className="text-muted-foreground mt-1">
+                  Verbinde dein AnkiWeb-Konto, um deine Karteikarten automatisch auf alle Geräte zu synchronisieren.
+                </p>
+                <div className="flex flex-wrap gap-2 mt-4">
+                  <Button onClick={openSettings}>
+                    <Settings className="h-4 w-4 mr-2" />
+                    Jetzt verbinden
+                  </Button>
+                  <Button variant="ghost" asChild>
+                    <a href="https://ankiweb.net/account/signup" target="_blank" rel="noopener noreferrer">
+                      Konto erstellen
+                    </a>
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
         )
 
       case 'not_connected':
         return (
-          <Alert className="mb-4">
-            <CloudOff className="h-4 w-4" />
-            <AlertTitle>Anki Not Running</AlertTitle>
-            <AlertDescription>
-              The Anki service is not running. Flashcards will be queued until it&apos;s available.
-            </AlertDescription>
-          </Alert>
+          <div className="rounded-lg border bg-card p-6 mb-4">
+            <div className="flex flex-col items-center text-center sm:flex-row sm:text-left sm:items-start gap-4">
+              <div className="rounded-full bg-orange-100 p-3 shrink-0">
+                <CloudOff className="h-6 w-6 text-orange-600" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-lg">Anki nicht verbunden</h3>
+                <p className="text-muted-foreground mt-1">
+                  Der Anki Docker Container läuft nicht. Karteikarten werden zwischengespeichert.
+                </p>
+                <details className="mt-3 text-sm">
+                  <summary className="cursor-pointer font-medium text-muted-foreground hover:text-foreground">
+                    Wie starte ich Anki?
+                  </summary>
+                  <ol className="mt-2 ml-4 list-decimal space-y-1 text-muted-foreground">
+                    <li>Docker Desktop starten</li>
+                    <li>Terminal im Projektordner öffnen</li>
+                    <li>Ausführen: <code className="bg-muted px-1.5 py-0.5 rounded text-xs">./start_anki.sh</code></li>
+                    <li>Warten bis &quot;Anki is ready!&quot; erscheint</li>
+                  </ol>
+                </details>
+              </div>
+            </div>
+          </div>
         )
 
       case 'error':

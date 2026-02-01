@@ -243,58 +243,20 @@ done
 
 echo -e "${GREEN}✓ AnkiConnect API is ready at http://localhost:8765${NC}"
 
-# Check if first run (no User 1 directory in the volume)
-# Note: With named volumes, we check via docker exec
-COLLECTION_EXISTS=$(docker exec anki-agent sh -c "test -f /data/User\ 1/collection.anki2 && echo 'yes' || echo 'no'" 2>/dev/null || echo "no")
-
-if [[ "$COLLECTION_EXISTS" == "no" ]]; then
-    echo ""
-    echo -e "${YELLOW}========================================"
-    echo "FIRST-TIME SETUP REQUIRED"
-    echo "========================================${NC}"
-    echo ""
-    echo "To sync cards to your phone, you need to login to AnkiWeb:"
-    echo ""
-    echo "1. Opening VNC viewer..."
-    
-    # Try to open VNC viewer (Mac)
-    if [[ "$OS" == "Darwin" ]]; then
-        open vnc://localhost:5900 2>/dev/null || echo "   Run: open vnc://localhost:5900"
-    else
-        echo "   Connect VNC viewer to localhost:5900"
-    fi
-    
-    echo ""
-    echo "2. In the Anki window, click 'Sync' button"
-    echo "3. Enter your AnkiWeb email and password"
-    echo "4. Close the VNC window"
-    echo ""
-    read -p "Press Enter when done with AnkiWeb login..."
-    
-    # Verify sync works
-    echo "Testing sync..."
-    SYNC_RESULT=$(curl -s -X POST http://localhost:8765 -d '{"action":"sync","version":6}' | grep -o '"error":[^,}]*')
-    
-    if [[ "$SYNC_RESULT" == *"null"* ]]; then
-        echo -e "${GREEN}✓ AnkiWeb sync configured successfully!${NC}"
-    else
-        echo -e "${YELLOW}Warning: Sync may not be configured properly.${NC}"
-        echo "You can try logging in again via VNC at localhost:5900"
-    fi
-else
-    echo -e "${GREEN}✓ Anki profile found${NC}"
-fi
-
 echo ""
 echo "========================================"
 echo -e "${GREEN}Anki is ready!${NC}"
 echo "========================================"
 echo ""
 echo "Container is running in the background."
-echo "The agent can now create flashcards and read statistics."
+echo ""
+echo "To sync with AnkiWeb:"
+echo "  1. Start the backend and frontend"
+echo "  2. Open the app at http://localhost:3000"
+echo "  3. Go to Settings → AnkiWeb Connection"
+echo "  4. Enter your AnkiWeb credentials"
 echo ""
 echo "Useful commands:"
-echo "  docker compose logs -f    # View container logs"
-echo "  docker compose down       # Stop container"
-echo "  open vnc://localhost:5900 # Access Anki GUI (if needed)"
+echo "  docker compose logs -f  # View container logs"
+echo "  docker compose down     # Stop container"
 echo ""

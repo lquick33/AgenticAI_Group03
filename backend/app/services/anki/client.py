@@ -185,13 +185,14 @@ class AnkiClient:
         # Fallback to Group3 directory
         return Path(__file__).resolve().parents[4]
     
-    def _request(self, action: str, params: Optional[dict] = None) -> Any:
+    def _request(self, action: str, params: Optional[dict] = None, timeout: Optional[int] = None) -> Any:
         """
         Make a request to the AnkiConnect API.
         
         Args:
             action: The AnkiConnect action name
             params: Optional parameters for the action
+            timeout: Optional timeout override (uses self.timeout if not specified)
             
         Returns:
             The result from AnkiConnect
@@ -207,13 +208,15 @@ class AnkiClient:
         if params:
             payload["params"] = params
         
+        request_timeout = timeout if timeout is not None else self.timeout
+        
         try:
             req = urllib.request.Request(
                 self.url,
                 data=json.dumps(payload).encode("utf-8"),
                 headers={"Content-Type": "application/json"}
             )
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+            with urllib.request.urlopen(req, timeout=request_timeout) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except urllib.error.URLError as e:
             raise AnkiConnectionError(
@@ -232,10 +235,42 @@ class AnkiClient:
     # Container Management
     # =========================================================================
     
-    def is_running(self) -> bool:
-        """Check if AnkiConnect is responding"""
+    def is_docker_container_running(self) -> bool:
+        """
+        Check if the anki-agent Docker container is running.
+        
+        Returns:
+            True if the Docker container is running, False otherwise.
+        """
         try:
-            self._request("version")
+            result = subprocess.run(
+                ["docker", "ps", "--filter", "name=anki-agent", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                timeout=3
+            )
+            return "anki-agent" in result.stdout
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+            return False
+    
+    def is_running(self, quick_check: bool = True, require_docker: bool = True) -> bool:
+        """
+        Check if AnkiConnect is responding.
+        
+        Args:
+            quick_check: If True, use a short 3-second timeout for fast status checks.
+                        If False, use the default timeout.
+            require_docker: If True, also verify that the Docker container is running.
+                           This prevents connecting to a native Anki app.
+        """
+        # If we require Docker, check that the container is running first
+        if require_docker and not self.is_docker_container_running():
+            return False
+        
+        try:
+            # Use short timeout for quick status checks (e.g., UI polling)
+            timeout = 3 if quick_check else None
+            self._request("version", timeout=timeout)
             return True
         except (AnkiConnectionError, Exception):
             return False
@@ -318,14 +353,16 @@ class AnkiClient:
                 )
         
         # Wait for AnkiConnect to be ready
+        # For Docker mode, require_docker=True; for native app mode, require_docker=False
+        using_docker_mode = use_docker or not is_apple_silicon or not allow_app_fallback
         start_time = time.time()
         while time.time() - start_time < max_wait:
-            if self.is_running():
+            if self.is_running(require_docker=using_docker_mode):
                 print("Anki ready!")
                 return True
             time.sleep(1)
         
-        if use_docker or not is_apple_silicon or not allow_app_fallback:
+        if using_docker_mode:
             raise AnkiConnectionError(
                 f"Anki container did not start within {max_wait} seconds"
             )

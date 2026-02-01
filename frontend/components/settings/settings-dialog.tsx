@@ -53,8 +53,8 @@ export function SettingsDialog() {
   const [themePreference, setThemePreference] = useState<"light" | "dark" | "system">("system")
   const [ankiWebUsername, setAnkiWebUsername] = useState<string>("")
 
-  // AnkiWeb login state
-  const [ankiWebStatus, setAnkiWebStatus] = useState<"loading" | "logged_in" | "not_logged_in" | "not_connected" | "error">("loading")
+  // AnkiWeb login state - start with not_logged_in to avoid loading spinner
+  const [ankiWebStatus, setAnkiWebStatus] = useState<"loading" | "logged_in" | "not_logged_in" | "not_connected" | "error">("not_logged_in")
   const [ankiWebEmail, setAnkiWebEmail] = useState("")
   const [ankiWebPassword, setAnkiWebPassword] = useState("")
   const [isAnkiWebLoggingIn, setIsAnkiWebLoggingIn] = useState(false)
@@ -71,20 +71,24 @@ export function SettingsDialog() {
   }, [isOpen])
 
   const loadAnkiWebStatus = async () => {
-    setAnkiWebStatus("loading")
+    // Background verification - don't show loading spinner
+    // UI already shows cached state from preferences
     try {
       const response = await fetch(`${API_URL}/api/anki/login-status`)
       if (response.ok) {
         const data = await response.json()
+        // Only update if status actually changed
         setAnkiWebStatus(data.status)
         if (data.username) {
           setAnkiWebUsername(data.username)
+        } else if (data.status === "not_logged_in") {
+          setAnkiWebUsername("")
         }
-      } else {
-        setAnkiWebStatus("error")
       }
+      // Don't update UI on error - keep showing cached state
     } catch {
-      setAnkiWebStatus("not_connected")
+      // Silently fail - keep showing cached state
+      // User will see error when they try to interact
     }
   }
 
@@ -185,6 +189,13 @@ export function SettingsDialog() {
         setDeduplicateDefault(prefs.default_deduplicate_flashcards ?? false)
         setThemePreference(prefs.theme_preference || "system")
         setAnkiWebUsername(prefs.ankiweb_username || "")
+        
+        // Use cached username to show instant UI (no loading spinner)
+        if (prefs.ankiweb_username) {
+          setAnkiWebStatus("logged_in")
+        } else {
+          setAnkiWebStatus("not_logged_in")
+        }
       }
 
       // Load theme from localStorage as fallback
