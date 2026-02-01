@@ -99,11 +99,14 @@ class SearchTopicTool:
                     "page_number": r.get("page_number"),
                     "summary": r.get("summary"),
                     "key_terms": r.get("key_terms"),
-                    "relevance_score": r.get("rank")
+                    "relevance_score": r.get("rank"),
+                    "is_chapter_heading": r.get("is_chapter_heading", False),
+                    "chapter_title": r.get("chapter_title")
                 })
             
-            # Pick the best introduction page: prefer pages where following pages are also relevant
-            # This avoids selecting title/overview pages that mention a topic but are followed by unrelated content
+            # Pick the best introduction page using multiple strategies:
+            # 1. If explicit chapter headings exist (is_chapter_heading=True), use those directly
+            # 2. Fall back to heuristic-based detection for older materials without chapter data
             def pick_best_intro_page(search_results):
                 if not search_results:
                     return None
@@ -111,50 +114,96 @@ class SearchTopicTool:
                 if len(search_results) == 1:
                     return search_results[0]
                 
-                # Score ALL candidates by WEIGHTED continuity: sum of relevance scores of following pages
-                # This finds the actual chapter start, not just the title page
+                # STRATEGY 0: Use explicit chapter headings (fast path for new materials)
+                # The search already returns chapter headings first with high rank
+                chapter_headings = [r for r in search_results if r.get("is_chapter_heading")]
+                if chapter_headings:
+                    # Prefer lowest page number among chapter headings (but skip page 1)
+                    non_page1 = [r for r in chapter_headings if r.get("page_number", 1) > 1]
+                    if non_page1:
+                        return min(non_page1, key=lambda r: r.get("page_number", 999))
+                    return min(chapter_headings, key=lambda r: r.get("page_number", 999))
+                
+                # FALLBACK: Heuristic-based detection for older materials
+                query_lower = query.lower()
+                query_base = query_lower[:-1] if len(query_lower) > 4 else query_lower
+                
+                def extract_stems(text: str, min_len: int = 4) -> set:
+                    """Extract short stems from text for cross-language matching."""
+                    words = text.lower().replace("-", " ").split()
+                    stems = set()
+                    for word in words:
+                        clean = word.rstrip("s").rstrip("e").rstrip("n")
+                        if len(clean) >= min_len:
+                            stems.add(clean[:min(len(clean), 6)])
+                    return stems
+                
+                query_stems = extract_stems(query_lower)
+                
+                def has_topic_as_primary(result):
+                    """Check if topic appears in the first 2 key_terms (primary position)"""
+                    key_terms = result.get("key_terms") or []
+                    for kt in key_terms[:2]:
+                        kt_lower = kt.lower()
+                        if query_lower in kt_lower or kt_lower in query_lower or query_base in kt_lower:
+                            return True
+                        kt_stems = extract_stems(kt_lower)
+                        if query_stems & kt_stems:
+                            return True
+                    return False
+                
+                def is_introduction(result):
+                    """Check if summary indicates this is an introduction/chapter start"""
+                    summary = (result.get("summary") or "").lower()
+                    if summary.startswith("diese folie dient als einführung zu einem") and "beispiel" in summary[:80]:
+                        return False
+                    if summary.startswith("live") and "beispiel" in summary[:50]:
+                        return False
+                    if any(kw in summary for kw in ["einleitung", "einführung", "introduction"]):
+                        return True
+                    if "führt" in summary and "ein" in summary:
+                        return True
+                    return False
+                
+                # Heuristic Strategy 1: Topic is primary AND it's an introduction
+                intro_candidates = [r for r in search_results if has_topic_as_primary(r) and is_introduction(r)]
+                if intro_candidates:
+                    non_page1 = [r for r in intro_candidates if r.get("page_number", 1) > 1]
+                    if non_page1:
+                        return min(non_page1, key=lambda r: r.get("page_number", 999))
+                    return min(intro_candidates, key=lambda r: r.get("page_number", 999))
+                
+                # Heuristic Strategy 2: Topic is primary - use lowest page
+                primary_candidates = [r for r in search_results if has_topic_as_primary(r)]
+                if primary_candidates:
+                    non_page1 = [r for r in primary_candidates if r.get("page_number", 1) > 1]
+                    if non_page1:
+                        return min(non_page1, key=lambda r: r.get("page_number", 999))
+                
+                # Heuristic Strategy 3: Weighted continuity for remaining cases
                 def score_by_weighted_continuity(candidate):
                     material_id = candidate.get("material", {}).get("id")
                     page_num = candidate.get("page_number", 999)
-                    
-                    # Sum the relevance scores of following pages (within 10 pages, same material)
-                    # Increased window to 10 pages to better capture chapter sections
                     weighted_continuity = 0.0
                     for r in search_results:
                         r_material = r.get("material", {}).get("id")
                         r_page = r.get("page_number", 0)
                         r_score = r.get("relevance_score", 0) or 0
-                        # Check if this is a following page (within 10 pages) in same material
                         if r_material == material_id and r_page > page_num and r_page <= page_num + 10:
                             weighted_continuity += r_score
-                    
                     return weighted_continuity
                 
-                # Calculate weighted continuity for all pages
-                pages_with_continuity = [
-                    (r, score_by_weighted_continuity(r)) 
-                    for r in search_results
-                ]
-                
-                # Find max weighted continuity
-                max_continuity = max(wc for _, wc in pages_with_continuity)
+                pages_with_continuity = [(r, score_by_weighted_continuity(r)) for r in search_results]
+                max_continuity = max(wc for _, wc in pages_with_continuity) if pages_with_continuity else 0
                 
                 if max_continuity > 0:
-                    # Filter to pages with significant continuity (at least 50% of max)
-                    # Higher threshold (50%) to exclude title pages that just mention the topic
-                    continuity_threshold = max_continuity * 0.5
-                    good_candidates = [
-                        (r, wc) for r, wc in pages_with_continuity 
-                        if wc >= continuity_threshold
-                    ]
-                    
+                    continuity_threshold = max_continuity * 0.4
+                    good_candidates = [(r, wc) for r, wc in pages_with_continuity if wc >= continuity_threshold]
                     if good_candidates:
-                        # Among pages with good continuity, prefer lowest page number
-                        # This finds the chapter START, not pages in the middle of content
                         best = min(good_candidates, key=lambda x: x[0].get("page_number", 999))
                         return best[0]
                 
-                # Fallback: if no continuity found, use the page with highest relevance score
+                # Fallback: highest relevance score
                 return max(search_results, key=lambda r: (r.get("relevance_score", 0) or 0, -r.get("page_number", 999)))
             
             # Reorder results: put best intro page first, then others by relevance

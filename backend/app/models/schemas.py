@@ -37,6 +37,16 @@ class SlideAnalysis(BaseModel):
         ...,
         description="Beschreibung visueller Elemente (Diagramme, Charts, Grafiken). Falls nur Text vorhanden, dann 'Kein Diagramm'"
     )
+    
+    is_chapter_heading: bool = Field(
+        default=False,
+        description="True wenn diese Folie ein Kapitel-/Abschnittstitel ist (großer Titel, wenig oder kein Fließtext)"
+    )
+    
+    chapter_title: Optional[str] = Field(
+        default=None,
+        description="Der Kapiteltitel, falls is_chapter_heading=True (z.B. 'Klassendiagramme', 'Sequence Diagrams')"
+    )
 
 
 class PageAnalysisResponse(BaseModel):
