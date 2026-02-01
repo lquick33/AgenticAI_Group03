@@ -373,13 +373,16 @@ class FlashcardTaskService:
             course_title = course_response.data.get("title", "course") if course_response.data else "course"
             
             import re
-            safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
-            safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
+            lecture_name = file_name.replace('.pdf', '')
             
             # Build .apkg with embedded images
-            deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
+            deck_name = f"{course_title}::{lecture_name}"
             task.apkg_bytes = build_anki_apkg(cards, deck_name=deck_name)
-            task.filename = f"flashcards_{safe_course_title}_{safe_file_name}.apkg"
+            
+            # Use deck_name format for filename, replacing :: with - for filesystem compatibility
+            # Only remove characters that are invalid in filenames: / \ : * ? " < > |
+            safe_deck_name = re.sub(r'[/\\:*?"<>|]', '', f"{course_title} - {lecture_name}").strip()[:100]
+            task.filename = f"{safe_deck_name}.apkg"
             
             task.status = TaskStatus.COMPLETED
             task.progress = 1.0

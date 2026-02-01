@@ -323,12 +323,12 @@ export async function getFlashcardTaskStatus(
 }
 
 /**
- * Download generated flashcard CSV file
+ * Download generated flashcard .apkg file
  */
 export async function downloadFlashcards(
   taskId: string,
   userId: string
-): Promise<Blob> {
+): Promise<{ blob: Blob; filename: string }> {
   const url = `${API_URL}/api/flashcards/download/${encodeURIComponent(taskId)}?user_id=${encodeURIComponent(userId)}`
   
   const response = await fetch(url, {
@@ -340,7 +340,20 @@ export async function downloadFlashcards(
     throw new Error(error.detail || `HTTP ${response.status}`)
   }
 
-  return response.blob()
+  // Extract filename from Content-Disposition header
+  const contentDisposition = response.headers.get('Content-Disposition')
+  let filename = `flashcards_${taskId}.apkg`
+  
+  if (contentDisposition) {
+    // Parse filename from header: attachment; filename="Course - Lecture.apkg"
+    const match = contentDisposition.match(/filename="?([^";\n]+)"?/)
+    if (match && match[1]) {
+      filename = match[1]
+    }
+  }
+
+  const blob = await response.blob()
+  return { blob, filename }
 }
 
 /**
@@ -365,12 +378,12 @@ export async function getFlashcardsForMaterial(
 }
 
 /**
- * Download flashcards directly from database as CSV
+ * Download flashcards directly from database as .apkg file
  */
 export async function downloadFlashcardsFromDb(
   materialId: string,
   userId: string
-): Promise<Blob> {
+): Promise<{ blob: Blob; filename: string }> {
   const url = `${API_URL}/api/flashcards/${encodeURIComponent(materialId)}/download?user_id=${encodeURIComponent(userId)}`
   
   const response = await fetch(url, {
@@ -382,7 +395,20 @@ export async function downloadFlashcardsFromDb(
     throw new Error(error.detail || `HTTP ${response.status}`)
   }
 
-  return response.blob()
+  // Extract filename from Content-Disposition header
+  const contentDisposition = response.headers.get('Content-Disposition')
+  let filename = `flashcards_${materialId}.apkg`
+  
+  if (contentDisposition) {
+    // Parse filename from header: attachment; filename="Course - Lecture.apkg"
+    const match = contentDisposition.match(/filename="?([^";\n]+)"?/)
+    if (match && match[1]) {
+      filename = match[1]
+    }
+  }
+
+  const blob = await response.blob()
+  return { blob, filename }
 }
 
 /**

@@ -2,6 +2,9 @@
 
 This guide will help you set up the Lernkompanien backend for development.
 
+> **Important:** Always use the venv in `backend/venv` for this project.  
+> Do NOT use `agentic_artificial_intelligence/.venv` - that's for the course exercises only.
+
 ## Prerequisites
 
 - Python 3.11 or higher
