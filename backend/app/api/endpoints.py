@@ -147,6 +147,25 @@ class RateLimiter:
 ankiweb_login_limiter = RateLimiter(max_requests=5, window_seconds=900)
 
 
+# =============================================================================
+# AnkiWeb Status Cache
+# =============================================================================
+
+# Cache for AnkiWeb login status to avoid slow Docker/AnkiConnect checks
+# TTL: 30 seconds - long enough for UI responsiveness, short enough to catch changes
+_ankiweb_status_cache: dict = {
+    "data": None,
+    "timestamp": 0.0
+}
+ANKIWEB_STATUS_CACHE_TTL = 30  # seconds
+
+
+def _clear_ankiweb_status_cache() -> None:
+    """Clear the AnkiWeb status cache (call after login/logout)."""
+    _ankiweb_status_cache["data"] = None
+    _ankiweb_status_cache["timestamp"] = 0.0
+
+
 def get_client_ip(request: Request) -> str:
     """Extract client IP from request, handling proxies."""
     # Check for forwarded header (when behind reverse proxy)
@@ -4020,6 +4039,9 @@ async def login_ankiweb(login_request: AnkiWebLoginRequest, request: Request):
                 detail=result["error"]
             )
         
+        # Clear status cache so next check reflects the new login
+        _clear_ankiweb_status_cache()
+        
         return {
             "status": "success",
             "message": result.get("message", "Logged in to AnkiWeb"),
@@ -4050,38 +4072,57 @@ async def get_ankiweb_login_status():
     """
     Get the current AnkiWeb login status.
     
+    Returns cached result if available (30s TTL) to avoid slow Docker/AnkiConnect checks.
+    
     Returns:
     - status: "logged_in" | "not_logged_in" | "not_connected"
     - username: The logged in email (if logged in)
     """
+    # Check cache first
+    cache_age = time.time() - _ankiweb_status_cache["timestamp"]
+    if _ankiweb_status_cache["data"] is not None and cache_age < ANKIWEB_STATUS_CACHE_TTL:
+        return _ankiweb_status_cache["data"]
+    
     try:
         client = AnkiClient()
         
         if not client.is_running():
-            return {
+            result = {
                 "status": "not_connected",
                 "username": None,
                 "message": "Anki is not running"
             }
+            # Cache not_connected for shorter time (5s) to allow quick retry
+            _ankiweb_status_cache["data"] = result
+            _ankiweb_status_cache["timestamp"] = time.time() - ANKIWEB_STATUS_CACHE_TTL + 5
+            return result
         
         # Call the getAnkiWebUsername action from our custom addon
-        result = client._request("getAnkiWebUsername", {})
+        api_result = client._request("getAnkiWebUsername", {})
         
-        if "error" in result:
-            return {
+        if "error" in api_result:
+            result = {
                 "status": "error",
                 "username": None,
-                "message": result["error"]
+                "message": api_result["error"]
             }
+            # Don't cache errors
+            return result
         
-        return {
-            "status": result.get("status", "not_logged_in"),
-            "username": result.get("username"),
-            "message": "Connected to AnkiWeb" if result.get("status") == "logged_in" else "Not logged in to AnkiWeb"
+        result = {
+            "status": api_result.get("status", "not_logged_in"),
+            "username": api_result.get("username"),
+            "message": "Connected to AnkiWeb" if api_result.get("status") == "logged_in" else "Not logged in to AnkiWeb"
         }
+        
+        # Cache the successful result
+        _ankiweb_status_cache["data"] = result
+        _ankiweb_status_cache["timestamp"] = time.time()
+        return result
         
     except Exception as e:
         logger.error(f"Error checking AnkiWeb login status: {str(e)}", exc_info=True)
+        # Don't cache errors
         return {
             "status": "error",
             "username": None,
@@ -4111,6 +4152,9 @@ async def logout_ankiweb():
                 status_code=500,
                 detail=result["error"]
             )
+        
+        # Clear status cache so next check reflects the logout
+        _clear_ankiweb_status_cache()
         
         return {
             "status": "success",
