@@ -1244,40 +1244,24 @@ Respond with a JSON object matching this structure:
         anki_synced = False  # Cards added to local Anki
         ankiweb_synced = False  # Cards synced to AnkiWeb
         
-        # #region agent log
-        import json, time
-        _debug_log_path = "/Users/milan/on mac/cursor AAI/.cursor/debug.log"
-        def _debug_log_finalize(msg, data=None, hyp=""):
-            try:
-                with open(_debug_log_path, "a") as f:
-                    f.write(json.dumps({"location":"flashcard_agent.finalize_cards","message":msg,"data":data,"hypothesisId":hyp,"timestamp":int(time.time()*1000),"sessionId":"debug-session"})+"\n")
-            except: pass
-        _debug_log_finalize("Starting Anki add", {"target_deck": target_deck, "num_cards": len(all_cards)}, "A")
-        # #endregion
-        
         if target_deck:
             try:
-                # #region agent log
-                _debug_log_finalize("Calling _add_cards_to_anki", {"deck": target_deck}, "A,B")
-                # #endregion
                 note_ids, ankiweb_synced = self._add_cards_to_anki(all_cards, target_deck)
                 successful_adds = len([n for n in note_ids if n])
                 logger.info(f"Added {successful_adds} cards to Anki deck '{target_deck}', AnkiWeb synced: {ankiweb_synced}")
                 # Consider local Anki sync successful if at least one card was added
                 anki_synced = successful_adds > 0
-                # #region agent log
-                _debug_log_finalize("Anki add completed", {"successful_adds": successful_adds, "anki_synced": anki_synced, "ankiweb_synced": ankiweb_synced}, "A,B,C")
-                # #endregion
             except Exception as e:
                 logger.error(f"Failed to add cards to Anki: {e}")
-                # #region agent log
-                _debug_log_finalize("Anki add FAILED", {"error": str(e)}, "B")
-                # #endregion
+                
+                # If all cards are duplicates, they're already in Anki
+                # This should count as "synced" since the cards exist
+                error_str = str(e)
+                if "duplicate" in error_str.lower():
+                    anki_synced = True  # Cards are already in Anki (duplicates)
+                    logger.info("All cards were duplicates - cards already exist in Anki")
+                
                 # Continue to cache even if Anki fails
-        else:
-            # #region agent log
-            _debug_log_finalize("No target_deck - skipping Anki", {}, "A")
-            # #endregion
         
         # 3. Save to database (flashcard_cache table - Anki-aligned)
         if save_to_db:
@@ -1378,42 +1362,14 @@ Respond with a JSON object matching this structure:
             - ankiweb_synced: Whether sync to AnkiWeb succeeded (False if async)
         """
         from app.services.anki.client import AnkiClient
-        import json
-        # #region agent log
-        _debug_log_path = "/Users/milan/on mac/cursor AAI/.cursor/debug.log"
-        def _debug_log(msg, data=None, hyp=""):
-            import time
-            try:
-                with open(_debug_log_path, "a") as f:
-                    f.write(json.dumps({"location":"flashcard_agent._add_cards_to_anki","message":msg,"data":data,"hypothesisId":hyp,"timestamp":int(time.time()*1000),"sessionId":"debug-session"})+"\n")
-            except: pass
-        # #endregion
         
         anki = AnkiClient()
         
-        # #region agent log
-        _debug_log("Checking Anki connection", {"deck_name": deck_name, "num_cards": len(cards)}, "B")
-        # #endregion
-        
         # Check if Anki is running
-        # #region agent log
-        is_running = anki.is_running()
-        _debug_log("Anki is_running check", {"is_running": is_running}, "B")
-        # #endregion
-        
-        if not is_running:
-            # #region agent log
-            _debug_log("Anki NOT running - trying to start", {}, "B")
-            # #endregion
+        if not anki.is_running():
             try:
                 anki.ensure_running()
-                # #region agent log
-                _debug_log("Anki started successfully", {}, "B")
-                # #endregion
             except Exception as e:
-                # #region agent log
-                _debug_log("Failed to start Anki", {"error": str(e)}, "B")
-                # #endregion
                 raise
         
         # Prepare notes for batch add
@@ -1426,18 +1382,8 @@ Respond with a JSON object matching this structure:
                 "tags": card.get("tags", [])
             })
         
-        # #region agent log
-        _debug_log("Adding notes to Anki", {"num_notes": len(notes), "deck": deck_name}, "A")
-        # #endregion
-        
         # Add notes to Anki
         note_ids = anki.add_notes(notes)
-        
-        # #region agent log
-        successful_notes = len([n for n in note_ids if n is not None])
-        failed_notes = len([n for n in note_ids if n is None])
-        _debug_log("Anki add_notes result", {"successful": successful_notes, "failed": failed_notes, "note_ids_sample": note_ids[:5] if note_ids else []}, "A,D")
-        # #endregion
         
         # Sync to AnkiWeb
         ankiweb_synced = False
@@ -1448,39 +1394,20 @@ Respond with a JSON object matching this structure:
                 try:
                     anki.sync()
                     logger.info("Background AnkiWeb sync completed successfully")
-                    # #region agent log
-                    _debug_log("Background AnkiWeb sync completed", {"success": True}, "C")
-                    # #endregion
                 except Exception as e:
                     logger.warning(f"Background AnkiWeb sync failed: {e}")
-                    # #region agent log
-                    _debug_log("Background AnkiWeb sync FAILED", {"error": str(e)}, "C")
-                    # #endregion
             
             sync_thread = threading.Thread(target=background_sync, daemon=True)
             sync_thread.start()
             logger.info("AnkiWeb sync started in background thread")
-            # #region agent log
-            _debug_log("AnkiWeb sync started in background", {"async": True}, "C")
-            # #endregion
             # ankiweb_synced remains False since we don't wait for the result
         else:
             # Blocking sync (original behavior)
             try:
                 anki.sync()
                 ankiweb_synced = True
-                # #region agent log
-                _debug_log("AnkiWeb sync completed (blocking)", {"success": True}, "C")
-                # #endregion
             except Exception as e:
                 logger.warning(f"AnkiWeb sync failed (cards still added locally): {e}")
-                # #region agent log
-                _debug_log("AnkiWeb sync FAILED (blocking)", {"error": str(e)}, "C")
-                # #endregion
-        
-        # #region agent log
-        _debug_log("_add_cards_to_anki returning", {"total_note_ids": len(note_ids), "ankiweb_synced": ankiweb_synced}, "A,B,C")
-        # #endregion
         
         return note_ids, ankiweb_synced
     
