@@ -20,6 +20,8 @@ services:
       - anki-config:/root/.config
       # Custom startup script that forwards SIGTERM to Anki for graceful shutdown
       - ./anki-startup.sh:/startup.sh:ro
+      # Custom addon for force sync and AnkiWeb login
+      - ./anki-addons/force_sync:/data/addons21/force_sync:ro
     restart: unless-stopped
     # Give Anki time to save state before killing
     stop_grace_period: 30s

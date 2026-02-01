@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Loader2, Settings2, Link2, Moon, Sun, Monitor, X } from "lucide-react"
+import { Loader2, Settings2, Link2, Moon, Sun, Monitor, X, CheckCircle2, LogOut } from "lucide-react"
 import { toast } from "sonner"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 
@@ -16,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
+import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -52,12 +53,107 @@ export function SettingsDialog() {
   const [themePreference, setThemePreference] = useState<"light" | "dark" | "system">("system")
   const [ankiWebUsername, setAnkiWebUsername] = useState<string>("")
 
+  // AnkiWeb login state
+  const [ankiWebStatus, setAnkiWebStatus] = useState<"loading" | "logged_in" | "not_logged_in" | "not_connected" | "error">("loading")
+  const [ankiWebEmail, setAnkiWebEmail] = useState("")
+  const [ankiWebPassword, setAnkiWebPassword] = useState("")
+  const [isAnkiWebLoggingIn, setIsAnkiWebLoggingIn] = useState(false)
+  const [ankiWebError, setAnkiWebError] = useState<string | null>(null)
+
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
   // Load user preferences when dialog opens
   useEffect(() => {
     if (isOpen) {
       loadPreferences()
+      loadAnkiWebStatus()
     }
   }, [isOpen])
+
+  const loadAnkiWebStatus = async () => {
+    setAnkiWebStatus("loading")
+    try {
+      const response = await fetch(`${API_URL}/api/anki/login-status`)
+      if (response.ok) {
+        const data = await response.json()
+        setAnkiWebStatus(data.status)
+        if (data.username) {
+          setAnkiWebUsername(data.username)
+        }
+      } else {
+        setAnkiWebStatus("error")
+      }
+    } catch {
+      setAnkiWebStatus("not_connected")
+    }
+  }
+
+  const handleAnkiWebLogin = async () => {
+    if (!ankiWebEmail || !ankiWebPassword) {
+      setAnkiWebError("Bitte E-Mail und Passwort eingeben")
+      return
+    }
+
+    setIsAnkiWebLoggingIn(true)
+    setAnkiWebError(null)
+
+    try {
+      const response = await fetch(`${API_URL}/api/anki/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: ankiWebEmail,
+          password: ankiWebPassword
+        })
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        setAnkiWebStatus("logged_in")
+        setAnkiWebUsername(data.username || ankiWebEmail)
+        setAnkiWebEmail("")
+        setAnkiWebPassword("")
+        toast.success("Erfolgreich mit AnkiWeb verbunden")
+        // Save username to user preferences
+        await savePreference("ankiweb_username", data.username || ankiWebEmail)
+      } else if (response.status === 429) {
+        // Rate limited
+        setAnkiWebError("Zu viele Anmeldeversuche. Bitte versuchen Sie es in 15 Minuten erneut.")
+      } else if (response.status === 501) {
+        // Addon not loaded - need to restart container
+        setAnkiWebError("Bitte starten Sie den Anki Docker-Container neu, um die Login-Funktion zu aktivieren.")
+      } else if (response.status === 401) {
+        setAnkiWebError("Ungültige E-Mail oder Passwort")
+      } else {
+        setAnkiWebError(data.detail || "Anmeldung fehlgeschlagen")
+      }
+    } catch (err) {
+      setAnkiWebError("Verbindung zum Server fehlgeschlagen")
+    } finally {
+      setIsAnkiWebLoggingIn(false)
+    }
+  }
+
+  const handleAnkiWebLogout = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/anki/logout`, {
+        method: "POST"
+      })
+
+      if (response.ok) {
+        setAnkiWebStatus("not_logged_in")
+        setAnkiWebUsername("")
+        toast.success("Von AnkiWeb abgemeldet")
+        await savePreference("ankiweb_username", null)
+      } else {
+        const data = await response.json()
+        toast.error(data.detail || "Abmeldung fehlgeschlagen")
+      }
+    } catch {
+      toast.error("Verbindung zum Server fehlgeschlagen")
+    }
+  }
 
   const loadPreferences = async () => {
     setIsLoading(true)
@@ -366,15 +462,105 @@ export function SettingsDialog() {
               <p className="text-xs text-muted-foreground">
                 Verbinden Sie Ihr AnkiWeb-Konto, um Karteikarten automatisch zu synchronisieren.
               </p>
-              <div className="rounded-lg border border-dashed p-4 text-center">
-                <p className="text-sm text-muted-foreground mb-3">
-                  AnkiWeb-Integration wird bald verfügbar sein
-                </p>
-                <Button variant="outline" size="sm" disabled>
-                  <Link2 className="h-4 w-4 mr-2" />
-                  Mit AnkiWeb verbinden
-                </Button>
-              </div>
+              
+              {ankiWebStatus === "loading" ? (
+                <div className="rounded-lg border p-4 flex items-center justify-center">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : ankiWebStatus === "logged_in" ? (
+                <div className="rounded-lg border border-green-200 bg-green-50 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-5 w-5 text-green-600" />
+                      <div>
+                        <p className="text-sm font-medium text-green-800">Verbunden</p>
+                        <p className="text-xs text-green-600">{ankiWebUsername}</p>
+                      </div>
+                    </div>
+                    <Button 
+                      variant="ghost" 
+                      size="sm"
+                      onClick={handleAnkiWebLogout}
+                      className="text-muted-foreground hover:text-destructive"
+                    >
+                      <LogOut className="h-4 w-4 mr-1" />
+                      Abmelden
+                    </Button>
+                  </div>
+                </div>
+              ) : ankiWebStatus === "not_connected" ? (
+                <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
+                  <p className="text-sm text-yellow-800">
+                    Anki-Service ist nicht erreichbar. Bitte starten Sie den Docker-Container.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-lg border p-4 space-y-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="ankiweb-email" className="text-xs">
+                      AnkiWeb E-Mail
+                    </Label>
+                    <Input
+                      id="ankiweb-email"
+                      type="email"
+                      placeholder="ihre@email.com"
+                      value={ankiWebEmail}
+                      onChange={(e) => setAnkiWebEmail(e.target.value)}
+                      disabled={isAnkiWebLoggingIn}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="ankiweb-password" className="text-xs">
+                      Passwort
+                    </Label>
+                    <Input
+                      id="ankiweb-password"
+                      type="password"
+                      placeholder="••••••••"
+                      value={ankiWebPassword}
+                      onChange={(e) => setAnkiWebPassword(e.target.value)}
+                      disabled={isAnkiWebLoggingIn}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          handleAnkiWebLogin()
+                        }
+                      }}
+                    />
+                  </div>
+                  {ankiWebError && (
+                    <p className="text-xs text-destructive">{ankiWebError}</p>
+                  )}
+                  <Button 
+                    onClick={handleAnkiWebLogin}
+                    disabled={isAnkiWebLoggingIn}
+                    className="w-full"
+                    size="sm"
+                  >
+                    {isAnkiWebLoggingIn ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Verbinden...
+                      </>
+                    ) : (
+                      <>
+                        <Link2 className="h-4 w-4 mr-2" />
+                        Mit AnkiWeb verbinden
+                      </>
+                    )}
+                  </Button>
+                  <p className="text-xs text-muted-foreground text-center">
+                    Noch kein Konto?{" "}
+                    <a 
+                      href="https://ankiweb.net/account/signup" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline"
+                    >
+                      Jetzt registrieren
+                    </a>
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         )}

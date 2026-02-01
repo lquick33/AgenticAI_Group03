@@ -10,9 +10,11 @@ import logging
 import sys
 import traceback
 import uuid
+import time
+from collections import defaultdict
 from typing import Optional, AsyncGenerator
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pdf2image import convert_from_bytes, pdfinfo_from_bytes
@@ -55,6 +57,7 @@ from app.services.storage import (
     get_page_analysis,
     get_page_analysis_id,
     get_flashcards_for_material,
+    get_cached_flashcards_for_material,
     get_course_material_summary,
     update_course_material_filename,
     delete_course_material,
@@ -85,6 +88,77 @@ import os
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# =============================================================================
+# Rate Limiting for Login Endpoints
+# =============================================================================
+
+class RateLimiter:
+    """
+    Simple in-memory rate limiter for protecting sensitive endpoints.
+    
+    Limits requests per IP address within a time window.
+    Resets on server restart (acceptable for this use case).
+    """
+    
+    def __init__(self, max_requests: int = 5, window_seconds: int = 900):
+        """
+        Args:
+            max_requests: Maximum number of requests allowed in the window
+            window_seconds: Time window in seconds (default: 15 minutes)
+        """
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests: dict[str, list[float]] = defaultdict(list)
+    
+    def _cleanup_old_requests(self, key: str) -> None:
+        """Remove expired requests from tracking."""
+        current_time = time.time()
+        cutoff = current_time - self.window_seconds
+        self.requests[key] = [t for t in self.requests[key] if t > cutoff]
+    
+    def is_rate_limited(self, key: str) -> tuple[bool, int]:
+        """
+        Check if a key (IP address) is rate limited.
+        
+        Returns:
+            Tuple of (is_limited, remaining_requests)
+        """
+        self._cleanup_old_requests(key)
+        current_count = len(self.requests[key])
+        remaining = max(0, self.max_requests - current_count)
+        return current_count >= self.max_requests, remaining
+    
+    def record_request(self, key: str) -> None:
+        """Record a request for rate limiting."""
+        self._cleanup_old_requests(key)
+        self.requests[key].append(time.time())
+    
+    def get_retry_after(self, key: str) -> int:
+        """Get seconds until rate limit resets."""
+        if not self.requests[key]:
+            return 0
+        oldest = min(self.requests[key])
+        return max(0, int(self.window_seconds - (time.time() - oldest)))
+
+
+# Rate limiter for AnkiWeb login: 5 attempts per 15 minutes per IP
+ankiweb_login_limiter = RateLimiter(max_requests=5, window_seconds=900)
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP from request, handling proxies."""
+    # Check for forwarded header (when behind reverse proxy)
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    # Check for real IP header
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip
+    # Fallback to direct client
+    return request.client.host if request.client else "unknown"
 
 
 def generate_message_id(prefix: str = "msg") -> str:
@@ -2865,11 +2939,11 @@ async def get_flashcards(
                 detail="User not found. Please sign up first.",
             )
         
-        # Validate that course material belongs to user
+        # Validate that course material belongs to user and get file info
         client = get_supabase_client()
         material_response = (
             client.table("course_materials")
-            .select("id, user_id")
+            .select("id, user_id, file_name, course_id")
             .eq("id", course_material_id)
             .eq("user_id", user_id)
             .single()
@@ -2882,8 +2956,26 @@ async def get_flashcards(
                 detail="Course material not found or access denied",
             )
         
-        # Get flashcards from database
-        flashcards = get_flashcards_for_material(course_material_id, user_id)
+        material = material_response.data
+        course_id = material.get("course_id")
+        file_name = material.get("file_name", "material")
+        
+        # Get course title to construct deck_name
+        course_response = (
+            client.table("courses")
+            .select("title")
+            .eq("id", course_id)
+            .single()
+            .execute()
+        )
+        
+        course_title = course_response.data.get("title", "course") if course_response.data else "course"
+        
+        # Construct deck name (matches format used during generation)
+        deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
+        
+        # Get flashcards from flashcard_cache table (new Anki-aligned storage)
+        flashcards = get_cached_flashcards_for_material(deck_name, user_id)
         
         return {
             "flashcards": flashcards,
@@ -2962,8 +3054,11 @@ async def download_flashcards_from_db(
         course_title = course_response.data.get("title", "course") if course_response.data else "course"
         file_name = material.get("file_name", "material")
         
-        # Get flashcards from database
-        flashcards = get_flashcards_for_material(course_material_id, user_id)
+        # Construct deck name (matches format used during generation)
+        deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
+        
+        # Get flashcards from flashcard_cache table (new Anki-aligned storage)
+        flashcards = get_cached_flashcards_for_material(deck_name, user_id)
         
         if not flashcards:
             raise HTTPException(
@@ -2977,17 +3072,19 @@ async def download_flashcards_from_db(
             cards_for_apkg.append({
                 "front": card.get("front", ""),
                 "back": card.get("back", ""),
-                "tags": []  # Tags are not stored separately in DB, but that's okay
+                "tags": card.get("tags", [])  # Tags are now available from flashcard_cache
             })
         
         # Build .apkg with embedded images
         import re
-        safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
-        safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
+        lecture_name = file_name.replace('.pdf', '')
         
-        deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
+        # Use deck_name format for filename, replacing :: with - for filesystem compatibility
+        # Only remove characters that are invalid in filenames: / \ : * ? " < > |
+        safe_deck_name = re.sub(r'[/\\:*?"<>|]', '', f"{course_title} - {lecture_name}").strip()[:100]
+        
         apkg_bytes = build_anki_apkg(cards_for_apkg, deck_name=deck_name)
-        filename = f"flashcards_{safe_course_title}_{safe_file_name}.apkg"
+        filename = f"{safe_deck_name}.apkg"
         
         # Return APKG file
         return StreamingResponse(
@@ -3867,4 +3964,164 @@ async def force_anki_sync(request: ForceSyncRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Force sync failed: {str(e)}"
+        )
+
+
+class AnkiWebLoginRequest(BaseModel):
+    email: str = Field(..., description="AnkiWeb account email")
+    password: str = Field(..., description="AnkiWeb account password")
+
+
+@router.post("/anki/login")
+async def login_ankiweb(login_request: AnkiWebLoginRequest, request: Request):
+    """
+    Login to AnkiWeb with email and password.
+    
+    This authenticates with AnkiWeb and stores the credentials
+    so future syncs work automatically. The password is NOT stored,
+    only the authentication token (hkey).
+    
+    Rate limited to 5 attempts per 15 minutes per IP address.
+    """
+    # Check rate limit
+    client_ip = get_client_ip(request)
+    is_limited, remaining = ankiweb_login_limiter.is_rate_limited(client_ip)
+    
+    if is_limited:
+        retry_after = ankiweb_login_limiter.get_retry_after(client_ip)
+        logger.warning(f"Rate limit exceeded for AnkiWeb login from IP: {client_ip}")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many login attempts. Please try again in {retry_after // 60} minutes.",
+            headers={"Retry-After": str(retry_after)}
+        )
+    
+    # Record this attempt (before checking success/failure)
+    ankiweb_login_limiter.record_request(client_ip)
+    
+    try:
+        client = AnkiClient()
+        
+        if not client.is_running():
+            raise HTTPException(
+                status_code=503,
+                detail="Anki is not running. Please start the Docker container."
+            )
+        
+        # Call the loginAnkiWeb action from our custom addon
+        result = client._request("loginAnkiWeb", {
+            "email": login_request.email,
+            "password": login_request.password
+        })
+        
+        if "error" in result:
+            raise HTTPException(
+                status_code=401,
+                detail=result["error"]
+            )
+        
+        return {
+            "status": "success",
+            "message": result.get("message", "Logged in to AnkiWeb"),
+            "username": result.get("username", login_request.email)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error during AnkiWeb login: {error_msg}", exc_info=True)
+        
+        # Check for "unsupported action" which means addon needs to be reloaded
+        if "unsupported action" in error_msg.lower():
+            raise HTTPException(
+                status_code=501,
+                detail="AnkiWeb login not available. Please restart the Anki Docker container to load the updated addon."
+            )
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Login failed: {error_msg}"
+        )
+
+
+@router.get("/anki/login-status")
+async def get_ankiweb_login_status():
+    """
+    Get the current AnkiWeb login status.
+    
+    Returns:
+    - status: "logged_in" | "not_logged_in" | "not_connected"
+    - username: The logged in email (if logged in)
+    """
+    try:
+        client = AnkiClient()
+        
+        if not client.is_running():
+            return {
+                "status": "not_connected",
+                "username": None,
+                "message": "Anki is not running"
+            }
+        
+        # Call the getAnkiWebUsername action from our custom addon
+        result = client._request("getAnkiWebUsername", {})
+        
+        if "error" in result:
+            return {
+                "status": "error",
+                "username": None,
+                "message": result["error"]
+            }
+        
+        return {
+            "status": result.get("status", "not_logged_in"),
+            "username": result.get("username"),
+            "message": "Connected to AnkiWeb" if result.get("status") == "logged_in" else "Not logged in to AnkiWeb"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error checking AnkiWeb login status: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "username": None,
+            "message": f"Error checking status: {str(e)}"
+        }
+
+
+@router.post("/anki/logout")
+async def logout_ankiweb():
+    """
+    Logout from AnkiWeb by clearing stored credentials.
+    """
+    try:
+        client = AnkiClient()
+        
+        if not client.is_running():
+            raise HTTPException(
+                status_code=503,
+                detail="Anki is not running. Please start the Docker container."
+            )
+        
+        # Call the logoutAnkiWeb action from our custom addon
+        result = client._request("logoutAnkiWeb", {})
+        
+        if "error" in result:
+            raise HTTPException(
+                status_code=500,
+                detail=result["error"]
+            )
+        
+        return {
+            "status": "success",
+            "message": result.get("message", "Logged out from AnkiWeb")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during AnkiWeb logout: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Logout failed: {str(e)}"
         )

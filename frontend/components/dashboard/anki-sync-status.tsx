@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { AlertCircle, CheckCircle2, CloudOff, ExternalLink, RefreshCw, Upload, Download } from 'lucide-react'
+import { AlertCircle, CheckCircle2, CloudOff, Settings, RefreshCw, Upload, Download } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { useSettings } from '@/components/settings'
 
 interface SyncStatus {
   status: 'ok' | 'full_sync_required' | 'not_logged_in' | 'not_connected' | 'error'
@@ -23,6 +24,7 @@ interface SyncStatus {
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 export function AnkiSyncStatus() {
+  const { openSettings } = useSettings()
   const [status, setStatus] = useState<SyncStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -156,20 +158,6 @@ export function AnkiSyncStatus() {
                 >
                   Resolve
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  asChild
-                >
-                  <a 
-                    href="vnc://localhost:5900" 
-                    target="_blank"
-                    className="flex items-center gap-1"
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                    VNC
-                  </a>
-                </Button>
               </div>
             </AlertDescription>
           </Alert>
@@ -187,16 +175,11 @@ export function AnkiSyncStatus() {
               <Button
                 variant="outline"
                 size="sm"
-                asChild
+                onClick={openSettings}
+                className="flex items-center gap-1"
               >
-                <a 
-                  href="vnc://localhost:5900" 
-                  target="_blank"
-                  className="flex items-center gap-1"
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  Open VNC to Login
-                </a>
+                <Settings className="h-3 w-3" />
+                Open Settings to Login
               </Button>
             </AlertDescription>
           </Alert>
@@ -293,17 +276,7 @@ export function AnkiSyncStatus() {
             </div>
           </div>
 
-          <DialogFooter className="flex-col gap-2 sm:flex-row">
-            <Button variant="ghost" size="sm" asChild>
-              <a 
-                href="vnc://localhost:5900" 
-                target="_blank"
-                className="flex items-center gap-1"
-              >
-                <ExternalLink className="h-3 w-3" />
-                Or resolve via VNC
-              </a>
-            </Button>
+          <DialogFooter>
             <Button variant="outline" onClick={() => setShowConflictDialog(false)}>
               Cancel
             </Button>
