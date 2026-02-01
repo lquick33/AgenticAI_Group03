@@ -52,6 +52,7 @@ export interface CourseMaterial {
   error_message?: string | null
   created_at: string
   summary?: string | null
+  has_flashcards?: boolean
 }
 
 export interface PageAnalysis {

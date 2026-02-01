@@ -174,22 +174,20 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
   // Store startPolling in ref so it can be accessed in useEffect
   startPollingRef.current = startPolling
 
-  // Check flashcards availability for all materials and restore active tasks
+  // Initialize flashcard status from server data (instant, no API calls needed)
   useEffect(() => {
-    const checkFlashcardsAndActiveTasks = async () => {
-      const status: Record<string, boolean> = {}
-      
+    const initialStatus: Record<string, boolean> = {}
+    for (const material of localMaterials) {
+      initialStatus[material.id] = material.has_flashcards ?? false
+    }
+    setFlashcardsStatus(initialStatus)
+  }, [localMaterials])
+
+  // Restore active flashcard generation tasks (still need API calls for in-progress tasks)
+  useEffect(() => {
+    const restoreActiveTasks = async () => {
       for (const material of localMaterials) {
         if (material.processing_status === 'completed') {
-          // Check for flashcards
-          try {
-            const result = await getFlashcardsForMaterial(material.id, userId)
-            status[material.id] = result.count > 0
-          } catch (error) {
-            // If error (e.g., 404), no flashcards exist
-            status[material.id] = false
-          }
-          
           // Check for active flashcard generation task
           try {
             const activeTask = await getActiveFlashcardTask(material.id, userId)
@@ -214,15 +212,12 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
             // If error checking for active task, just continue
             console.error(`Error checking active task for material ${material.id}:`, error)
           }
-        } else {
-          status[material.id] = false
         }
       }
-      setFlashcardsStatus(status)
     }
 
     if (localMaterials.length > 0) {
-      checkFlashcardsAndActiveTasks()
+      restoreActiveTasks()
     }
   }, [localMaterials, userId, handleGenerationComplete])
 

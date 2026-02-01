@@ -384,6 +384,16 @@ class FlashcardTaskService:
             safe_deck_name = re.sub(r'[/\\:*?"<>|]', '', f"{course_title} - {lecture_name}").strip()[:100]
             task.filename = f"{safe_deck_name}.apkg"
             
+            # Update has_flashcards flag on course_materials for instant status display
+            try:
+                client.table("course_materials").update(
+                    {"has_flashcards": True}
+                ).eq("id", task.course_material_id).execute()
+                logger.info(f"Set has_flashcards=True for material {task.course_material_id}")
+            except Exception as flag_error:
+                # Log but don't fail the task if flag update fails
+                logger.warning(f"Failed to update has_flashcards flag: {flag_error}")
+            
             task.status = TaskStatus.COMPLETED
             task.progress = 1.0
             task.completed_at = time.time()
