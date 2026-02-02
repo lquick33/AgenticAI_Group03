@@ -225,13 +225,18 @@ class QuickChatAgent(BaseAgent):
         name: str = "QuickChatAgent",
         system_prompt: Optional[str] = None,
         checkpointer: Optional[MemorySaver] = None,
-        personality_config: Optional[Dict[str, str]] = None
+        personality_config: Optional[Dict[str, str]] = None,
+        keyword_extraction_llm: Optional[BaseChatModel] = None
     ):
         self.personality_config = personality_config or {}
         self.langfuse_client = get_langfuse_client()
         
-        # Initialize discovery tools
-        self.search_topic_tool = SearchTopicTool()
+        # Use provided keyword extraction LLM or create a lightweight one
+        # This LLM is used only for extracting search keywords from natural language
+        self._keyword_llm = keyword_extraction_llm
+        
+        # Initialize discovery tools with keyword extraction capability
+        self.search_topic_tool = SearchTopicTool(llm=self._keyword_llm)
         self.user_courses_tool = GetUserCoursesTool()
         
         # Initialize tutoring tools (same as TutorAgent)

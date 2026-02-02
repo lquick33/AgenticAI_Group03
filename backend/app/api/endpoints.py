@@ -1913,13 +1913,24 @@ async def send_chat_message(
                 material_id = request.material_id
                 user_id = request.user_id
                 
-                if snapshot and snapshot.values:
-                    # Preserve current_page from existing state if available
+                # Priority for current_page:
+                # 1. Request page_number (explicit from frontend - most up-to-date)
+                # 2. LangGraph state (from previous agent invocations)
+                # 3. Conversation metadata (fallback from database)
+                if request.page_number is not None:
+                    current_page = request.page_number
+                    logger.info(f"Using page_number from request: {current_page}")
+                elif snapshot and snapshot.values:
                     current_page = snapshot.values.get("current_page")
-                # If LangGraph state is empty (e.g., after restart), fall back to conversation metadata
+                    if current_page:
+                        logger.info(f"Using current_page from LangGraph state: {current_page}")
+                
+                # If still None, fall back to conversation metadata
                 if current_page is None:
                     metadata = conversation.get("metadata") or {}
                     current_page = metadata.get("last_page_number")
+                    if current_page:
+                        logger.info(f"Using last_page_number from conversation metadata: {current_page}")
                 
                 # Ensure course_material_summary is in state (for old conversations)
                 course_summary = None
@@ -1936,9 +1947,28 @@ async def send_chat_message(
                     except Exception:
                         pass  # Non-critical
                 
+                # If we have a current page, fetch its summary to provide context
+                page_context = ""
+                if current_page is not None:
+                    try:
+                        page_analysis = get_page_analysis(
+                            course_material_id=course_material_id,
+                            page_number=current_page,
+                            user_id=request.user_id
+                        )
+                        if page_analysis:
+                            summary = page_analysis.get("summary") or page_analysis.get("content", "")
+                            if summary:
+                                page_context = f"\n\n[Kontext: Der Student ist auf Seite {current_page}. Inhalt dieser Seite: {summary[:500]}{'...' if len(summary) > 500 else ''}]"
+                                logger.info(f"Added page context for page {current_page}")
+                    except Exception as e:
+                        logger.warning(f"Could not fetch page analysis for context: {e}")
+                
                 # Add user message to existing thread and preserve state
+                # Include page context in the message so agent knows what page user is viewing
+                message_with_context = request.message + page_context if page_context else request.message
                 initial_state = {
-                    "messages": [HumanMessage(content=request.message)],
+                    "messages": [HumanMessage(content=message_with_context)],
                     "material_id": material_id,
                     "user_id": user_id
                 }
@@ -2380,7 +2410,12 @@ async def warmup_quickchat(
         # Create agent in background thread to not block
         def create_agent():
             llm = get_gemini_model()
-            return QuickChatAgent(llm=llm, checkpointer=_quickchat_checkpointer)
+            # Use the same LLM for keyword extraction (lightweight task)
+            return QuickChatAgent(
+                llm=llm,
+                checkpointer=_quickchat_checkpointer,
+                keyword_extraction_llm=llm
+            )
         
         agent = await asyncio.to_thread(create_agent)
         _prewarmed_quickchat_agents[request.thread_id] = agent
@@ -2431,7 +2466,12 @@ async def send_quickchat_message(
         if agent is None:
             # No pre-warmed agent, create new one
             llm = get_gemini_model()
-            agent = QuickChatAgent(llm=llm, checkpointer=_quickchat_checkpointer)
+            # Use the same LLM for keyword extraction (lightweight task)
+            agent = QuickChatAgent(
+                llm=llm,
+                checkpointer=_quickchat_checkpointer,
+                keyword_extraction_llm=llm
+            )
         else:
             logger.debug(f"Using pre-warmed agent for thread {thread_id}")
         
@@ -2877,6 +2917,77 @@ async def get_study_session(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to load study session: {str(e)}",
+        )
+
+
+class SavePageRequest(BaseModel):
+    """Request body for saving current page."""
+    material_id: str = Field(..., description="Course material ID (UUID)")
+    user_id: str = Field(..., description="User ID (UUID)")
+    page: int = Field(..., description="Current page number", ge=1)
+
+
+@router.post("/study/save-page", status_code=200)
+async def save_page(request: SavePageRequest) -> dict:
+    """
+    Save the current page number for a study session.
+    
+    This lightweight endpoint allows the frontend to persist the user's
+    current page without triggering a full chat initiation.
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(request.user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found.",
+            )
+
+        client = get_supabase_client()
+
+        # Validate that course material belongs to user
+        material_response = (
+            client.table("course_materials")
+            .select("id, course_id")
+            .eq("id", request.material_id)
+            .eq("user_id", request.user_id)
+            .single()
+            .execute()
+        )
+
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+
+        course_material_id = material_response.data["id"]
+        course_id = material_response.data.get("course_id")
+
+        # Get or create the study conversation
+        conversation = get_or_create_study_conversation(
+            user_id=request.user_id,
+            course_material_id=course_material_id,
+            course_id=course_id,
+            initial_page=request.page,
+        )
+
+        logger.info(f"[save_page] Found/created conversation {conversation['id']} for material {course_material_id}, saving page {request.page}")
+
+        # Update the page number
+        update_conversation_progress(conversation["id"], request.page)
+        
+        logger.info(f"[save_page] Successfully saved page {request.page} for conversation {conversation['id']}")
+
+        return {"success": True, "page": request.page, "conversation_id": conversation["id"]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving page: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save page: {str(e)}",
         )
 
 

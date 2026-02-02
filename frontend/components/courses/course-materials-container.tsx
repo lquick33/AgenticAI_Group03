@@ -135,7 +135,17 @@ export function CourseMaterialsContainer({
             .single()
           
           if (materialError) {
-            console.error(`Error polling material ${id}:`, materialError)
+            // If material not found (deleted) or any error, stop polling it
+            // PGRST116 = "The result contains 0 rows" (row was deleted)
+            if (materialError.code === 'PGRST116' || !materialsRef.current.find(m => m.id === id)) {
+              pollingMaterialsRef.current.delete(id)
+              setPollingCount(pollingMaterialsRef.current.size)
+              setMaterialProgress(prev => {
+                const updated = { ...prev }
+                delete updated[id]
+                return updated
+              })
+            }
             continue
           }
           
@@ -218,6 +228,16 @@ export function CourseMaterialsContainer({
             }
           }
         } catch (error) {
+          // If material no longer in state, stop polling it
+          if (!materialsRef.current.find(m => m.id === id)) {
+            pollingMaterialsRef.current.delete(id)
+            setPollingCount(pollingMaterialsRef.current.size)
+            setMaterialProgress(prev => {
+              const updated = { ...prev }
+              delete updated[id]
+              return updated
+            })
+          }
           console.error(`Error polling material ${id}:`, error)
         }
       }

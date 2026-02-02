@@ -384,7 +384,11 @@ export function UploadDialog({ courses }: UploadDialogProps) {
             .single()
 
           if (materialError) {
-            console.error(`Error polling material ${fileItem.materialId}:`, materialError)
+            // FIX: If material not found (deleted), remove file from list completely
+            // PGRST116 = "The result contains 0 rows" (row was deleted)
+            if (materialError.code === 'PGRST116') {
+              setFiles((prev) => prev.filter((f) => f.id !== fileItem.id))
+            }
             continue
           }
 

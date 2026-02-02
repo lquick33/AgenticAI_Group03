@@ -116,6 +116,7 @@ class ChatMessageRequest(BaseModel):
     material_id: str = Field(..., description="Course material ID (UUID)")
     message: str = Field(..., description="User message content")
     user_id: str = Field(..., description="User ID (UUID)")
+    page_number: Optional[int] = Field(None, description="Current page number (1-indexed). If provided, overrides state/metadata page.")
 
 
 class PageAnalysisQuery(BaseModel):

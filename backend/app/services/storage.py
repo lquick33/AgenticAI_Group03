@@ -7,8 +7,10 @@ for course materials and page analyses.
 
 import json
 import logging
-from time import time
-from typing import Dict, Optional, List, Any, Tuple
+from time import time, sleep
+from typing import Dict, Optional, List, Any, Tuple, TypeVar, Callable
+from functools import wraps
+import errno
 
 from supabase import create_client, Client
 
@@ -16,6 +18,72 @@ from app.core.config import settings
 from app.models.schemas import SlideAnalysis
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Retry Logic for Transient Network Errors
+# =============================================================================
+
+T = TypeVar('T')
+
+def retry_on_resource_unavailable(
+    max_retries: int = 3,
+    base_delay: float = 0.1,
+    max_delay: float = 2.0,
+    exponential_base: float = 2.0
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """
+    Decorator that retries a function on transient network errors.
+    
+    Handles [Errno 35] Resource temporarily unavailable (EAGAIN/EWOULDBLOCK)
+    which can occur with long-running HTTP clients when connection pools
+    become stale or exhausted.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries in seconds
+        max_delay: Maximum delay between retries in seconds
+        exponential_base: Base for exponential backoff
+        
+    Returns:
+        Decorated function with retry logic
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> T:
+            last_exception = None
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    error_str = str(e)
+                    # Check for EAGAIN/EWOULDBLOCK errors (Errno 35 on macOS, 11 on Linux)
+                    is_resource_unavailable = (
+                        "Resource temporarily unavailable" in error_str or
+                        f"[Errno {errno.EAGAIN}]" in error_str or
+                        f"[Errno {errno.EWOULDBLOCK}]" in error_str or
+                        "[Errno 35]" in error_str  # macOS-specific
+                    )
+                    
+                    if is_resource_unavailable and attempt < max_retries:
+                        delay = min(base_delay * (exponential_base ** attempt), max_delay)
+                        logger.warning(
+                            f"Transient error in {func.__name__} (attempt {attempt + 1}/{max_retries + 1}): "
+                            f"{error_str}. Retrying in {delay:.2f}s..."
+                        )
+                        sleep(delay)
+                        last_exception = e
+                    else:
+                        # Not a retryable error or max retries exceeded
+                        raise
+            
+            # Should not reach here, but just in case
+            if last_exception:
+                raise last_exception
+            
+        return wrapper
+    return decorator
 
 
 # Initialize Supabase client (singleton)
@@ -336,12 +404,27 @@ def update_processing_status(
         raise Exception(f"Failed to update processing status: {str(e)}")
 
 
+@retry_on_resource_unavailable(max_retries=3, base_delay=0.1, max_delay=2.0)
+def _query_user_exists(client: Client, user_id: str) -> bool:
+    """
+    Internal function to query if user exists (with retry logic).
+    
+    Separated to allow the retry decorator to work on just the network call.
+    """
+    response = client.table("profiles").select("id").eq(
+        "id", user_id
+    ).execute()
+    return response.data and len(response.data) > 0
+
+
 def validate_user_exists(user_id: str) -> bool:
     """
     Validate that user exists in profiles table.
     
     Note: Thanks to the SQL trigger, profiles are automatically synced
     with auth.users, so this check works reliably.
+    
+    Includes automatic retry logic for transient network errors.
     
     Args:
         user_id: User ID to validate
@@ -350,18 +433,23 @@ def validate_user_exists(user_id: str) -> bool:
         True if user exists, False otherwise
         
     Raises:
-        Exception: If database query fails
+        Exception: If database query fails after retries
     """
     client = get_supabase_client()
     
     try:
-        response = client.table("profiles").select("id").eq(
-            "id", user_id
-        ).execute()
-        
-        return response.data and len(response.data) > 0
+        return _query_user_exists(client, user_id)
     except Exception as e:
         raise Exception(f"Failed to validate user: {str(e)}")
+
+
+@retry_on_resource_unavailable(max_retries=3, base_delay=0.1, max_delay=2.0)
+def _query_course(client: Client, user_id: str, course_id: str) -> Optional[dict]:
+    """Internal function to query course (with retry logic)."""
+    response = client.table("courses").select("*").eq(
+        "id", course_id
+    ).eq("user_id", user_id).execute()
+    return response.data[0] if response.data and len(response.data) > 0 else None
 
 
 def get_course(
@@ -374,6 +462,8 @@ def get_course(
     Course must be created beforehand (e.g., via web app).
     This function only validates and retrieves existing courses.
     
+    Includes automatic retry logic for transient network errors.
+    
     Args:
         user_id: User ID
         course_id: Course ID (required)
@@ -383,17 +473,15 @@ def get_course(
         
     Raises:
         ValueError: If course doesn't exist or doesn't belong to user
-        Exception: If database operation fails
+        Exception: If database operation fails after retries
     """
     client = get_supabase_client()
     
     try:
-        response = client.table("courses").select("*").eq(
-            "id", course_id
-        ).eq("user_id", user_id).execute()
+        result = _query_course(client, user_id, course_id)
         
-        if response.data and len(response.data) > 0:
-            return response.data[0]
+        if result:
+            return result
         else:
             raise ValueError(
                 f"Course {course_id} not found or access denied"
@@ -451,6 +539,20 @@ def save_page_analysis(
         raise Exception(f"Failed to save page analysis: {str(e)}")
 
 
+@retry_on_resource_unavailable(max_retries=3, base_delay=0.1, max_delay=2.0)
+def _query_page_analysis(client: Client, course_material_id: str, page_number: int) -> Optional[dict]:
+    """Internal function to query page analysis (with retry logic)."""
+    response = client.table("page_analyses").select(
+        "id, summary, key_terms, exam_questions, diagram_description, raw_analysis, "
+        "course_materials!inner(user_id)"
+    ).eq(
+        "course_material_id", course_material_id
+    ).eq(
+        "page_number", page_number
+    ).execute()
+    return response.data[0] if response.data and len(response.data) > 0 else None
+
+
 def get_page_analysis(
     course_material_id: str,
     page_number: int,
@@ -460,6 +562,7 @@ def get_page_analysis(
     Get page analysis data from the page_analyses table (with in-memory caching).
     
     Page analyses are cached for 5 minutes since they rarely change after creation.
+    Includes automatic retry logic for transient network errors.
     
     Args:
         course_material_id: Course material ID
@@ -471,7 +574,7 @@ def get_page_analysis(
         
     Raises:
         ValueError: If page analysis not found or access denied
-        Exception: If database operation fails
+        Exception: If database operation fails after retries
     """
     # Check cache first
     cached = _page_analysis_cache.get(course_material_id, page_number, user_id)
@@ -485,21 +588,12 @@ def get_page_analysis(
         # OPTIMIZED: Single query with JOIN to validate ownership and fetch data
         # Uses Supabase's foreign key relationship syntax: table!inner(columns)
         # The !inner ensures we only get results where the join succeeds
-        response = client.table("page_analyses").select(
-            "id, summary, key_terms, exam_questions, diagram_description, raw_analysis, "
-            "course_materials!inner(user_id)"
-        ).eq(
-            "course_material_id", course_material_id
-        ).eq(
-            "page_number", page_number
-        ).execute()
+        analysis = _query_page_analysis(client, course_material_id, page_number)
         
-        if not response.data or len(response.data) == 0:
+        if not analysis:
             raise ValueError(
                 f"Page analysis not found for course_material_id={course_material_id}, page_number={page_number}"
             )
-        
-        analysis = response.data[0]
         
         # Extract the material owner's user_id from the joined data
         material_data = analysis.get("course_materials", {})
@@ -817,6 +911,21 @@ def get_course_materials_for_naming(
         return []
 
 
+@retry_on_resource_unavailable(max_retries=3, base_delay=0.1, max_delay=2.0)
+def _query_course_material_summary(client: Client, course_material_id: str, user_id: str) -> Optional[str]:
+    """Internal function to query course material summary (with retry logic)."""
+    response = client.table("course_materials").select(
+        "summary"
+    ).eq(
+        "id", course_material_id
+    ).eq(
+        "user_id", user_id
+    ).execute()
+    if response.data and len(response.data) > 0:
+        return response.data[0].get("summary")
+    return None
+
+
 def get_course_material_summary(
     course_material_id: str,
     user_id: str
@@ -828,6 +937,7 @@ def get_course_material_summary(
     with an overview of the lecture topics and concepts.
     
     Summaries are cached for 10 minutes since they rarely change after creation.
+    Includes automatic retry logic for transient network errors.
     
     Args:
         course_material_id: Course material ID
@@ -837,7 +947,7 @@ def get_course_material_summary(
         Parsed summary as dict, or None if not found or empty
         
     Raises:
-        Exception: If database operation fails
+        Exception: If database operation fails after retries
     """
     # Check cache first
     cached = _summary_cache.get(course_material_id, user_id)
@@ -848,36 +958,26 @@ def get_course_material_summary(
     client = get_supabase_client()
     
     try:
-        response = client.table("course_materials").select(
-            "summary"
-        ).eq(
-            "id", course_material_id
-        ).eq(
-            "user_id", user_id
-        ).execute()
+        summary_text = _query_course_material_summary(client, course_material_id, user_id)
         
-        if response.data and len(response.data) > 0:
-            summary_text = response.data[0].get("summary")
-            if not summary_text:
-                return None
-            
-            # Try to parse as JSON
-            try:
-                result = json.loads(summary_text)
-            except json.JSONDecodeError:
-                # If not valid JSON, return as plain text in a structured format
-                result = {
-                    "summary_text": summary_text,
-                    "format": "plain_text"
-                }
-            
-            # Cache the result
-            _summary_cache.set(course_material_id, user_id, result)
-            logger.debug(f"Summary cache MISS for material {course_material_id[:8]}... (now cached)")
-            
-            return result
-        else:
+        if not summary_text:
             return None
+        
+        # Try to parse as JSON
+        try:
+            result = json.loads(summary_text)
+        except json.JSONDecodeError:
+            # If not valid JSON, return as plain text in a structured format
+            result = {
+                "summary_text": summary_text,
+                "format": "plain_text"
+            }
+        
+        # Cache the result
+        _summary_cache.set(course_material_id, user_id, result)
+        logger.debug(f"Summary cache MISS for material {course_material_id[:8]}... (now cached)")
+        
+        return result
     except Exception as e:
         raise Exception(f"Failed to get course material summary: {str(e)}")
 
@@ -1192,6 +1292,277 @@ def search_page_analyses(
     except Exception as e:
         logger.error(f"Failed to search page analyses: {str(e)}")
         raise Exception(f"Failed to search page analyses: {str(e)}")
+
+
+def search_page_analyses_multi(
+    user_id: str,
+    queries: List[str],
+    language: str = "auto",
+    limit: int = 10
+) -> List[dict]:
+    """
+    Search across all page_analyses for a user using multiple keywords (OR logic).
+    
+    This function runs searches for each keyword and combines results with
+    deduplication and relevance score aggregation. A page that matches multiple
+    keywords gets a higher combined score.
+    
+    Args:
+        user_id: User ID for authorization (RLS)
+        queries: List of search query strings (keywords)
+        language: Language for search - "de", "en", or "auto" (searches both)
+        limit: Maximum number of results to return
+        
+    Returns:
+        List of matching pages with context, deduplicated and ranked by combined relevance
+    """
+    if not queries:
+        return []
+    
+    # Remove empty queries and duplicates while preserving order
+    clean_queries = []
+    seen = set()
+    for q in queries:
+        q_clean = q.strip().lower()
+        if q_clean and q_clean not in seen:
+            clean_queries.append(q.strip())
+            seen.add(q_clean)
+    
+    if not clean_queries:
+        return []
+    
+    # If only one query, use the original function
+    if len(clean_queries) == 1:
+        return search_page_analyses(user_id, clean_queries[0], language, limit)
+    
+    try:
+        # Run search for each keyword and collect results
+        all_results: dict = {}  # page_id -> result dict with aggregated score
+        
+        for query in clean_queries:
+            try:
+                results = search_page_analyses(
+                    user_id=user_id,
+                    query=query,
+                    language=language,
+                    limit=limit * 2  # Get more results per query for better coverage
+                )
+                
+                for r in results:
+                    page_id = r.get("id")
+                    if not page_id:
+                        continue
+                    
+                    if page_id in all_results:
+                        # Page already found - aggregate scores
+                        existing = all_results[page_id]
+                        existing["rank"] = (existing.get("rank", 0) or 0) + (r.get("rank", 0) or 0)
+                        existing["matched_queries"] = existing.get("matched_queries", 1) + 1
+                    else:
+                        # New page - add to results
+                        r["matched_queries"] = 1
+                        all_results[page_id] = r
+                        
+            except Exception as e:
+                logger.warning(f"Search failed for query '{query}': {e}")
+                continue
+        
+        if not all_results:
+            return []
+        
+        # Convert to list and sort by:
+        # 1. Number of matched queries (more = better)
+        # 2. Aggregated rank score
+        results_list = list(all_results.values())
+        results_list.sort(
+            key=lambda x: (
+                x.get("matched_queries", 1),
+                x.get("rank", 0) or 0
+            ),
+            reverse=True
+        )
+        
+        return results_list[:limit]
+        
+    except Exception as e:
+        logger.error(f"Failed to search page analyses with multiple queries: {str(e)}")
+        raise Exception(f"Failed to search page analyses: {str(e)}")
+
+
+def search_page_analyses_hybrid(
+    user_id: str,
+    query: str,
+    query_embedding: List[float],
+    language: str = "auto",
+    limit: int = 10,
+    vector_weight: float = 0.6,
+    keyword_weight: float = 0.4
+) -> List[dict]:
+    """
+    Hybrid search combining vector similarity and keyword full-text search.
+    
+    Uses Reciprocal Rank Fusion (RRF) to combine results from both search methods.
+    This provides the best of both worlds:
+    - Vector search catches semantically similar content
+    - Keyword search catches exact term matches
+    
+    Args:
+        user_id: User ID for authorization (RLS)
+        query: Search query string for keyword search
+        query_embedding: Query embedding vector for similarity search
+        language: Language for FTS - "de", "en", or "auto"
+        limit: Maximum number of results to return
+        vector_weight: Weight for vector search results (default 0.6)
+        keyword_weight: Weight for keyword search results (default 0.4)
+        
+    Returns:
+        List of matching pages with combined relevance scores
+    """
+    if not query or not query.strip():
+        return []
+    
+    client = get_supabase_client()
+    
+    try:
+        # Fetch more results from each method for better fusion
+        fetch_limit = limit * 3
+        
+        # 1. Vector similarity search (if embedding provided and available)
+        vector_results = []
+        if query_embedding and len(query_embedding) > 0:
+            try:
+                # Convert embedding to string format for pgvector
+                embedding_str = f"[{','.join(str(x) for x in query_embedding)}]"
+                
+                # Call the RPC function for vector search
+                response = client.rpc(
+                    "search_pages_by_embedding",
+                    {
+                        "p_user_id": user_id,
+                        "p_query_embedding": embedding_str,
+                        "p_limit": fetch_limit
+                    }
+                ).execute()
+                
+                if response.data:
+                    vector_results = response.data
+                    logger.debug(f"Vector search returned {len(vector_results)} results")
+                    
+            except Exception as e:
+                # Vector search failed (maybe no embeddings yet) - continue with keyword only
+                logger.debug(f"Vector search skipped: {e}")
+        
+        # 2. Keyword full-text search
+        keyword_results = search_page_analyses(
+            user_id=user_id,
+            query=query,
+            language=language,
+            limit=fetch_limit
+        )
+        logger.debug(f"Keyword search returned {len(keyword_results)} results")
+        
+        # 3. Reciprocal Rank Fusion (RRF)
+        # RRF score = sum(1 / (k + rank)) for each result list
+        # k is a constant (typically 60) to prevent high-ranked items from dominating
+        K = 60
+        
+        # Build score map: page_id -> (rrf_score, result_data)
+        fusion_scores: dict = {}
+        
+        # Add vector results with their RRF contribution
+        for rank, result in enumerate(vector_results):
+            page_id = result.get("id")
+            if not page_id:
+                continue
+            
+            rrf_contribution = vector_weight * (1.0 / (K + rank + 1))
+            
+            if page_id in fusion_scores:
+                fusion_scores[page_id]["rrf_score"] += rrf_contribution
+                fusion_scores[page_id]["vector_rank"] = rank + 1
+            else:
+                fusion_scores[page_id] = {
+                    "rrf_score": rrf_contribution,
+                    "vector_rank": rank + 1,
+                    "keyword_rank": None,
+                    "data": result
+                }
+        
+        # Add keyword results with their RRF contribution
+        for rank, result in enumerate(keyword_results):
+            page_id = result.get("id")
+            if not page_id:
+                continue
+            
+            rrf_contribution = keyword_weight * (1.0 / (K + rank + 1))
+            
+            if page_id in fusion_scores:
+                fusion_scores[page_id]["rrf_score"] += rrf_contribution
+                fusion_scores[page_id]["keyword_rank"] = rank + 1
+                # Prefer keyword result data if we have both (has more fields)
+                if "material_id" in result:
+                    fusion_scores[page_id]["data"] = result
+            else:
+                fusion_scores[page_id] = {
+                    "rrf_score": rrf_contribution,
+                    "vector_rank": None,
+                    "keyword_rank": rank + 1,
+                    "data": result
+                }
+        
+        if not fusion_scores:
+            return []
+        
+        # 4. Sort by RRF score and build final results
+        sorted_results = sorted(
+            fusion_scores.values(),
+            key=lambda x: x["rrf_score"],
+            reverse=True
+        )
+        
+        # Build output with combined rank
+        final_results = []
+        for entry in sorted_results[:limit]:
+            result = entry["data"].copy()
+            result["rank"] = entry["rrf_score"]
+            result["vector_rank"] = entry["vector_rank"]
+            result["keyword_rank"] = entry["keyword_rank"]
+            final_results.append(result)
+        
+        return final_results
+        
+    except Exception as e:
+        logger.error(f"Failed hybrid search: {str(e)}")
+        # Fall back to keyword-only search
+        return search_page_analyses(user_id, query, language, limit)
+
+
+def check_embeddings_available(user_id: str) -> bool:
+    """
+    Check if any embeddings are available for a user's materials.
+    
+    Used to determine whether to use hybrid search or keyword-only.
+    
+    Args:
+        user_id: User ID
+        
+    Returns:
+        True if at least one page has embeddings
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = (
+            client.table("page_analyses")
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .eq("embedding_status", "completed")
+            .limit(1)
+            .execute()
+        )
+        return (response.count or 0) > 0
+    except Exception:
+        return False
 
 
 def get_user_course_counts(user_id: str) -> tuple[int, int]:

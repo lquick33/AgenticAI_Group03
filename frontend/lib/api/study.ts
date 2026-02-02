@@ -257,6 +257,40 @@ export async function getStudySession(
 }
 
 /**
+ * Save current page number for a study session
+ * 
+ * This lightweight function saves the user's current page without
+ * triggering a full chat initiation. Used for page persistence.
+ */
+export async function saveCurrentPage(
+  materialId: string,
+  userId: string,
+  page: number
+): Promise<void> {
+  try {
+    const response = await fetch(`${API_URL}/api/study/save-page`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        material_id: materialId,
+        user_id: userId,
+        page,
+      }),
+    })
+
+    if (!response.ok) {
+      // Log error but don't throw - page save is best-effort
+      console.error('[saveCurrentPage] Failed to save page:', response.status)
+    }
+  } catch (error) {
+    // Log error but don't throw - page save is best-effort
+    console.error('[saveCurrentPage] Error saving page:', error)
+  }
+}
+
+/**
  * Flashcard generation task status
  */
 export interface FlashcardTaskStatus {
