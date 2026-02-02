@@ -404,13 +404,16 @@ class QuickChatState(State):
    - **Automatically injects**: `user_id="user-456"` (from state)
    - Executes tool with correct user_id
 
-6. **Tool Execution** → Queries Supabase across all courses:
-   ```sql
-   SELECT * FROM page_analyses 
-   WHERE analysis_data::text ILIKE '%polymorphism%'
-   AND course_material_id IN (SELECT id FROM course_materials WHERE user_id = 'user-456')
-   ```
-   Returns: `[{material_id: "mat-789", page_number: 42, summary: "..."}, ...]`
+6. **Tool Execution** → `SearchTopicTool._run()` executes hybrid search:
+   - **Keyword Extraction**: LLM extracts keywords → `["Polymorphismus", "polymorphism", "Vererbung", "OOP"]`
+   - **Vector Search**: Calls `search_pages_by_embedding()` RPC with query embedding (pgvector HNSW)
+   - **Keyword Search**: Full-text search on `page_analyses.analysis_data` JSONB
+   - **RRF Fusion**: Combines results with Reciprocal Rank Fusion (K=60, 60% vector + 40% keyword weight)
+   - **Chapter Beginning Detection**: `_pick_best_intro_page()` reorders results:
+     - Checks `is_chapter_heading` flag, scores title match against query
+     - Calculates continuity score (do following pages also match?)
+     - Applies aggregate scoring: title (20%) + key_terms (10%) + continuity (15%) + semantic (10%) + material_relevance (25%)
+   - Returns: `{found: true, results: [...], recommended_page: 42}` with best intro page first
 
 7. **QuickChatAgent.call_model()** (next iteration) →
    - Receives ToolMessage with search results
@@ -658,11 +661,9 @@ Our selection of Google Gemini 2.5 Flash as the sole foundational LLM for StudyB
 
 4. **`search_topic(query: str, user_id: str) -> List[dict]`**
    - Searches for topics across all user's courses and materials using RAG
-   - Implementation: Hybrid search (vector similarity + keyword full-text) when embeddings available, falls back to multi-keyword search
-     - Vector search: Uses `search_pages_by_embedding()` RPC with pgvector (HNSW index) for semantic similarity
-     - Keyword search: Full-text search on `page_analyses.analysis_data` JSONB column
-     - Fusion: Reciprocal Rank Fusion (RRF) combines both result sets (60% vector, 40% keyword weight)
-   - Returns: List of matching pages with context: `[{material_id, page_number, summary, key_terms, relevance_score, ...}]`
+   - Implementation: Hybrid search (vector + keyword via RRF fusion) with fallback to multi-keyword search
+   - **Chapter Beginning Detection**: `_pick_best_intro_page()` finds where topics are INTRODUCED using aggregate scoring: chapter headings (prioritized), title/key_term match with cross-language support (DE↔EN), continuity score (following pages also match = section start), and material relevance
+   - Returns: `[{material_id, page_number, summary, key_terms, relevance_score, ...}]`
    - Used by: QuickChatAgent in discovery mode
 
 5. **`get_user_courses(user_id: str) -> List[dict]`**
@@ -1422,11 +1423,13 @@ Bereit, loszulegen? Dann lass uns zur nächsten Folie springen oder frag mich, w
 
 4. **No Continual Learning**: Agents don't learn from user feedback or adapt prompts based on success/failure patterns. No feedback mechanism (thumbs up/down) implemented.
 
-5. **Vision Input Limitations**: FlashcardGeneratorAgent can include snippet images, but not all pages have snippets. Some visual content may be missed in flashcard generation.
+5. **Knowledge Mapping Not Agent-Integrated**: Anki study history and per-lecture mastery scores (0.0-1.0) are collected and stored, but agents don't yet use this data to adapt tutoring (e.g., focusing on weak topics or adjusting explanation depth based on mastery).
 
-6. **Language Support**: Currently supports German and English. Adding more languages requires new Langfuse prompts and personality text translations.
+6. **Vision Input Limitations**: FlashcardGeneratorAgent can include snippet images, but not all pages have snippets. Some visual content may be missed in flashcard generation.
 
-7. **Error Recovery**: While checkpointer enables resumability, there's no automatic recovery. If flashcard generation fails at 80%, user must manually resume with same `thread_id`.
+7. **Language Support**: Currently supports German and English. Adding more languages requires new Langfuse prompts and personality text translations.
+
+8. **Error Recovery**: While checkpointer enables resumability, there's no automatic recovery. If flashcard generation fails at 80%, user must manually resume with same `thread_id`.
 
 ---
 
@@ -1578,6 +1581,7 @@ Our agents have limited continual learning capabilities:
 - Track successful tool-call patterns and reuse them
 - Learn user's learning style preferences over time
 - Build vector store of successful Q&A pairs for retrieval
+- **Use Anki mastery scores** (already collected) to adapt tutoring: focus on weak topics, adjust explanation depth, or suggest review sessions based on per-lecture mastery (0.0-1.0)
 
 **Example:**
 ```python
@@ -1620,6 +1624,7 @@ if user_feedback == "helpful":
 - User preferences (personality, language)
 - Learning progress (quiz results, flashcard completion)
 - PDF content and analyses (stored in Supabase)
+- Anki study history (if connected): Daily review stats, card states, and per-deck mastery scores synced via AnkiConnect and stored in `anki_study_history` table for knowledge mapping
 
 **Data Handling:**
 - All data stored in Supabase (PostgreSQL) with Row Level Security (RLS) policies
@@ -1633,7 +1638,7 @@ if user_feedback == "helpful":
 - PDF content is stored in Supabase Storage (encrypted at rest)
 
 **Mitigation:**
-- Users can request data deletion (not yet implemented in UI, but possible via API)
+- Users can delete course materials via UI, which cascades to delete associated Anki decks, flashcards, page analyses, and study history. Other data (conversation history, user preferences) cannot be manually deleted yet.
 - RLS policies ensure data isolation
 - Consider adding encryption for sensitive academic content
 - Document data retention policies
