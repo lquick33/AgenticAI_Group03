@@ -5,8 +5,8 @@
 
 ## Team Members
 
-- Milan Elias Mayer (mmayer11@smail.uni-koeln.de)
-- Louis Braukmann (louis.braukmann@gmail.com)
+- Milan Elias Mayer (aesbit)
+- Louis Braukmann (Louisbrau)
 
 ---
 
@@ -1874,7 +1874,7 @@ If we had another month, we would prioritize:
 
 - **Performance Optimizations**: Reduced agent token usage per LLM call, added backend caching and frontend memoization, hash-based deduplication (O(n) instead of O(n²)).
 
-- **Prompt Engineering**: Developed system prompts for FlashcardGeneratorAgent (with classification-based routing for different material types), QuickChatAgent (discovery and tutoring modes), and material classification prompts. Integrated with Langfuse for prompt versioning and A/B testing.
+- **Prompt Engineering**: Developed system prompts for FlashcardGeneratorAgent (with classification-based routing for different material types), QuickChatAgent (discovery and tutoring modes), and material classification prompts.
 
 - **Testing & Documentation**: Created comprehensive test suite (`test_all_agents.py`) with 16+ test cases. Wrote `AGENT_ANALYSE_UND_DOKUMENTATION.md`.
 
@@ -1930,5 +1930,5 @@ If we had another month, we would prioritize:
 ---
 
 **Report Generated**: 2025-01-26  
-**Project Repository**: [Repository URL]  
+**Project Repository**: https://github.com/lquick33/AgenticAI_Group03
 **Last Updated**: 2025-01-26
