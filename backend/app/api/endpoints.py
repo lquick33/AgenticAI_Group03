@@ -2890,6 +2890,73 @@ async def get_study_session(
         )
 
 
+class SavePageRequest(BaseModel):
+    """Request body for saving current page."""
+    material_id: str = Field(..., description="Course material ID (UUID)")
+    user_id: str = Field(..., description="User ID (UUID)")
+    page: int = Field(..., description="Current page number", ge=1)
+
+
+@router.post("/study/save-page", status_code=200)
+async def save_page(request: SavePageRequest) -> dict:
+    """
+    Save the current page number for a study session.
+    
+    This lightweight endpoint allows the frontend to persist the user's
+    current page without triggering a full chat initiation.
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(request.user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found.",
+            )
+
+        client = get_supabase_client()
+
+        # Validate that course material belongs to user
+        material_response = (
+            client.table("course_materials")
+            .select("id, course_id")
+            .eq("id", request.material_id)
+            .eq("user_id", request.user_id)
+            .single()
+            .execute()
+        )
+
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+
+        course_material_id = material_response.data["id"]
+        course_id = material_response.data.get("course_id")
+
+        # Get or create the study conversation
+        conversation = get_or_create_study_conversation(
+            user_id=request.user_id,
+            course_material_id=course_material_id,
+            course_id=course_id,
+            initial_page=request.page,
+        )
+
+        # Update the page number
+        update_conversation_progress(conversation["id"], request.page)
+
+        return {"success": True, "page": request.page}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving page: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save page: {str(e)}",
+        )
+
+
 @router.post("/flashcards/generate", response_model=FlashcardTaskResponse, status_code=202)
 async def generate_flashcards(
     course_material_id: str = Query(..., description="Course material ID (UUID)"),

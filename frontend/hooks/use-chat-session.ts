@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { initiateChat, sendMessage, getStudySession, submitQuiz } from '@/lib/api/study'
+import { initiateChat, sendMessage, getStudySession, submitQuiz, saveCurrentPage } from '@/lib/api/study'
 import { parseQuizToolResponse } from '@/lib/quiz-validation'
 import { EventQueue } from '@/lib/event-queue'
 import type { ChatMessage, ToolCall } from '@/types'
@@ -30,6 +30,10 @@ export function useChatSession(
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
   const currentRequestIdRef = useRef<string | null>(null)
   const pageChangeHistoryRef = useRef<Array<{ page: number; timestamp: number }>>([])
+  
+  // Separate debounce timer for page saving (independent of chat initiation)
+  const pageSaveTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const lastSavedPageRef = useRef<number | null>(null)
   
   // Use typewriter hook
   const { startTypewriter, stopTypewriter, typewriterRef } = useTypewriter(setMessages)
@@ -495,6 +499,18 @@ export function useChatSession(
         setCurrentPage(newPage)
       }
 
+      // Always save page (debounced, independent of auto-explain)
+      // Skip if this is the same page we just saved
+      if (lastSavedPageRef.current !== newPage) {
+        if (pageSaveTimerRef.current) {
+          clearTimeout(pageSaveTimerRef.current)
+        }
+        pageSaveTimerRef.current = setTimeout(() => {
+          lastSavedPageRef.current = newPage
+          saveCurrentPage(materialId, userId, newPage)
+        }, 1000) // 1 second debounce for page save
+      }
+
       // Skip auto-explain if setting is disabled (but always allow initial open)
       if (!autoExplainRef.current && !isInitialOpen) {
         console.log('[useChatSession] Auto-explain disabled, skipping chat initiation for page', newPage)
@@ -536,7 +552,7 @@ export function useChatSession(
         await initiateChatForPage(newPage, requestId, isInitialOpen)
       }, 500)
     },
-    [pageCount, initiateChatForPage]
+    [pageCount, initiateChatForPage, materialId, userId]
   )
 
   // Handle send message
@@ -974,6 +990,7 @@ export function useChatSession(
       stopTypewriterRef.current()
       if (streamControllerRef.current) streamControllerRef.current.close()
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
+      if (pageSaveTimerRef.current) clearTimeout(pageSaveTimerRef.current)
     }
   }, [materialId, userId, urlInitialPage, pageCount])
 
@@ -982,6 +999,30 @@ export function useChatSession(
     if (isInitializing.current) return
     if (currentPage > 0) handlePageChangeRef.current(currentPage)
   }, [currentPage])
+
+  // Save page on tab close/navigation away
+  const currentPageRef = useRef(currentPage)
+  currentPageRef.current = currentPage
+  
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      // Use sendBeacon for reliable save on page unload
+      const data = JSON.stringify({
+        material_id: materialId,
+        user_id: userId,
+        page: currentPageRef.current,
+      })
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      navigator.sendBeacon(`${API_URL}/api/study/save-page`, new Blob([data], { type: 'application/json' }))
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      // Also save on component unmount
+      saveCurrentPage(materialId, userId, currentPageRef.current)
+    }
+  }, [materialId, userId])
 
   return {
     messages,
