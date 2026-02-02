@@ -2380,7 +2380,12 @@ async def warmup_quickchat(
         # Create agent in background thread to not block
         def create_agent():
             llm = get_gemini_model()
-            return QuickChatAgent(llm=llm, checkpointer=_quickchat_checkpointer)
+            # Use the same LLM for keyword extraction (lightweight task)
+            return QuickChatAgent(
+                llm=llm,
+                checkpointer=_quickchat_checkpointer,
+                keyword_extraction_llm=llm
+            )
         
         agent = await asyncio.to_thread(create_agent)
         _prewarmed_quickchat_agents[request.thread_id] = agent
@@ -2431,7 +2436,12 @@ async def send_quickchat_message(
         if agent is None:
             # No pre-warmed agent, create new one
             llm = get_gemini_model()
-            agent = QuickChatAgent(llm=llm, checkpointer=_quickchat_checkpointer)
+            # Use the same LLM for keyword extraction (lightweight task)
+            agent = QuickChatAgent(
+                llm=llm,
+                checkpointer=_quickchat_checkpointer,
+                keyword_extraction_llm=llm
+            )
         else:
             logger.debug(f"Using pre-warmed agent for thread {thread_id}")
         

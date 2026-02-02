@@ -1194,6 +1194,277 @@ def search_page_analyses(
         raise Exception(f"Failed to search page analyses: {str(e)}")
 
 
+def search_page_analyses_multi(
+    user_id: str,
+    queries: List[str],
+    language: str = "auto",
+    limit: int = 10
+) -> List[dict]:
+    """
+    Search across all page_analyses for a user using multiple keywords (OR logic).
+    
+    This function runs searches for each keyword and combines results with
+    deduplication and relevance score aggregation. A page that matches multiple
+    keywords gets a higher combined score.
+    
+    Args:
+        user_id: User ID for authorization (RLS)
+        queries: List of search query strings (keywords)
+        language: Language for search - "de", "en", or "auto" (searches both)
+        limit: Maximum number of results to return
+        
+    Returns:
+        List of matching pages with context, deduplicated and ranked by combined relevance
+    """
+    if not queries:
+        return []
+    
+    # Remove empty queries and duplicates while preserving order
+    clean_queries = []
+    seen = set()
+    for q in queries:
+        q_clean = q.strip().lower()
+        if q_clean and q_clean not in seen:
+            clean_queries.append(q.strip())
+            seen.add(q_clean)
+    
+    if not clean_queries:
+        return []
+    
+    # If only one query, use the original function
+    if len(clean_queries) == 1:
+        return search_page_analyses(user_id, clean_queries[0], language, limit)
+    
+    try:
+        # Run search for each keyword and collect results
+        all_results: dict = {}  # page_id -> result dict with aggregated score
+        
+        for query in clean_queries:
+            try:
+                results = search_page_analyses(
+                    user_id=user_id,
+                    query=query,
+                    language=language,
+                    limit=limit * 2  # Get more results per query for better coverage
+                )
+                
+                for r in results:
+                    page_id = r.get("id")
+                    if not page_id:
+                        continue
+                    
+                    if page_id in all_results:
+                        # Page already found - aggregate scores
+                        existing = all_results[page_id]
+                        existing["rank"] = (existing.get("rank", 0) or 0) + (r.get("rank", 0) or 0)
+                        existing["matched_queries"] = existing.get("matched_queries", 1) + 1
+                    else:
+                        # New page - add to results
+                        r["matched_queries"] = 1
+                        all_results[page_id] = r
+                        
+            except Exception as e:
+                logger.warning(f"Search failed for query '{query}': {e}")
+                continue
+        
+        if not all_results:
+            return []
+        
+        # Convert to list and sort by:
+        # 1. Number of matched queries (more = better)
+        # 2. Aggregated rank score
+        results_list = list(all_results.values())
+        results_list.sort(
+            key=lambda x: (
+                x.get("matched_queries", 1),
+                x.get("rank", 0) or 0
+            ),
+            reverse=True
+        )
+        
+        return results_list[:limit]
+        
+    except Exception as e:
+        logger.error(f"Failed to search page analyses with multiple queries: {str(e)}")
+        raise Exception(f"Failed to search page analyses: {str(e)}")
+
+
+def search_page_analyses_hybrid(
+    user_id: str,
+    query: str,
+    query_embedding: List[float],
+    language: str = "auto",
+    limit: int = 10,
+    vector_weight: float = 0.6,
+    keyword_weight: float = 0.4
+) -> List[dict]:
+    """
+    Hybrid search combining vector similarity and keyword full-text search.
+    
+    Uses Reciprocal Rank Fusion (RRF) to combine results from both search methods.
+    This provides the best of both worlds:
+    - Vector search catches semantically similar content
+    - Keyword search catches exact term matches
+    
+    Args:
+        user_id: User ID for authorization (RLS)
+        query: Search query string for keyword search
+        query_embedding: Query embedding vector for similarity search
+        language: Language for FTS - "de", "en", or "auto"
+        limit: Maximum number of results to return
+        vector_weight: Weight for vector search results (default 0.6)
+        keyword_weight: Weight for keyword search results (default 0.4)
+        
+    Returns:
+        List of matching pages with combined relevance scores
+    """
+    if not query or not query.strip():
+        return []
+    
+    client = get_supabase_client()
+    
+    try:
+        # Fetch more results from each method for better fusion
+        fetch_limit = limit * 3
+        
+        # 1. Vector similarity search (if embedding provided and available)
+        vector_results = []
+        if query_embedding and len(query_embedding) > 0:
+            try:
+                # Convert embedding to string format for pgvector
+                embedding_str = f"[{','.join(str(x) for x in query_embedding)}]"
+                
+                # Call the RPC function for vector search
+                response = client.rpc(
+                    "search_pages_by_embedding",
+                    {
+                        "p_user_id": user_id,
+                        "p_query_embedding": embedding_str,
+                        "p_limit": fetch_limit
+                    }
+                ).execute()
+                
+                if response.data:
+                    vector_results = response.data
+                    logger.debug(f"Vector search returned {len(vector_results)} results")
+                    
+            except Exception as e:
+                # Vector search failed (maybe no embeddings yet) - continue with keyword only
+                logger.debug(f"Vector search skipped: {e}")
+        
+        # 2. Keyword full-text search
+        keyword_results = search_page_analyses(
+            user_id=user_id,
+            query=query,
+            language=language,
+            limit=fetch_limit
+        )
+        logger.debug(f"Keyword search returned {len(keyword_results)} results")
+        
+        # 3. Reciprocal Rank Fusion (RRF)
+        # RRF score = sum(1 / (k + rank)) for each result list
+        # k is a constant (typically 60) to prevent high-ranked items from dominating
+        K = 60
+        
+        # Build score map: page_id -> (rrf_score, result_data)
+        fusion_scores: dict = {}
+        
+        # Add vector results with their RRF contribution
+        for rank, result in enumerate(vector_results):
+            page_id = result.get("id")
+            if not page_id:
+                continue
+            
+            rrf_contribution = vector_weight * (1.0 / (K + rank + 1))
+            
+            if page_id in fusion_scores:
+                fusion_scores[page_id]["rrf_score"] += rrf_contribution
+                fusion_scores[page_id]["vector_rank"] = rank + 1
+            else:
+                fusion_scores[page_id] = {
+                    "rrf_score": rrf_contribution,
+                    "vector_rank": rank + 1,
+                    "keyword_rank": None,
+                    "data": result
+                }
+        
+        # Add keyword results with their RRF contribution
+        for rank, result in enumerate(keyword_results):
+            page_id = result.get("id")
+            if not page_id:
+                continue
+            
+            rrf_contribution = keyword_weight * (1.0 / (K + rank + 1))
+            
+            if page_id in fusion_scores:
+                fusion_scores[page_id]["rrf_score"] += rrf_contribution
+                fusion_scores[page_id]["keyword_rank"] = rank + 1
+                # Prefer keyword result data if we have both (has more fields)
+                if "material_id" in result:
+                    fusion_scores[page_id]["data"] = result
+            else:
+                fusion_scores[page_id] = {
+                    "rrf_score": rrf_contribution,
+                    "vector_rank": None,
+                    "keyword_rank": rank + 1,
+                    "data": result
+                }
+        
+        if not fusion_scores:
+            return []
+        
+        # 4. Sort by RRF score and build final results
+        sorted_results = sorted(
+            fusion_scores.values(),
+            key=lambda x: x["rrf_score"],
+            reverse=True
+        )
+        
+        # Build output with combined rank
+        final_results = []
+        for entry in sorted_results[:limit]:
+            result = entry["data"].copy()
+            result["rank"] = entry["rrf_score"]
+            result["vector_rank"] = entry["vector_rank"]
+            result["keyword_rank"] = entry["keyword_rank"]
+            final_results.append(result)
+        
+        return final_results
+        
+    except Exception as e:
+        logger.error(f"Failed hybrid search: {str(e)}")
+        # Fall back to keyword-only search
+        return search_page_analyses(user_id, query, language, limit)
+
+
+def check_embeddings_available(user_id: str) -> bool:
+    """
+    Check if any embeddings are available for a user's materials.
+    
+    Used to determine whether to use hybrid search or keyword-only.
+    
+    Args:
+        user_id: User ID
+        
+    Returns:
+        True if at least one page has embeddings
+    """
+    client = get_supabase_client()
+    
+    try:
+        response = (
+            client.table("page_analyses")
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .eq("embedding_status", "completed")
+            .limit(1)
+            .execute()
+        )
+        return (response.count or 0) > 0
+    except Exception:
+        return False
+
+
 def get_user_course_counts(user_id: str) -> tuple[int, int]:
     """
     Get course and material counts for a user (lightweight query for Quick Chat initiate).
