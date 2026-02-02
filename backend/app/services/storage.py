@@ -1172,7 +1172,7 @@ def search_page_analyses(
         query_terms = query_lower.split()
         
         select_fields = (
-            "id, page_number, summary, key_terms, course_material_id, "
+            "id, page_number, summary, key_terms, is_chapter_heading, chapter_title, course_material_id, "
             "course_materials(id, file_name, course_id, courses(id, title, color_code))"
         )
         
@@ -1268,6 +1268,8 @@ def search_page_analyses(
                     "page_number": pa.get("page_number"),
                     "summary": pa.get("summary"),
                     "key_terms": pa.get("key_terms"),
+                    "is_chapter_heading": pa.get("is_chapter_heading", False),
+                    "chapter_title": pa.get("chapter_title"),
                     "material_id": pa.get("course_material_id"),
                     "material_name": material.get("file_name"),
                     "course_id": material.get("course_id"),
