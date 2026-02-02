@@ -85,17 +85,12 @@ class StateAwareToolNode(ToolNode):
                     args = dict(getattr(tool_call, "args", {}) or {})
                 
                 # Inject state values for get_page_analysis tool
+                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
                 if tool_name == "get_page_analysis":
-                    # Always inject course_material_id from state if missing
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    
-                    # Inject user_id from state if missing
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
-                    
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                     # Only inject page_number if not explicitly provided by LLM
                     # (LLM might specify a different page number, like page 30)
                     if "page_number" not in args or args.get("page_number") is None:
@@ -103,31 +98,29 @@ class StateAwareToolNode(ToolNode):
                             args["page_number"] = input["current_page"]
                 
                 # Inject state values for get_course_material_summary tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "get_course_material_summary":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                 
                 # Inject state values for create_quiz tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "create_quiz":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                 
                 # Inject state values for get_page_image tool
+                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
                 elif tool_name == "get_page_image":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
+                    # Only inject page_number if not explicitly provided by LLM
                     if "page_number" not in args or args.get("page_number") is None:
                         if input.get("current_page"):
                             args["page_number"] = input["current_page"]
@@ -189,17 +182,12 @@ class StateAwareToolNode(ToolNode):
                     args = dict(getattr(tool_call, "args", {}) or {})
                 
                 # Inject state values for get_page_analysis tool
+                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
                 if tool_name == "get_page_analysis":
-                    # Always inject course_material_id from state if missing
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    
-                    # Inject user_id from state if missing
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
-                    
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                     # Only inject page_number if not explicitly provided by LLM
                     # (LLM might specify a different page number, like page 30)
                     if "page_number" not in args or args.get("page_number") is None:
@@ -207,31 +195,29 @@ class StateAwareToolNode(ToolNode):
                             args["page_number"] = input["current_page"]
                 
                 # Inject state values for get_course_material_summary tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "get_course_material_summary":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                 
                 # Inject state values for create_quiz tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "create_quiz":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                 
                 # Inject state values for get_page_image tool
+                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
                 elif tool_name == "get_page_image":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
+                    # Only inject page_number if not explicitly provided by LLM
                     if "page_number" not in args or args.get("page_number") is None:
                         if input.get("current_page"):
                             args["page_number"] = input["current_page"]
