@@ -762,43 +762,21 @@ class TutorAgent(BaseAgent):
                 if isinstance(msg, SystemMessage):
                     # Enhance existing system message with context
                     enhanced_content = f"{msg.content}\n\nCONTEXT:\n{context_str}"
-                    # TOKEN OPTIMIZATION: Only include current values, not repeated tool names (saves ~150 tokens/call)
-                    # Tool names and descriptions should be in the base Langfuse prompt
+                    # TOKEN OPTIMIZATION: Only include current runtime values (~50 tokens)
+                    # Static tool/quiz instructions are already in Langfuse prompt (saves ~150 tokens/call)
                     if self.language == "de":
                         enhanced_content += (
-                            f"\n\nAktuelle Tool-Kontextwerte: "
+                            f"\n\nAktuelle Kontextwerte: "
                             f"course_material_id={state.get('material_id', 'unbekannt')}, "
                             f"page_number={state.get('current_page', 1)}, "
                             f"user_id={state.get('user_id', 'unbekannt')}"
                         )
-                        # Add quiz-specific instructions
-                        enhanced_content += (
-                            "\n\nWICHTIG FÜR QUIZ-ERSTELLUNG:\n"
-                            "- Wenn du ein Quiz erstellen möchtest, sende NUR eine kurze Nachricht "
-                            "(z.B. 'Wir haben das Thema XY abgeschlossen, hier ist dein Quiz') "
-                            "und rufe dann das create_quiz Tool auf.\n"
-                            "- Sende KEINE lange Erklärung der aktuellen Folie, wenn du gleichzeitig ein Quiz erstellst.\n"
-                            "- Nach dem create_quiz Tool Call wird der Graph beendet - du sollst danach nicht mehr schreiben.\n"
-                            "- Das Quiz wird im Chat angezeigt und der Student kann es bearbeiten.\n"
-                            "- Erst nachdem der Student das Quiz abgeschlossen hat, kannst du Feedback geben."
-                        )
                     else:
                         enhanced_content += (
-                            f"\n\nCurrent tool context values: "
+                            f"\n\nCurrent context values: "
                             f"course_material_id={state.get('material_id', 'unknown')}, "
                             f"page_number={state.get('current_page', 1)}, "
                             f"user_id={state.get('user_id', 'unknown')}"
-                        )
-                        # Add quiz-specific instructions
-                        enhanced_content += (
-                            "\n\nIMPORTANT FOR QUIZ CREATION:\n"
-                            "- If you want to create a quiz, send ONLY a short message "
-                            "(e.g., 'We have completed topic XY, here is your quiz') "
-                            "and then call the create_quiz tool.\n"
-                            "- Do NOT send a long explanation of the current slide if you are creating a quiz at the same time.\n"
-                            "- After the create_quiz tool call, the graph will end - you should not write anything after that.\n"
-                            "- The quiz will be displayed in the chat and the student can work on it.\n"
-                            "- Only after the student completes the quiz can you provide feedback."
                         )
                     messages_for_llm[i] = SystemMessage(content=enhanced_content)
                     system_message_found = True
@@ -807,42 +785,21 @@ class TutorAgent(BaseAgent):
             # If no system message found, add one with context
             if not system_message_found:
                 enhanced_content = f"{self.system_prompt}\n\nCONTEXT:\n{context_str}"
-                # TOKEN OPTIMIZATION: Only include current values, not repeated tool names (saves ~150 tokens/call)
+                # TOKEN OPTIMIZATION: Only include current runtime values (~50 tokens)
+                # Static tool/quiz instructions are already in Langfuse prompt (saves ~150 tokens/call)
                 if self.language == "de":
                     enhanced_content += (
-                        f"\n\nAktuelle Tool-Kontextwerte: "
+                        f"\n\nAktuelle Kontextwerte: "
                         f"course_material_id={state.get('material_id', 'unbekannt')}, "
                         f"page_number={state.get('current_page', 1)}, "
                         f"user_id={state.get('user_id', 'unbekannt')}"
                     )
-                    # Add quiz-specific instructions
-                    enhanced_content += (
-                        "\n\nWICHTIG FÜR QUIZ-ERSTELLUNG:\n"
-                        "- Wenn du ein Quiz erstellen möchtest, sende NUR eine kurze Nachricht "
-                        "(z.B. 'Wir haben das Thema XY abgeschlossen, hier ist dein Quiz') "
-                        "und rufe dann das create_quiz Tool auf.\n"
-                        "- Sende KEINE lange Erklärung der aktuellen Folie, wenn du gleichzeitig ein Quiz erstellst.\n"
-                        "- Nach dem create_quiz Tool Call wird der Graph beendet - du sollst danach nicht mehr schreiben.\n"
-                        "- Das Quiz wird im Chat angezeigt und der Student kann es bearbeiten.\n"
-                        "- Erst nachdem der Student das Quiz abgeschlossen hat, kannst du Feedback geben."
-                    )
                 else:
                     enhanced_content += (
-                        f"\n\nCurrent tool context values: "
+                        f"\n\nCurrent context values: "
                         f"course_material_id={state.get('material_id', 'unknown')}, "
                         f"page_number={state.get('current_page', 1)}, "
                         f"user_id={state.get('user_id', 'unknown')}"
-                    )
-                    # Add quiz-specific instructions
-                    enhanced_content += (
-                        "\n\nIMPORTANT FOR QUIZ CREATION:\n"
-                        "- If you want to create a quiz, send ONLY a short message "
-                        "(e.g., 'We have completed topic XY, here is your quiz') "
-                        "and then call the create_quiz tool.\n"
-                        "- Do NOT send a long explanation of the current slide if you are creating a quiz at the same time.\n"
-                        "- After the create_quiz tool call, the graph will end - you should not write anything after that.\n"
-                        "- The quiz will be displayed in the chat and the student can work on it.\n"
-                        "- Only after the student completes the quiz can you provide feedback."
                     )
                 messages_for_llm.insert(0, SystemMessage(content=enhanced_content))
         
