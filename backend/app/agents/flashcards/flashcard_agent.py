@@ -1212,8 +1212,8 @@ Respond with a JSON object matching this structure:
         
         Flow:
         1. Apply deduplication if enabled (compare against Anki fronts)
-        2. Add unique cards to Anki (source of truth)
-        3. Cache to database (backup)
+        2. Add unique cards to Anki (source of truth) - if available
+        3. Cache to database (backup) - ALWAYS save, even if Anki unavailable
         
         Args:
             state: Current agent state
@@ -1238,11 +1238,12 @@ Respond with a JSON object matching this structure:
             logger.info("No unique cards remaining after deduplication")
             return {**state, "all_cards": []}
         
-        # 2. Add to Anki (source of truth)
+        # 2. Add to Anki (source of truth) - if available
         target_deck = state.get("target_deck_name")
         note_ids = []
         anki_synced = False  # Cards added to local Anki
         ankiweb_synced = False  # Cards synced to AnkiWeb
+        anki_available = False
         
         if target_deck:
             try:
@@ -1251,8 +1252,10 @@ Respond with a JSON object matching this structure:
                 logger.info(f"Added {successful_adds} cards to Anki deck '{target_deck}', AnkiWeb synced: {ankiweb_synced}")
                 # Consider local Anki sync successful if at least one card was added
                 anki_synced = successful_adds > 0
+                anki_available = True
             except Exception as e:
                 logger.error(f"Failed to add cards to Anki: {e}")
+                logger.info("Anki Connect not available - will save flashcards with temporary IDs for APKG download")
                 
                 # If all cards are duplicates, they're already in Anki
                 # This should count as "synced" since the cards exist
@@ -1260,10 +1263,10 @@ Respond with a JSON object matching this structure:
                 if "duplicate" in error_str.lower():
                     anki_synced = True  # Cards are already in Anki (duplicates)
                     logger.info("All cards were duplicates - cards already exist in Anki")
-                
-                # Continue to cache even if Anki fails
         
         # 3. Save to database (flashcard_cache table - Anki-aligned)
+        # IMPORTANT: Always save to DB, even if Anki is unavailable
+        # This allows users to download APKG files even without Anki Connect
         if save_to_db:
             user_id = state.get("user_id", "")
             course_id = state.get("course_id", "")
@@ -1271,21 +1274,29 @@ Respond with a JSON object matching this structure:
             # NOTE: Dual-write disabled - now using only flashcard_cache table
             # Old flashcards table is preserved but no longer written to
             
-            if note_ids:
-                try:
-                    cache_flashcards(
-                        all_cards,
-                        note_ids,
-                        user_id,
-                        target_deck or "Default",
-                        course_id,
-                        synced_to_ankiweb=ankiweb_synced
-                    )
-                    logger.info(f"Cached {len(all_cards)} flashcards to database (ankiweb_synced={ankiweb_synced})")
-                except Exception as e:
-                    logger.warning(f"Failed to cache flashcards: {str(e)}")
-            else:
-                logger.warning("No Anki note IDs - cards not cached (Anki integration may have failed)")
+            # Generate temporary negative note IDs if Anki is not available
+            # These will be replaced with real Anki note IDs if Anki becomes available later
+            if not note_ids:
+                # Generate temporary negative IDs starting from -1
+                # These are safe because Anki never uses negative note IDs
+                note_ids = [-(i + 1) for i in range(len(all_cards))]
+                logger.info(f"Generated {len(note_ids)} temporary note IDs for database storage (Anki unavailable)")
+            
+            try:
+                cache_flashcards(
+                    all_cards,
+                    note_ids,
+                    user_id,
+                    target_deck or "Default",
+                    course_id,
+                    synced_to_ankiweb=ankiweb_synced
+                )
+                logger.info(
+                    f"Cached {len(all_cards)} flashcards to database "
+                    f"(anki_available={anki_available}, ankiweb_synced={ankiweb_synced})"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to cache flashcards: {str(e)}")
         
         return {**state, "all_cards": all_cards, "anki_synced": anki_synced, "ankiweb_synced": ankiweb_synced}
     

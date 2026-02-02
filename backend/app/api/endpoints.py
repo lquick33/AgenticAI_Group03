@@ -3625,10 +3625,27 @@ async def get_flashcards(
         course_title = course_response.data.get("title", "course") if course_response.data else "course"
         
         # Construct deck name (matches format used during generation)
-        deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
+        # Use Path().stem to match the format used during generation (removes all extensions)
+        from pathlib import Path
+        lecture_name = Path(file_name).stem
+        deck_name = f"{course_title}::{lecture_name}"
         
         # Get flashcards from flashcard_cache table (new Anki-aligned storage)
         flashcards = get_cached_flashcards_for_material(deck_name, user_id)
+        
+        # Fallback: If no flashcards found by deck_name, try searching by course_id
+        # This handles cases where deck_name might not match exactly (e.g., if target_deck_name was None)
+        if not flashcards:
+            from app.services.storage import get_cached_flashcards_for_course
+            all_course_flashcards = get_cached_flashcards_for_course(course_id, user_id)
+            
+            # Filter by matching lecture name in deck_name
+            # Look for flashcards where deck_name ends with "::{lecture_name}" or contains the lecture name
+            flashcards = [
+                card for card in all_course_flashcards
+                if card.get("deck_name", "").endswith(f"::{lecture_name}") or 
+                   lecture_name.lower() in card.get("deck_name", "").lower()
+            ]
         
         return {
             "flashcards": flashcards,
@@ -3708,10 +3725,27 @@ async def download_flashcards_from_db(
         file_name = material.get("file_name", "material")
         
         # Construct deck name (matches format used during generation)
-        deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
+        # Use Path().stem to match the format used during generation (removes all extensions)
+        from pathlib import Path
+        lecture_name = Path(file_name).stem
+        deck_name = f"{course_title}::{lecture_name}"
         
         # Get flashcards from flashcard_cache table (new Anki-aligned storage)
         flashcards = get_cached_flashcards_for_material(deck_name, user_id)
+        
+        # Fallback: If no flashcards found by deck_name, try searching by course_id
+        # This handles cases where deck_name might not match exactly (e.g., if target_deck_name was None)
+        if not flashcards:
+            from app.services.storage import get_cached_flashcards_for_course
+            all_course_flashcards = get_cached_flashcards_for_course(course_id, user_id)
+            
+            # Filter by matching lecture name in deck_name
+            # Look for flashcards where deck_name ends with "::{lecture_name}" or contains the lecture name
+            flashcards = [
+                card for card in all_course_flashcards
+                if card.get("deck_name", "").endswith(f"::{lecture_name}") or 
+                   lecture_name.lower() in card.get("deck_name", "").lower()
+            ]
         
         if not flashcards:
             raise HTTPException(

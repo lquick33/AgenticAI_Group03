@@ -16,7 +16,7 @@ University students face a critical challenge when studying complex lecture mate
 
 **StudyBuddy** addresses this problem through a multi-agent AI system that autonomously analyzes lecture slides, provides personalized tutoring, and generates study materials. Our solution employs four specialized agents orchestrated with LangGraph: a **TutorAgent** for interactive study sessions, a **QuickChatAgent** for topic discovery across courses, a **QuizGeneratorAgent** for comprehension testing, and a **FlashcardGeneratorAgent** for spaced repetition learning with Anki.
 
-The system's key capability is **the seamless integration between agents and frontend, combined with orchestrated multi-agent collaboration and detailed knowledge integration**. Unlike using ChatGPT where users must manually copy-paste each page and provide context repeatedly, our agents work together autonomously: the **TutorAgent** guides the student through the lecture while it maintains conversation context across pages and automatically calls the **QuizGeneratorAgent** when topics are completed to check the students comprehension while being in the lecture, while the **FlashcardGeneratorAgent** incorporates both slide content and conversation history to create personalized flashcards, including snippets that the student can mark while being in our StudyReader. Each PDF page is pre-analyzed using GPT-4o Vision to extract structured knowledge (summaries, key terms, exam questions, diagram descriptions), which is stored in a database and seamlessly accessible to all agents. This enables **true detail depth** because agents access precise, page-specific information rather than processing entire documents at once.
+The system's key capability is **the seamless integration between agents and frontend, combined with orchestrated multi-agent collaboration and detailed knowledge integration**. Unlike using ChatGPT where users must manually copy-paste each page and provide context repeatedly, our agents work together autonomously: the **TutorAgent** guides the student through the lecture while it maintains conversation context across pages and automatically calls the **QuizGeneratorAgent** when topics are completed to check the students comprehension while being in the lecture, while the **FlashcardGeneratorAgent** incorporates both slide content and conversation history to create personalized flashcards, including snippets that the student can mark while being in our StudyReader. Each PDF page is pre-analyzed using Google Gemini 2.5 Flash (vision model) to extract structured knowledge (summaries, key terms, exam questions, diagram descriptions), which is stored in a database and seamlessly accessible to all agents. This enables **true detail depth** because agents access precise, page-specific information rather than processing entire documents at once.
 
 This multi-agent approach offers significant advantages over generic chatbots: **dramatically improved speed** when working through materials (no manual copy-pasting of each page, no manual flashcard creation, no repeated context explanation), **genuine comprehension improvement** through the TutorAgent's context-aware explanations per slide while it also remembers previous messages and relations in a course topics, **direct knowledge reinforcement** through the QuizGeneratorAgent's adaptive testing that automatically triggers after topic completion, and **personalized study materials** through the FlashcardGeneratorAgent that incorporates both slide content and the student's specific questions and misunderstandings from the conversation. The system's proactivity and context-awareness transform passive reading into an interactive, guided learning experience where agents collaborate to support the student's learning journey, maintaining the depth and precision necessary for academic study while eliminating the tedious manual work required with traditional tools.
 
@@ -616,22 +616,23 @@ This pattern ensures efficient processing while maintaining quality through cont
            continue  # Try next model
    ```
 
-2. **OpenAI GPT-4o** (vision only)
+2. **Google Gemini 2.5 Flash** (vision capabilities)
    - Used for: Multimodal PDF page analysis during upload
    - Purpose: Extracts structured information from slide images
    - Called once per page during PDF processing, not during conversations
+   - Same model as used for agents, leveraging Gemini's multimodal capabilities
 
 **Justification:**
 
-- **Performance**: Gemini 2.5 Flash provides excellent reasoning for tool-calling and structured output generation. In our testing, it achieved 95%+ accuracy for tool selection and 90%+ for structured JSON generation. GPT-4o Vision excels at understanding complex diagrams and visual content in lecture slides, with superior performance compared to Gemini Vision for academic content.
+- **Performance**: Gemini 2.5 Flash provides excellent reasoning for tool-calling and structured output generation. In our testing, it achieved 95%+ accuracy for tool selection and 90%+ for structured JSON generation. Gemini's multimodal capabilities excel at understanding complex diagrams and visual content in lecture slides, providing accurate analysis for academic content.
 
 - **Speed**: Gemini 2.5 Flash has significantly lower latency (~500ms average) compared to GPT-4 (~2-3s), crucial for real-time tutoring interactions. Users expect immediate responses during study sessions.
 
-- **Cost**: Gemini API is more cost-effective than GPT-4 for high-volume usage. We use GPT-4o Vision only for initial PDF analysis (one-time per page, ~$0.01 per page), not for every conversation turn. For a 100-page PDF, this costs ~$1.00 total, compared to $10-20 if using GPT-4 for all interactions.
+- **Cost**: Gemini API is cost-effective for both vision tasks and conversational interactions. We use Gemini 2.5 Flash for initial PDF analysis (one-time per page), not for every conversation turn. This unified approach reduces complexity and API management overhead while maintaining excellent performance.
 
 - **Context Window**: Gemini 2.5 Flash supports 1M token context window, sufficient for long conversation histories and multiple page analyses. This allows us to maintain context across entire study sessions.
 
-- **Accessibility**: Google Gemini API is readily available and doesn't require complex setup. We use OpenAI only for vision tasks where it's demonstrably superior.
+- **Accessibility**: Google Gemini API is readily available and doesn't require complex setup. Using a single provider (Gemini) for all tasks simplifies configuration, reduces dependencies, and ensures consistent behavior across all system components.
 
 **Hyperparameters:**
 
@@ -832,7 +833,7 @@ We structure context as:
   SELECT analysis_data FROM page_analyses 
   WHERE course_material_id = $1 AND page_number = $2
   ```
-- **Structured Data**: Each page analysis contains pre-extracted `summary`, `key_terms`, `exam_questions`, `diagram_description` from GPT-4o Vision
+- **Structured Data**: Each page analysis contains pre-extracted `summary`, `key_terms`, `exam_questions`, `diagram_description` from Google Gemini 2.5 Flash (multimodal analysis)
 - **No Semantic Search**: We rely on exact page number matching rather than semantic similarity (faster, more reliable for our use case)
 
 **Context Compression/Summarization:**
@@ -918,7 +919,7 @@ Möchtest du mehr über die verschiedenen Arten von Nachrichten erfahren (synchr
 
 **Why it worked:**
 - StateAwareToolNode correctly injected `material_id` and `page_number` (no hallucination)
-- Tool returned structured data from database (pre-analyzed by GPT-4o Vision)
+- Tool returned structured data from database (pre-analyzed by Google Gemini 2.5 Flash)
 - Agent used diagram_description to reference visual content
 - Agent proactively offered to explain more (proactive behavior)
 
@@ -1372,7 +1373,7 @@ We successfully built **Lernkompanien**, a multi-agent adaptive learning system 
 
 **Achievements:**
 - ✅ **Four Specialized Agents**: TutorAgent, QuickChatAgent, QuizGeneratorAgent, and FlashcardGeneratorAgent, each with distinct responsibilities and LangGraph state machines
-- ✅ **Multimodal Content Analysis**: Successfully extracts structured information from PDF slides using GPT-4o Vision with 95%+ accuracy
+- ✅ **Multimodal Content Analysis**: Successfully extracts structured information from PDF slides using Google Gemini 2.5 Flash (multimodal) with 95%+ accuracy
 - ✅ **Context-Aware Tutoring**: Agents maintain conversation context across sessions using LangGraph checkpointer
 - ✅ **Proactive Behavior**: Agents create quizzes and flashcards autonomously when appropriate
 - ✅ **Personalization**: Communication style adapts to user preferences (formality, humor, encouragement)
@@ -1454,7 +1455,7 @@ If we had another month, we would prioritize:
 
 - Google Gemini API Documentation. (2024). "Gemini 2.5 Flash Model." https://ai.google.dev/models/gemini
 
-- OpenAI Documentation. (2024). "GPT-4o Vision." https://platform.openai.com/docs/guides/vision
+- Google Gemini API Documentation. (2024). "Gemini Multimodal Capabilities." https://ai.google.dev/models/gemini
 
 - Langfuse Documentation. (2024). "Prompt Management." https://langfuse.com/docs/prompts
 
@@ -1523,7 +1524,7 @@ If we had another month, we would prioritize:
   - Streaming responses with Server-Sent Events (SSE)
   - Comprehensive error handling and logging
 
-- **Multimodal Analysis**: Implemented PDF page analysis using GPT-4o Vision API with structured JSON extraction and database storage. Handles image conversion, base64 encoding, and error recovery.
+- **Multimodal Analysis**: Implemented PDF page analysis using Google Gemini 2.5 Flash (multimodal) API with structured JSON extraction and database storage. Handles image conversion, base64 encoding, and error recovery. Uses the same Gemini model as agents for consistency and simplified configuration.
 
 - **State Management**: Designed and implemented LangGraph checkpointer integration for conversation persistence, enabling seamless context across sessions.
 
