@@ -7,8 +7,10 @@ for course materials and page analyses.
 
 import json
 import logging
-from time import time
-from typing import Dict, Optional, List, Any, Tuple
+from time import time, sleep
+from typing import Dict, Optional, List, Any, Tuple, TypeVar, Callable
+from functools import wraps
+import errno
 
 from supabase import create_client, Client
 
@@ -16,6 +18,72 @@ from app.core.config import settings
 from app.models.schemas import SlideAnalysis
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Retry Logic for Transient Network Errors
+# =============================================================================
+
+T = TypeVar('T')
+
+def retry_on_resource_unavailable(
+    max_retries: int = 3,
+    base_delay: float = 0.1,
+    max_delay: float = 2.0,
+    exponential_base: float = 2.0
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """
+    Decorator that retries a function on transient network errors.
+    
+    Handles [Errno 35] Resource temporarily unavailable (EAGAIN/EWOULDBLOCK)
+    which can occur with long-running HTTP clients when connection pools
+    become stale or exhausted.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay between retries in seconds
+        max_delay: Maximum delay between retries in seconds
+        exponential_base: Base for exponential backoff
+        
+    Returns:
+        Decorated function with retry logic
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> T:
+            last_exception = None
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    error_str = str(e)
+                    # Check for EAGAIN/EWOULDBLOCK errors (Errno 35 on macOS, 11 on Linux)
+                    is_resource_unavailable = (
+                        "Resource temporarily unavailable" in error_str or
+                        f"[Errno {errno.EAGAIN}]" in error_str or
+                        f"[Errno {errno.EWOULDBLOCK}]" in error_str or
+                        "[Errno 35]" in error_str  # macOS-specific
+                    )
+                    
+                    if is_resource_unavailable and attempt < max_retries:
+                        delay = min(base_delay * (exponential_base ** attempt), max_delay)
+                        logger.warning(
+                            f"Transient error in {func.__name__} (attempt {attempt + 1}/{max_retries + 1}): "
+                            f"{error_str}. Retrying in {delay:.2f}s..."
+                        )
+                        sleep(delay)
+                        last_exception = e
+                    else:
+                        # Not a retryable error or max retries exceeded
+                        raise
+            
+            # Should not reach here, but just in case
+            if last_exception:
+                raise last_exception
+            
+        return wrapper
+    return decorator
 
 
 # Initialize Supabase client (singleton)
@@ -336,12 +404,27 @@ def update_processing_status(
         raise Exception(f"Failed to update processing status: {str(e)}")
 
 
+@retry_on_resource_unavailable(max_retries=3, base_delay=0.1, max_delay=2.0)
+def _query_user_exists(client: Client, user_id: str) -> bool:
+    """
+    Internal function to query if user exists (with retry logic).
+    
+    Separated to allow the retry decorator to work on just the network call.
+    """
+    response = client.table("profiles").select("id").eq(
+        "id", user_id
+    ).execute()
+    return response.data and len(response.data) > 0
+
+
 def validate_user_exists(user_id: str) -> bool:
     """
     Validate that user exists in profiles table.
     
     Note: Thanks to the SQL trigger, profiles are automatically synced
     with auth.users, so this check works reliably.
+    
+    Includes automatic retry logic for transient network errors.
     
     Args:
         user_id: User ID to validate
@@ -350,18 +433,23 @@ def validate_user_exists(user_id: str) -> bool:
         True if user exists, False otherwise
         
     Raises:
-        Exception: If database query fails
+        Exception: If database query fails after retries
     """
     client = get_supabase_client()
     
     try:
-        response = client.table("profiles").select("id").eq(
-            "id", user_id
-        ).execute()
-        
-        return response.data and len(response.data) > 0
+        return _query_user_exists(client, user_id)
     except Exception as e:
         raise Exception(f"Failed to validate user: {str(e)}")
+
+
+@retry_on_resource_unavailable(max_retries=3, base_delay=0.1, max_delay=2.0)
+def _query_course(client: Client, user_id: str, course_id: str) -> Optional[dict]:
+    """Internal function to query course (with retry logic)."""
+    response = client.table("courses").select("*").eq(
+        "id", course_id
+    ).eq("user_id", user_id).execute()
+    return response.data[0] if response.data and len(response.data) > 0 else None
 
 
 def get_course(
@@ -374,6 +462,8 @@ def get_course(
     Course must be created beforehand (e.g., via web app).
     This function only validates and retrieves existing courses.
     
+    Includes automatic retry logic for transient network errors.
+    
     Args:
         user_id: User ID
         course_id: Course ID (required)
@@ -383,17 +473,15 @@ def get_course(
         
     Raises:
         ValueError: If course doesn't exist or doesn't belong to user
-        Exception: If database operation fails
+        Exception: If database operation fails after retries
     """
     client = get_supabase_client()
     
     try:
-        response = client.table("courses").select("*").eq(
-            "id", course_id
-        ).eq("user_id", user_id).execute()
+        result = _query_course(client, user_id, course_id)
         
-        if response.data and len(response.data) > 0:
-            return response.data[0]
+        if result:
+            return result
         else:
             raise ValueError(
                 f"Course {course_id} not found or access denied"
@@ -451,6 +539,20 @@ def save_page_analysis(
         raise Exception(f"Failed to save page analysis: {str(e)}")
 
 
+@retry_on_resource_unavailable(max_retries=3, base_delay=0.1, max_delay=2.0)
+def _query_page_analysis(client: Client, course_material_id: str, page_number: int) -> Optional[dict]:
+    """Internal function to query page analysis (with retry logic)."""
+    response = client.table("page_analyses").select(
+        "id, summary, key_terms, exam_questions, diagram_description, raw_analysis, "
+        "course_materials!inner(user_id)"
+    ).eq(
+        "course_material_id", course_material_id
+    ).eq(
+        "page_number", page_number
+    ).execute()
+    return response.data[0] if response.data and len(response.data) > 0 else None
+
+
 def get_page_analysis(
     course_material_id: str,
     page_number: int,
@@ -460,6 +562,7 @@ def get_page_analysis(
     Get page analysis data from the page_analyses table (with in-memory caching).
     
     Page analyses are cached for 5 minutes since they rarely change after creation.
+    Includes automatic retry logic for transient network errors.
     
     Args:
         course_material_id: Course material ID
@@ -471,7 +574,7 @@ def get_page_analysis(
         
     Raises:
         ValueError: If page analysis not found or access denied
-        Exception: If database operation fails
+        Exception: If database operation fails after retries
     """
     # Check cache first
     cached = _page_analysis_cache.get(course_material_id, page_number, user_id)
@@ -485,21 +588,12 @@ def get_page_analysis(
         # OPTIMIZED: Single query with JOIN to validate ownership and fetch data
         # Uses Supabase's foreign key relationship syntax: table!inner(columns)
         # The !inner ensures we only get results where the join succeeds
-        response = client.table("page_analyses").select(
-            "id, summary, key_terms, exam_questions, diagram_description, raw_analysis, "
-            "course_materials!inner(user_id)"
-        ).eq(
-            "course_material_id", course_material_id
-        ).eq(
-            "page_number", page_number
-        ).execute()
+        analysis = _query_page_analysis(client, course_material_id, page_number)
         
-        if not response.data or len(response.data) == 0:
+        if not analysis:
             raise ValueError(
                 f"Page analysis not found for course_material_id={course_material_id}, page_number={page_number}"
             )
-        
-        analysis = response.data[0]
         
         # Extract the material owner's user_id from the joined data
         material_data = analysis.get("course_materials", {})
@@ -817,6 +911,21 @@ def get_course_materials_for_naming(
         return []
 
 
+@retry_on_resource_unavailable(max_retries=3, base_delay=0.1, max_delay=2.0)
+def _query_course_material_summary(client: Client, course_material_id: str, user_id: str) -> Optional[str]:
+    """Internal function to query course material summary (with retry logic)."""
+    response = client.table("course_materials").select(
+        "summary"
+    ).eq(
+        "id", course_material_id
+    ).eq(
+        "user_id", user_id
+    ).execute()
+    if response.data and len(response.data) > 0:
+        return response.data[0].get("summary")
+    return None
+
+
 def get_course_material_summary(
     course_material_id: str,
     user_id: str
@@ -828,6 +937,7 @@ def get_course_material_summary(
     with an overview of the lecture topics and concepts.
     
     Summaries are cached for 10 minutes since they rarely change after creation.
+    Includes automatic retry logic for transient network errors.
     
     Args:
         course_material_id: Course material ID
@@ -837,7 +947,7 @@ def get_course_material_summary(
         Parsed summary as dict, or None if not found or empty
         
     Raises:
-        Exception: If database operation fails
+        Exception: If database operation fails after retries
     """
     # Check cache first
     cached = _summary_cache.get(course_material_id, user_id)
@@ -848,36 +958,26 @@ def get_course_material_summary(
     client = get_supabase_client()
     
     try:
-        response = client.table("course_materials").select(
-            "summary"
-        ).eq(
-            "id", course_material_id
-        ).eq(
-            "user_id", user_id
-        ).execute()
+        summary_text = _query_course_material_summary(client, course_material_id, user_id)
         
-        if response.data and len(response.data) > 0:
-            summary_text = response.data[0].get("summary")
-            if not summary_text:
-                return None
-            
-            # Try to parse as JSON
-            try:
-                result = json.loads(summary_text)
-            except json.JSONDecodeError:
-                # If not valid JSON, return as plain text in a structured format
-                result = {
-                    "summary_text": summary_text,
-                    "format": "plain_text"
-                }
-            
-            # Cache the result
-            _summary_cache.set(course_material_id, user_id, result)
-            logger.debug(f"Summary cache MISS for material {course_material_id[:8]}... (now cached)")
-            
-            return result
-        else:
+        if not summary_text:
             return None
+        
+        # Try to parse as JSON
+        try:
+            result = json.loads(summary_text)
+        except json.JSONDecodeError:
+            # If not valid JSON, return as plain text in a structured format
+            result = {
+                "summary_text": summary_text,
+                "format": "plain_text"
+            }
+        
+        # Cache the result
+        _summary_cache.set(course_material_id, user_id, result)
+        logger.debug(f"Summary cache MISS for material {course_material_id[:8]}... (now cached)")
+        
+        return result
     except Exception as e:
         raise Exception(f"Failed to get course material summary: {str(e)}")
 
