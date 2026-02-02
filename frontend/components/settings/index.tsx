@@ -2,13 +2,14 @@
 
 import { SettingsProvider } from "./settings-context"
 import { SettingsDialog } from "./settings-dialog"
+import { BackgroundTasksProvider } from "@/components/background-tasks"
 
 export { SettingsProvider, useSettings } from "./settings-context"
 export { SettingsDialog } from "./settings-dialog"
 
 /**
- * SettingsWrapper combines the SettingsProvider and SettingsDialog
- * for easy integration into dashboard pages.
+ * SettingsWrapper combines the SettingsProvider, BackgroundTasksProvider,
+ * and SettingsDialog for easy integration into dashboard pages.
  * 
  * Usage:
  * <SettingsWrapper>
@@ -20,9 +21,11 @@ export { SettingsDialog } from "./settings-dialog"
  */
 export function SettingsWrapper({ children }: { children: React.ReactNode }) {
   return (
-    <SettingsProvider>
-      {children}
-      <SettingsDialog />
-    </SettingsProvider>
+    <BackgroundTasksProvider>
+      <SettingsProvider>
+        {children}
+        <SettingsDialog />
+      </SettingsProvider>
+    </BackgroundTasksProvider>
   )
 }

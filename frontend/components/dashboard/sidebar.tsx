@@ -22,6 +22,7 @@ import {
   SidebarHeader,
 } from "@/components/ui/sidebar"
 import { useSettings } from "@/components/settings/settings-context"
+import { BackgroundTasksIndicator } from "@/components/background-tasks"
 
 interface DashboardSidebarProps {
   user: {
@@ -92,6 +93,7 @@ export function DashboardSidebar({ user, courses = [], ...props }: DashboardSide
         <NavProjects projects={projects} />
       </SidebarContent>
       <SidebarFooter>
+        <BackgroundTasksIndicator />
         <NavUser user={user} />
       </SidebarFooter>
     </Sidebar>
