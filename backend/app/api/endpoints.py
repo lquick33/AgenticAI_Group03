@@ -1913,13 +1913,24 @@ async def send_chat_message(
                 material_id = request.material_id
                 user_id = request.user_id
                 
-                if snapshot and snapshot.values:
-                    # Preserve current_page from existing state if available
+                # Priority for current_page:
+                # 1. Request page_number (explicit from frontend - most up-to-date)
+                # 2. LangGraph state (from previous agent invocations)
+                # 3. Conversation metadata (fallback from database)
+                if request.page_number is not None:
+                    current_page = request.page_number
+                    logger.info(f"Using page_number from request: {current_page}")
+                elif snapshot and snapshot.values:
                     current_page = snapshot.values.get("current_page")
-                # If LangGraph state is empty (e.g., after restart), fall back to conversation metadata
+                    if current_page:
+                        logger.info(f"Using current_page from LangGraph state: {current_page}")
+                
+                # If still None, fall back to conversation metadata
                 if current_page is None:
                     metadata = conversation.get("metadata") or {}
                     current_page = metadata.get("last_page_number")
+                    if current_page:
+                        logger.info(f"Using last_page_number from conversation metadata: {current_page}")
                 
                 # Ensure course_material_summary is in state (for old conversations)
                 course_summary = None
@@ -1936,9 +1947,28 @@ async def send_chat_message(
                     except Exception:
                         pass  # Non-critical
                 
+                # If we have a current page, fetch its summary to provide context
+                page_context = ""
+                if current_page is not None:
+                    try:
+                        page_analysis = get_page_analysis(
+                            course_material_id=course_material_id,
+                            page_number=current_page,
+                            user_id=request.user_id
+                        )
+                        if page_analysis:
+                            summary = page_analysis.get("summary") or page_analysis.get("content", "")
+                            if summary:
+                                page_context = f"\n\n[Kontext: Der Student ist auf Seite {current_page}. Inhalt dieser Seite: {summary[:500]}{'...' if len(summary) > 500 else ''}]"
+                                logger.info(f"Added page context for page {current_page}")
+                    except Exception as e:
+                        logger.warning(f"Could not fetch page analysis for context: {e}")
+                
                 # Add user message to existing thread and preserve state
+                # Include page context in the message so agent knows what page user is viewing
+                message_with_context = request.message + page_context if page_context else request.message
                 initial_state = {
-                    "messages": [HumanMessage(content=request.message)],
+                    "messages": [HumanMessage(content=message_with_context)],
                     "material_id": material_id,
                     "user_id": user_id
                 }

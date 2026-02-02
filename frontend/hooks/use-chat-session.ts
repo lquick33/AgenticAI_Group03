@@ -580,6 +580,7 @@ export function useChatSession(
       stopTypewriter()
 
       try {
+        // Pass current page to ensure agent knows which page user is viewing
         await sendMessage(
           materialId,
           message,
@@ -853,7 +854,8 @@ export function useChatSession(
                 return msg
               })
             })
-          }
+          },
+          currentPage  // Pass current page so agent knows which page user is viewing
         )
       } catch (error) {
         console.error('Error sending message:', error)
@@ -887,7 +889,7 @@ export function useChatSession(
         })
       }
     },
-    [materialId, userId, generateMessageId, startTypewriter, stopTypewriter, processQuizToolResponse]
+    [materialId, userId, currentPage, generateMessageId, startTypewriter, stopTypewriter, processQuizToolResponse]
   )
 
   // Handle quiz complete
