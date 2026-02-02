@@ -602,46 +602,38 @@ This pattern ensures efficient processing while maintaining quality through cont
 
 **Models Used:**
 
-1. **Google Gemini 2.5 Flash** (primary for all agents)
-   - Used for: TutorAgent conversations, QuizGeneratorAgent, FlashcardGeneratorAgent, QuickChatAgent
-   - Fallback: Gemini 1.5 Flash if 2.5 unavailable
-   - Model selection logic:
-   ```python
-   models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
-   for model_name in models_to_try:
-       try:
-           llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.1)
-           return llm
-       except:
-           continue  # Try next model
-   ```
+**Google Gemini 2.5 Flash** (single model for all tasks)
+   - Primary model used throughout the system
+   **Use Cases:**
+   - **Agent Conversations**: TutorAgent, QuizGeneratorAgent, FlashcardGeneratorAgent, QuickChatAgent
+   - **Multimodal Analysis**: PDF page analysis during upload (extracts structured information from slide images)
+   - **Note**: The same model instance is used for both conversational and vision tasks, leveraging Gemini's native multimodal capabilities.
 
-2. **Google Gemini 2.5 Flash** (vision capabilities)
-   - Used for: Multimodal PDF page analysis during upload
-   - Purpose: Extracts structured information from slide images
-   - Called once per page during PDF processing, not during conversations
-   - Same model as used for agents, leveraging Gemini's multimodal capabilities
+**Justification for Google Gemini 2.5 Flash:**
 
-**Justification:**
+Our selection of Google Gemini 2.5 Flash as the sole foundational LLM for StudyBuddy is based on its superior multimodal capabilities, performance characteristics, and seamless integration benefits, directly addressing our project's core requirements:
 
-- **Performance**: Gemini 2.5 Flash provides excellent reasoning for tool-calling and structured output generation. In our testing, it achieved 95%+ accuracy for tool selection and 90%+ for structured JSON generation. Gemini's multimodal capabilities excel at understanding complex diagrams and visual content in lecture slides, providing accurate analysis for academic content.
+- **Unified Multimodal Intelligence**: Gemini 2.5 Flash natively supports both advanced conversational understanding and powerful vision analysis. This allows us to use a single model instance for all tasks—from generating dynamic tutor responses and crafting intelligent quizzes to extracting structured insights from complex lecture slide images during PDF analysis. This unified approach simplifies our architecture, reduces API overhead, and ensures consistent AI behavior across the entire learning ecosystem.
 
-- **Speed**: Gemini 2.5 Flash has significantly lower latency (~500ms average) compared to GPT-4 (~2-3s), crucial for real-time tutoring interactions. Users expect immediate responses during study sessions.
+- **Optimized Performance & Responsiveness**: The model consistently delivers excellent reasoning for tool-calling and reliable structured output generation, which is critical for agent accuracy. Furthermore, its significantly lower average latency (approximately 500ms) compared to alternatives like GPT-4 (2-3s) is crucial for maintaining real-time, fluid interactions within study sessions, where users expect immediate responses.
 
-- **Cost**: Gemini API is cost-effective for both vision tasks and conversational interactions. We use Gemini 2.5 Flash for initial PDF analysis (one-time per page), not for every conversation turn. This unified approach reduces complexity and API management overhead while maintaining excellent performance.
+- **Strategic Context Management**: While Gemini 2.5 Flash offers an impressive 1M token context window, our system strategically employs a sliding window approach for conversational history (keeping the last 10 messages in the TutorAgent). This design decision effectively prevents token explosion during extended study sessions, ensuring cost-efficiency and consistent processing speed, while the complete conversation history is robustly preserved within the LangGraph state for full resumability. The large context window is intentionally preserved for future features, such as comprehensive cross-lecture analysis to identify relationships and patterns across multiple course materials, enabling deeper insights into interconnected topics.
 
-- **Context Window**: Gemini 2.5 Flash supports 1M token context window, sufficient for long conversation histories and multiple page analyses. This allows us to maintain context across entire study sessions.
+- **Unified Provider Strategy**: We deliberately chose to use Google Gemini exclusively across all system components, rather than mixing providers (e.g., OpenAI for conversations, Gemini for vision). This "all-in-one" approach simplifies architecture, reduces API management complexity, and ensures consistent behavior. It also enables seamless future enhancements, such as leveraging Nano Banana Pro for advanced diagram explanations and visual content analysis, without introducing provider-specific compatibility challenges.
 
-- **Accessibility**: Google Gemini API is readily available and doesn't require complex setup. Using a single provider (Gemini) for all tasks simplifies configuration, reduces dependencies, and ensures consistent behavior across all system components.
+- **Cost-Effectiveness & Accessibility**: The Gemini API proves to be highly cost-effective across its diverse use cases. Its ready availability and straightforward setup further streamline development and deployment, removing barriers associated with complex multi-provider configurations and ensuring operational simplicity.
 
 **Hyperparameters:**
 
-- **Temperature**: `0.1` for all agents
-  - Rationale: Lower temperature ensures consistent tool-calling and structured output. We want reliable, deterministic behavior rather than creative variation. In testing, `temperature=0.7` led to 20% tool-calling errors, while `temperature=0.1` reduced this to <5%.
+- **Temperature**: `0.1` for all agents (set in `get_gemini_model()` function)
+  - Rationale: Lower temperature ensures consistent tool-calling and structured output. We want reliable, deterministic behavior rather than creative variation. Based on our development experience, lower temperature values significantly improve tool-calling reliability and structured output consistency.
 
 - **Top-p**: Not explicitly set (uses model defaults)
 - **Max Tokens**: Not set (allows full responses, important for detailed explanations)
-- **Response Format**: Structured output via `llm.with_structured_output(PydanticModel)` for quiz and flashcard generation to guarantee valid JSON
+- **Response Format**: Structured output via `llm.with_structured_output(PydanticModel)` is used for:
+  - **QuizGeneratorAgent**: `QuizData` model for quiz generation
+  - **FlashcardGeneratorAgent**: `FlashcardGenerationResult` for card generation, `PageSkipDecision` for skip decisions, and `MaterialClassification` for material classification
+  - This guarantees valid JSON output and eliminates parsing errors
 
 ### 4.2. Key Components (Memory, Tools)
 
@@ -665,9 +657,12 @@ This pattern ensures efficient processing while maintaining quality through cont
    - Used by: TutorAgent when subtopic completed
 
 4. **`search_topic(query: str, user_id: str) -> List[dict]`**
-   - Searches for topics across all user's courses and materials
-   - Implementation: Full-text search on `page_analyses.analysis_data` JSONB column
-   - Returns: List of matching pages with context: `[{material_id, page_number, summary, key_terms, ...}]`
+   - Searches for topics across all user's courses and materials using RAG
+   - Implementation: Hybrid search (vector similarity + keyword full-text) when embeddings available, falls back to multi-keyword search
+     - Vector search: Uses `search_pages_by_embedding()` RPC with pgvector (HNSW index) for semantic similarity
+     - Keyword search: Full-text search on `page_analyses.analysis_data` JSONB column
+     - Fusion: Reciprocal Rank Fusion (RRF) combines both result sets (60% vector, 40% keyword weight)
+   - Returns: List of matching pages with context: `[{material_id, page_number, summary, key_terms, relevance_score, ...}]`
    - Used by: QuickChatAgent in discovery mode
 
 5. **`get_user_courses(user_id: str) -> List[dict]`**
@@ -681,95 +676,303 @@ This pattern ensures efficient processing while maintaining quality through cont
 
 **Memory:**
 
-We use **LangGraph Checkpointer** for conversation persistence:
+We use a **hybrid persistence strategy** combining LangGraph Checkpointer with Supabase database storage to achieve both performance and long-term persistence:
 
-- **Thread-based Persistence**: Each conversation session has a unique `thread_id` (typically `conversation_id` from database)
-- **Checkpointer Types**:
-  - Development: `MemorySaver` (in-memory, lost on restart)
-  - Production: `PostgresSaver` (persists to Supabase PostgreSQL)
-- **Message History**: All messages (HumanMessage, AIMessage, ToolMessage) are automatically stored and retrieved
-- **State Persistence**: Agent state (`current_page`, `material_id`, etc.) is checkpointed after each node execution
-- **Sliding Window**: TutorAgent keeps last 10 messages in context to prevent token explosion while maintaining conversation flow
+**1. LangGraph Checkpointer (Short-term State Management):**
 
-**Example Memory Usage:**
-```python
-# New thread: System message + first user message
-config = {"configurable": {"thread_id": "conv-123", "user_id": "user-456"}}
-result = agent.run("Explain page 5", thread_id="conv-123", user_id="user-456")
+- **Thread-based Persistence**: Each conversation session has a unique `thread_id` (typically `conversation_id` from database for TutorAgent, or generated for other agents)
+- **Checkpointer Types** (varies by agent):
+  - **TutorAgent & QuickChatAgent**: Use `MemorySaver` (in-memory dictionary) for fast state access during active sessions
+  - **FlashcardGeneratorAgent**: Uses `PostgresSaver` (persists to Supabase PostgreSQL) with automatic fallback to `MemorySaver` if database unavailable
+  - **QuizGeneratorAgent**: Uses `MemorySaver` (optional, typically created per-request without persistence)
+- **State Persistence**: Agent state (`current_page`, `material_id`, `messages`, etc.) is automatically checkpointed after each node execution
+- **Performance Rationale**: MemorySaver provides sub-millisecond state access (~0.01ms) compared to PostgresSaver (~20-100ms per checkpoint). Since LangGraph checkpoints state after every node execution (typically 3-5 checkpoints per user message), using MemorySaver saves 60-500ms latency per request, crucial for real-time conversational interactions.
 
-# Existing thread: Just add new message (system message already exists)
-result = agent.run("What about the diagram?", thread_id="conv-123", user_id="user-456")
-# Agent remembers previous conversation about page 5
-```
+**2. Supabase Database (Long-term Message Persistence):**
 
-**Long-term Memory (Store):**
-- Prepared but not yet fully implemented
-- Intended for: User preferences, learning patterns, successful tool-call patterns
-- Would enable: Personalized prompt adaptation, learning from past interactions
+- **Dual Storage Strategy**: While MemorySaver handles fast state access during sessions, user and assistant messages are simultaneously persisted to Supabase `messages` table for long-term storage. **Note**: ToolMessages are only stored in MemorySaver and are lost on backend restart.
+- **Restart Recovery**: When the backend restarts, MemorySaver is empty, but the system automatically loads user and assistant messages from Supabase and bootstraps them back into the LangGraph state, enabling conversation continuation. ToolMessages from previous sessions are not recovered.
+- **Why Not PostgresSaver for All Agents?**: 
+  - **Performance**: PostgresSaver adds 20-100ms latency per checkpoint (4+ checkpoints per request = 80-400ms overhead)
+  - **Redundancy**: User and assistant messages are already captured in Supabase `messages` table, making PostgresSaver redundant for conversational agents
+  - **Optimal Balance**: MemorySaver provides fast in-session access, while Supabase Messages ensure persistence across restarts—best of both worlds
+
+**3. Message History & State Management:**
+
+- **Message History**: 
+  - **HumanMessage & AIMessage**: Stored in both MemorySaver (for fast access) and Supabase `messages` table (for persistence)
+  - **ToolMessage**: Only stored in MemorySaver (not persisted to database). These messages are lost on backend restart, but this is acceptable since tool results are typically ephemeral and the conversation flow can continue without them.
+- **State Recovery**: On backend restart, `load_conversation_with_messages()` retrieves user and assistant messages from Supabase and converts them back to LangGraph Message objects (HumanMessage, AIMessage, SystemMessage). ToolMessages are not restored, but the conversation can continue normally as the LLM can make new tool calls if needed.
+- **Sliding Window** (conversational agents only):
+  - **TutorAgent**: Keeps last 10 messages in context (`MAX_HISTORY_MESSAGES = 10`) to prevent token explosion while maintaining conversation flow
+  - **QuickChatAgent**: Keeps last 15 messages (`MAX_HISTORY_MESSAGES = 15`) for additional search context
+  - **QuizGeneratorAgent & FlashcardGeneratorAgent**: No sliding window (not conversational agents, process material in batches)
+
 
 ### 4.3. Prompt Engineering
 
-**System Prompt (TutorAgent):**
+**System Prompts Overview:**
 
-The system prompt is managed in **Langfuse** under `tutor-agent/system-prompt-{language}` with fallback to hardcoded version. Key structure:
+All system prompts are managed in **Langfuse** and loaded at runtime. Prompts use variables (e.g., `{{formality_text}}`) that are compiled at runtime. If Langfuse is unavailable, agents either raise a RuntimeError or use hardcoded fallback prompts (agent-specific).
+
+#### 1. TutorAgent System Prompt
+
+**Langfuse Name**: `tutor-agent/system-prompt-{language}`
+- **German (DE)**: Version 12 (production)
+- **English (EN)**: Version 3 (production)
+- **Type**: Chat prompt
+- **Variables**: `{{formality_text}}`, `{{humor_text}}`, `{{encouragement_text}}`
+- **Fallback**: RuntimeError if Langfuse unavailable (no hardcoded fallback)
+
+**Key Structure** (simplified - actual prompt is ~2000 characters):
 
 ```
-Du bist ein persönlicher Professor für Universitätsstudenten.
+Du bist ein persönlicher Tutor für Universitätsstudenten.
 
 ## Deine Rolle
 - Erkläre auf studentenfreundlichem Niveau (nicht zu akademisch, nicht zu einfach)
-- Nutze die sokratische Methode: Stelle Fragen BEVOR du erklärst
 - Verwende Analogien und zerlege komplexe Konzepte in verständliche Schritte
-- Sei geduldig und ermutigend
+- Verknüpfe thematisch mehrere Inhalte der Vorlesung
 
 ## Kontext
-- Aktuelle Seite: {current_page}
-- Material-ID: {material_id}
-- Benutzer-ID: {user_id}
+- Aktuelle Seite: {current_page} (automatisch injiziert)
+- Material-ID: {material_id} (automatisch injiziert)
+- Benutzer-ID: {user_id} (automatisch injiziert)
 
 ## Tools
-Du hast Zugriff auf folgende Tools:
 - get_page_analysis: Hole die strukturierte Analyse für die aktuelle Seite
   → WICHTIG: course_material_id und page_number werden AUTOMATISCH injiziert
-  → Du musst diese Parameter NICHT angeben, nur user_id falls nötig
+- get_course_material_summary: Gesamtübersicht der Vorlesung
+- get_page_image: Hole visuellen Snapshot einer Seite als Bild (für komplexe Diagramme/Charts)
+  → WICHTIG: course_material_id, page_number und user_id werden AUTOMATISCH injiziert
+- create_quiz: Erstelle Quiz für abgeschlossene Themen (KRITISCH: Tool muss aufgerufen werden)
 
-## Persönlichkeit
-{formality_text}  # "formal" | "informal" | "balanced"
-{humor_text}      # "none" | "light" | "moderate"
-{encouragement_text}  # "reserved" | "moderate" | "enthusiastic"
+## Persönlichkeit (Variablen)
+{{formality_text}}  # "formal" | "informal" | "balanced"
+{{humor_text}}      # "none" | "light" | "moderate"
+{{encouragement_text}}  # "reserved" | "moderate" | "enthusiastic"
+
+## Weitere Anweisungen
+- LaTeX-Formatierung für mathematische Formeln ($...$ inline, $$...$$ display)
+- Markdown-Formatierung für strukturierte Antworten
+- Quiz-Erstellung: Automatisch bei Themenabschluss, Tool-Aufruf ist obligatorisch
+- Detaillierte Anweisungen für Quiz-Erstellung (wann, wie, was nach Erstellung)
 ```
+
+#### 2. QuickChatAgent System Prompt
+
+**Langfuse Name**: `quickchat-agent/system-prompt`
+- **Version**: 3 (production)
+- **Type**: Chat prompt
+- **Variables**: `{{formality_text}}`, `{{humor_text}}`, `{{encouragement_text}}`
+- **Fallback**: Hardcoded fallback prompt available
+
+**Key Structure**:
+
+```
+Du bist ein intelligenter Lernassistent, der Studenten hilft, Themen in ihren 
+Vorlesungsmaterialien zu finden und zu verstehen.
+
+## Deine Fähigkeiten
+
+### Discovery-Modus (Standard)
+- Suche mit `search_topic` Tool nach Themen in ALLEN Kursen
+- Zeige alle Kurse mit `get_user_courses`
+- Präsentiere relevante Seiten mit Kontext (Kurs, Material, Seitenzahl)
+
+### Tutoring-Modus (nach Navigation zu einer Seite)
+- **WICHTIG**: Bei JEDER Frage, rufe ZUERST `get_page_analysis` für die aktuelle Seite auf
+- **FOKUS AUF AKTUELLE SEITE**: Interpretiere alle Fragen im Kontext der aktuellen Seite
+- **SELTEN ANDERE VORLESUNGEN VORSCHLAGEN**: Nur wenn explizit gefragt oder offensichtlich nicht relevant
+- **NAVIGATION MIT BESTÄTIGUNG**: Frage vor Navigation: "Soll ich zu [Material] auf Seite [X] navigieren?"
+
+## Kommunikationsstil
+{{formality_text}}
+{{humor_text}}
+{{encouragement_text}}
+```
+
+#### 3. QuizGeneratorAgent System Prompt
+
+**Langfuse Name**: `quiz-generator/system-prompt-{language}`
+- **German (DE)**: Version 2 (production)
+- **Type**: Chat prompt
+- **Variables**: None (static prompt)
+- **Fallback**: Hardcoded fallback prompt available
+
+**Key Structure**:
+
+```
+Du bist ein Quiz-Generator für Vorlesungsmaterialien. Deine Aufgabe ist es, 
+Verständnisfragen zu erstellen, die das Verständnis der Studenten prüfen, 
+nicht das Auswendiglernen.
+
+WICHTIGE REGELN:
+1. Erstelle 3-8 Fragen (max. 8)
+2. Schwierigkeitsverteilung:
+   - 1-2 leichte Fragen (Grundverständnis, Definitionen)
+   - 1 mittlere Frage (Anwendung, Zusammenhänge)
+   - Mindestens 1 schwere Frage (tiefes Verständnis, Analyse, Synthese)
+3. Jede Frage muss genau 4 Antwortmöglichkeiten haben (A, B, C, D)
+4. Fragen sollen VERSTÄNDNIS prüfen, nicht Auswendiglernen
+5. Jede Frage braucht eine Erklärung der richtigen Antwort
+
+FRAGEN-TYPEN (bevorzugt):
+- Anwendungsfragen: "Wie würde man X in Situation Y anwenden?"
+- Verständnisfragen: "Warum funktioniert X auf diese Weise?"
+- Analysefragen: "Was wäre das Ergebnis, wenn man X ändert?"
+- Synthesefragen: "Wie hängen X und Y zusammen?"
+
+AUSGABE-FORMAT:
+JSON-Format entsprechend QuizData Schema (topic, questions, metadata)
+```
+
+#### 4. FlashcardGeneratorAgent
+
+**Note**: FlashcardGeneratorAgent does not use a traditional system prompt. Instead, it uses specialized prompts for different tasks that are loaded dynamically based on the material classification.
+
+##### 4.1. Skip Decision Prompt
+
+**Langfuse Name**: `flashcard-agent/skip-decision`
+- **Version**: 2 (production)
+- **Type**: Text prompt
+- **Variables**: `{{summary}}`, `{{key_terms}}`
+- **Output Format**: JSON with `{"skip": true/false, "reason": "..."}`
+
+**Key Structure**:
+
+```
+Analysiere diese Vorlesungsseite und entscheide, ob sie übersprungen werden sollte.
+
+Seitenzusammenfassung: {{summary}}
+Wichtige Begriffe: {{key_terms}}
+
+Überspringe die Seite, wenn sie:
+- Eine Titelseite ist
+- Ein Inhaltsverzeichnis ist
+- Eine Einleitungsseite mit nur allgemeinen Informationen ist
+- Eine Seite mit weiteren Informationen ist die nicht auswendig gelernt müssen 
+  (z.B. Klausurtermin, Klausurinhalte, andere Veranstaltungen, Organisatorische 
+  Informationen etc.)
+- Keine fachlichen Inhalte enthält
+
+Antworte mit JSON: {"skip": true/false, "reason": "Kurze Begründung"}
+```
+
+##### 4.2. Card Generation Prompt
+
+**Langfuse Name**: `flashcard-agent/card-generation`
+- **Version**: 10 (production)
+- **Type**: Text prompt
+- **Variables**: `{{summary}}`, `{{key_terms}}`, `{{exam_questions}}`, `{{diagram_description}}`, `{{conversation_context}}`, `{{snippet_image_url}}`, `{{course_id}}`, `{{material_id}}`, `{{page_number}}`
+- **Output Format**: JSON with `{"cards": [{"front": "...", "back": "...", "tags": [...]}]}`
+- **Domain Variants**: 
+  - `card-generation-computer_science` (v2) - Extends base with CS-specific didactics
+  - `card-generation-math` (v2) - Extends base with math-specific didactics and MathML examples
+  - `card-generation-business_administration` (v1)
+  - `card-generation-language_learning` (v1)
+  - `card-generation-general` (v1)
+
+**Key Structure** (simplified - actual prompt is ~1500 characters):
+
+```
+# ROLLE
+Du bist ein erfahrener universitärer Tutor und Experte für die Erstellung 
+effektiver Lernkarteikarten.
+
+# INPUT DATEN
+- Zusammenfassung: {{summary}}
+- Wichtige Begriffe: {{key_terms}}
+- Prüfungsfragen: {{exam_questions}}
+- Diagrammbeschreibung: {{diagram_description}}
+- Konversation/Kontext: {{conversation_context}}
+- Visuelles Snippet: {{snippet_image_url}}
+
+# ANWEISUNGEN
+1. Lernziele identifizieren: Was ist die Kernaussage dieser Folie?
+2. Kontext einbeziehen: Adressiere Verständnisprobleme aus der Konversation
+3. Visuelles Snippet analysieren: Wenn vorhanden, analysiere das Bild und füge es 
+   bei relevanten Karten ein (z.B. Diagramme, Formeln, Tabellen)
+4. Karteikarten erstellen: Generiere 1-4 Karteikarten nach Atomizitätsprinzip
+5. Zuordbar: Jede Karte soll ohne weiteren Kontext verständlich sein
+
+# GRUNDREGELN
+- Atomizität: Ein Konzept pro Karte
+- Rückseite maximal 18 Wörter
+- Präzise Fragen, keine Ja/Nein oder Aufzählungen
+- Vollständiger Kontext in der Frage (z.B. "Python: Wer hat es entwickelt?")
+
+# FORMATIERUNG DER RÜCKSEITE (WICHTIG!)
+- Muss in HTML formatiert sein (nicht Markdown)
+- Nutze <b>...</b> für Schlüsselbegriffe
+- Nutze <ul><li>...</li></ul> für Aufzählungen
+- Nutze <br> für Zeilenumbrüche
+- BILD-EINFÜGUNG: Wenn Snippet relevant, füge am Ende ein:
+  <br><br><img src="{{snippet_image_url}}" alt="Visual Snippet">
+- Verwende MathML für mathematische Formeln (<math>, <mfrac>, <mroot>)
+- KEIN Pipe-Symbol (|) im HTML verwenden!
+
+# OUTPUT FORMAT
+{
+  "cards": [
+    {
+      "front": "Frage oder Begriff (Reintext)",
+      "back": "HTML-String (z.B. <b>Definition:</b><br>Erklärung...",
+      "tags": ["course:{{course_id}}", "material:{{material_id}}", 
+               "page:{{page_number}}", "Thema"]
+    }
+  ]
+}
+```
+
+**Domain-Specific Extensions**:
+
+- **Computer Science** (`card-generation-computer_science`):
+  - Fokus auf Abstraktionsebene (keine Code-Implementierung)
+  - Bidirektionales Abfragen (Definition + Anwendung)
+  - Prozess-Fokus bei Algorithmen (keine Syntax-Details)
+  - `<code>...</code>` für technische Termini
+  - MathML für Komplexitätsnotation (z.B. O(n))
+
+- **Mathematics** (`card-generation-math`):
+  - Fokus auf faktenbasiertes Wissen, Grundlagen, Prozesse
+  - Definitionen, Kernformeln, Rechengesetze
+  - Prozessorientierung (How-to Schritte)
+  - MathML-Pflicht für alle mathematischen Ausdrücke
+  - Detaillierte MathML-Beispiele für verschiedene Formeln
 
 **Prompting Techniques:**
 
 1. **ReAct (Reasoning and Acting)**: 
-   - Our agents follow a ReAct-style loop: `agent → tools → agent → tools → ...`
-   - The LLM reasons about which tool to call, executes it, observes results, and decides next action
-   - Example flow:
+   - **Note**: ReAct is not explicitly mentioned in prompts, but emerges automatically through LangGraph architecture
+   - The LangGraph workflow implements a ReAct-style loop: `agent → tools → agent → tools → ...`
+   - The LLM (with tools bound via `llm.bind_tools()`) decides which tools to call based on the conversation context
+   - The `should_continue` conditional routing automatically loops back to agent after tool execution
+   - Tool usage is encouraged in prompts (e.g., "Verwende das get_page_analysis Tool, um Folieninhalte abzurufen, wenn nötig"), but the iterative loop is architectural
+   - Example flow (automatic through graph execution):
      ```
      User: "What is a sequence diagram?"
-     Agent (Reasoning): "I need to understand what's on the current page. I should call get_page_analysis."
-     Agent (Action): Calls get_page_analysis tool
-     Agent (Observation): Receives {summary: "...", key_terms: ["sequence diagram", ...]}
-     Agent (Reasoning): "Now I have the context. I can explain sequence diagrams."
+     Agent (Reasoning): LLM decides to call get_page_analysis tool
+     Agent (Action): Calls get_page_analysis tool (via ToolNode)
+     Agent (Observation): Receives ToolMessage with {summary: "...", key_terms: ["sequence diagram", ...]}
+     Agent (Reasoning): LLM processes tool result and generates response
      Agent (Response): "A sequence diagram is a UML diagram that shows..."
      ```
 
 2. **Chain of Thought (CoT)**:
-   - Implicit in our prompts: "Think step-by-step", "Break concepts into steps"
-   - QuizGeneratorAgent explicitly structures questions by difficulty (easy → medium → hard)
-   - FlashcardGeneratorAgent reasons: "Should I skip this page? Why? What context do I need?"
+   - Structured reasoning is encouraged through prompt design (e.g., "Analyze... and decide" in flashcard skip-decision)
+   - QuizGeneratorAgent structures questions by difficulty distribution (1-2 easy, 1 medium, at least 1 hard)
+   - FlashcardGeneratorAgent explicitly reasons: "Should I skip this page? Why? What context do I need?" (via `PageSkipDecision` structured output)
 
 3. **Structured Output**:
-   - QuizGeneratorAgent uses `llm.with_structured_output(QuizData)` to guarantee valid JSON
+   - QuizGeneratorAgent uses `llm.with_structured_output(QuizData)` to guarantee valid Pydantic-validated output
    - FlashcardGeneratorAgent uses `PageSkipDecision` and `FlashcardGenerationResult` Pydantic models
    - Ensures consistent, parseable outputs without JSON parsing errors
    - Example:
    ```python
-   quiz_data = await llm.ainvoke(
-       messages,
-       config={"configurable": {"response_format": {"type": "json_object"}}}
-   )
-   # Guaranteed to be valid QuizData, no parsing errors
+   structured_llm = llm.with_structured_output(QuizData)
+   quiz_data = structured_llm.invoke(messages)
+   # Guaranteed to be valid QuizData Pydantic model, no parsing errors
    ```
 
 4. **Context Injection**:
@@ -781,23 +984,113 @@ Du hast Zugriff auf folgende Tools:
 
 1. **Initial Prompt** (v1): Simple "You are a helpful tutor" with basic tool descriptions
    - Problem: LLM hallucinated IDs (`course_material_id="test-id"`), didn't use tools consistently
-   - Error rate: ~30% tool-calling failures
+   - Result: High tool-calling failure rate
 
 2. **Added State Injection** (v2): Explicitly mentioned `current_page`, `material_id` in prompt
    - Problem: LLM still sometimes forgot to use tools or used wrong parameters
-   - Error rate: ~15% tool-calling failures
+   - Result: Reduced but still significant tool-calling failures
 
 3. **StateAwareToolNode** (v3): Automatic state injection at tool execution level
    - Solution: Prevents hallucination completely, LLM doesn't need to specify IDs
-   - Error rate: <5% tool-calling failures
+   - Result: Significantly reduced tool-calling failures
 
 4. **Personality Variables** (v4): Added formality, humor, encouragement customization
    - Result: More personalized, engaging interactions
-   - User feedback: 80% prefer personalized over generic responses
 
-5. **Langfuse Integration** (v5): Moved prompts to Langfuse for versioning and A/B testing
+5. **Langfuse Integration** (v5-v12): Moved prompts to Langfuse for versioning and A/B testing
    - Benefit: Can update prompts without code changes, track prompt performance
    - Current: All prompts versioned in Langfuse with production labels
+   - **Detailed Langfuse Prompt Evolution Summary**:
+
+   **TutorAgent (`tutor-agent/system-prompt-de`)**:
+     - **v1** (Jan 20, 2026): Initial prompt
+       * Role: "persönlicher Professor" (personal professor)
+       * Socratic method explicitly mentioned: "Stelle Fragen BEVOR du erklärst"
+       * Basic tool descriptions (get_page_analysis, get_course_material_summary)
+       * Personality variables (formality, humor, encouragement)
+       * Communication style: "2-3 Sätze für Erklärungen, 1-2 für Fragen"
+       * No quiz creation instructions
+       * No formatting guidelines
+     
+     - **v5** (Jan 23, 2026): Major additions
+       * **LaTeX formatting section added**: Comprehensive instructions for inline ($...$) and display ($$...$$) formulas
+       * **Quiz creation section added**: Basic instructions for automatic quiz creation when subtopic completed
+       * Quiz creation language: "WICHTIG" (important), not yet "KRITISCH" (critical)
+       * Still "persönlicher Professor" (not yet changed to "Tutor")
+       * Socratic method still present
+     
+     - **v10** (Jan 23, 2026): Major revision
+       * **Role change**: "persönlicher Professor" → "persönlicher Tutor" (more approachable)
+       * **Socratic method removed**: No longer explicitly asks questions before explaining
+       * **Learning objectives emphasis added**: "Wichtig ist, dass du wirklich verstehst, was genau der Professor möchte, dass der Student mit dieser Folie lernt"
+       * **Thematic linking added**: "Du kannst mehre inhalte der Vorlesung Thematisch verknüpfen"
+       * **Markdown formatting section added**: Instructions for using headings, lists, bold, code blocks, blockquotes
+       * **Quiz creation strengthened**: Changed from "WICHTIG" to "KRITISCH - BITTE GENAU BEFOLGEN"
+       * **Quiz workflow detailed**: Step-by-step process (1) Recognize need → 2) Call tool → 3) Wait → 4) Confirm
+       * **Quiz widget handling**: Explicit instruction not to output questions as text
+       * **Communication style updated**: Removed specific sentence count, added "Maximal 4-7 Sätze"
+     
+     - **v12** (Jan 30, 2026 - current production): Final refinements
+       * **User-initiated quiz section added**: "WENN DER USER NACH EINEM QUIZ FRAGT ODER DARAUF BESTEHT"
+       * **Explicit tool call requirement**: "RUFE SOFORT DAS `create_quiz` TOOL AUF - KEINE Diskussionen, KEINE Rückfragen"
+       * **Stop after quiz creation**: "KRITISCH - NACH QUIZ-ERSTELLUNG: ... sollst du NICHT weiter schreiben"
+       * **Enhanced context awareness**: Better instructions for recognizing topic changes
+       * **Communication style**: "Halt deine Antworten relevant. Maximal 4-7 Sätze"
+
+   **FlashcardGeneratorAgent (`flashcard-agent/card-generation`)**:
+     - **v1** (Jan 20, 2026): Initial simple prompt
+       * Basic structure: Create 1-4 flashcards from page content
+       * Simple JSON output format
+       * No HTML formatting requirements
+       * No visual snippet support
+       * No MathML support
+     
+     - **v5** (Jan 26, 2026): Major overhaul
+       * **Complete restructure**: New role definition, structured sections (ROLLE, INPUT DATEN, ANWEISUNGEN)
+       * **HTML formatting requirement**: "Die Rückseite muss zwingend in **HTML** formatiert sein"
+       * **MathML support added**: Instructions for using `<math>`, `<mfrac>`, `<mroot>` elements
+       * **Visual snippet support added**: `{{snippet_image_url}}` variable with Handlebars conditional (`{{#if snippet_image_url}}`)
+       * **Atomizität principle**: One concept per card, max 18 words on back
+       * **Context requirement**: Cards must be understandable without additional context
+       * **Pipe symbol restriction**: Explicit warning not to use `|` in HTML (used as separator in import for csv at that time)
+     
+     - **v10** (Jan 26, 2026 - current production): Snippet handling refinement
+       * **Simplified snippet variable**: Changed from Handlebars conditional to direct `{{snippet_image_url}}` variable
+       * **Vision-Input mention**: "Du siehst das Bild direkt in dieser Nachricht als Vision-Input"
+       * **Enhanced snippet instructions**: More detailed guidance on when to include images (diagrams, formulas, tables, graphics)
+       * **Explicit HTML code**: "Verwende EXAKT diesen HTML-Code: `<br><br><img src=\"{{snippet_image_url}}\" alt=\"Visual Snippet\">`"
+       * **Empty snippet handling**: "Wenn kein Snippet vorhanden ist, wird {{snippet_image_url}} leer sein - dann füge KEIN img-Tag ein!"
+
+   **QuizGeneratorAgent (`quiz-generator/system-prompt-de`)**:
+     - **v1** (Jan 23, 2026): Initial prompt
+       * Question count: "3-5 Fragen (max. 8)"
+       * Difficulty distribution defined
+       * Question types and avoidance rules
+     
+     - **v2** (Jan 28, 2026 - current production): Minor update
+       * **Question count adjusted**: "3-8 Fragen" (removed "3-5", now allows 3-8 directly)
+
+   **QuickChatAgent (`quickchat-agent/system-prompt`)**:
+     - **v1** (Feb 1, 2026): Initial prompt
+       * Basic Discovery and Tutoring modes
+       * Simple mode switching description
+       * No focus on current page context
+     
+     - **v3** (Feb 1, 2026 - current production): Context-aware revision
+       * **Current page focus**: "FOKUS AUF AKTUELLE SEITE: Dein Hauptfokus liegt IMMER auf der aktuellen Seite"
+       * **Context interpretation**: "Interpretiere alle Fragen im Kontext der aktuellen Seite"
+       * **Rare cross-lecture suggestions**: "SELTEN ANDERE VORLESUNGEN VORSCHLAGEN" - only when explicitly asked
+       * **Navigation confirmation**: "NAVIGATION MIT BESTÄTIGUNG" - must ask before navigating
+       * **Explicit tool call**: "Bei JEDER Frage des Benutzers, rufe ZUERST `get_page_analysis` auf"
+       * **Enhanced rules**: 8 detailed rules instead of 5 basic ones
+
+   **Key Improvements Across All Agents**:
+     - **Progressive refinement**: Each version addresses specific issues observed in production
+     - **Explicit instructions**: Prompts became more prescriptive (e.g., "MUST" vs "should", "KRITISCH" vs "WICHTIG")
+     - **Formatting standardization**: HTML for flashcards, LaTeX for math, Markdown for tutor responses
+     - **Context awareness**: Better handling of current page, user state, and conversation context
+     - **Visual content support**: Addition of `snippet_image_url` for flashcard generation with vision models
+     - **Tool usage clarity**: Explicit instructions on when and how to call tools, with automatic injection emphasis
 
 ### 4.4. Context Engineering
 
@@ -811,72 +1104,98 @@ We structure context as:
 + [Tool Results (if any, as ToolMessages)]
 ```
 
+**Context Initialization Prompts (TutorAgent):**
+
+The TutorAgent uses **3 specialized Langfuse prompts** to initialize context for different scenarios. These prompts are loaded as `HumanMessage` content (not system prompts) and provide contextual instructions for the agent's first response:
+
+1. **`tutor-agent/first-visit`** (v2, production):
+   - **Use Case**: First time student opens a specific lecture material
+   - **Variables**: `{{page_number}}`, `{{total_pages}}`, `{{summary}}`
+   - **Behavior**: Instructs agent to call `get_course_material_summary` tool first, then generate onboarding greeting
+   - **Structure**: Hook → Priming (Big Picture) → Motivation → Call to Action
+   - **Language**: German ("Du"-Form)
+
+2. **`tutor-agent/welcome-back`** (v1, production):
+   - **Use Case**: Student returns to study session after closing/reopening
+   - **Variables**: `{{completed_pages}}`, `{{total_pages}}`, `{{topics_instructions}}`
+   - **Behavior**: Generates personalized greeting referencing chat history topics
+   - **Key Feature**: Extracts 2-5 most important topics from previous conversation (only actually discussed topics, not future announcements)
+   - **Language**: German
+
+3. **`tutor-agent/page-change-existing-thread`** (v1, production):
+   - **Use Case**: Student navigates to new page when LangGraph state exists in MemorySaver (ongoing session)
+   - **When this happens**: 
+     * Page change within same backend process (state is still in MemorySaver)
+     * Conversation history is already loaded in LangGraph state
+   - **Variables**: `{{page_number}}`, `{{summary}}`
+   - **Behavior**: Lighter hint, continues ongoing conversation naturally (less explicit since context is already established)
+   - **Language**: German
+   - **Technical Note**: Used when `is_new_thread = False` (snapshot exists with messages)
+
+
+**Implementation**: These prompts are loaded via `get_tutor_prompt()` helper function in `/api/chat/initiate` endpoint and injected as `HumanMessage` content before the first agent response. They provide **contextual priming** rather than system-level instructions.
+
+**Why HumanMessage instead of SystemMessage?**:
+- **SystemMessage is persistent**: SystemMessages remain in conversation history and are sent with every LLM call. The `call_model()` method filters out old SystemMessages but preserves them in state, and `add_system_message()` only adds a SystemMessage if none exists (to prevent duplicates).
+- **Init-Prompts are situational, not permanent**: `first-visit`, `welcome-back`, and `page-change` are one-time instructions for the agent's first response in a specific context. They should not be re-sent with every subsequent LLM call.
+- **Token efficiency**: If these prompts were SystemMessages, they would consume tokens on every call, even though they're only relevant for the initial greeting.
+- **Semantic correctness**: These prompts represent contextual user instructions ("greet the user", "explain the new page") rather than permanent system behavior. As `HumanMessage`, they are treated as user requests that the agent should respond to, which matches their purpose.
+- **Existing SystemMessages**: The agent already has two SystemMessages: (1) the permanent system prompt (`tutor-agent/system-prompt-de`) defining role and behavior, and (2) a context SystemMessage with current page information. Adding init-prompts as SystemMessages would create unnecessary redundancy.
+
 **Context Window Management:**
 
-- **Sliding Window Approach**: TutorAgent keeps last 10 messages (SystemMessage + 9 conversation turns)
+- **Sliding Window Approach**: TutorAgent keeps last 10 messages total (`MAX_HISTORY_MESSAGES = 10`)
+  - **Note**: This is SystemMessage + up to 9 other messages (HumanMessage, AIMessage, ToolMessage)
+  - **QuickChatAgent**: Uses 15 messages (`MAX_HISTORY_MESSAGES = 15`) for additional search context
+  - **QuizGeneratorAgent & FlashcardGeneratorAgent**: No sliding window (batch processing, not conversational)
+
 - **Tool Call Pairing**: AIMessage with `tool_calls` and corresponding ToolMessages are kept together (never split)
+  - **Complex Logic**: If truncation would split a tool call pair, the incomplete AIMessage is removed
+  - **Fallback**: If an AIMessage with tool_calls is removed, the system tries to include one additional older message (if it's not another incomplete tool call)
+
 - **Priority**: Recent messages > Older messages. When limit reached, oldest messages removed first
-- **Truncation Logic**: 
-  ```python
-  def _truncate_message_history(messages: List[BaseMessage], max_messages: int = 10):
-      # Keep system message
-      system_msg = [m for m in messages if isinstance(m, SystemMessage)]
-      # Keep last N-1 non-system messages
-      other_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
-      return system_msg + other_msgs[-(max_messages-1):]
-  ```
+- **SystemMessage Handling**: Old SystemMessages are discarded - `add_system_message()` sets the current system prompt (prevents duplicate system prompts)
+
 
 **Context Retrieval:**
 
-- **Direct Database Access**: No RAG/vector search. We use structured JSONB queries:
-  ```sql
-  SELECT analysis_data FROM page_analyses 
-  WHERE course_material_id = $1 AND page_number = $2
-  ```
+- **Agent-Specific Approaches**:
+  - **TutorAgent, QuizGeneratorAgent, FlashcardGeneratorAgent**: Direct database access, NO RAG/vector search. Use structured JSONB queries:
+    ```sql
+    SELECT analysis_data FROM page_analyses 
+    WHERE course_material_id = $1 AND page_number = $2
+    ```
+    - Rely on exact page number matching (faster, more reliable for page-specific queries)
+    - No semantic search needed - these agents work with known page numbers
+  
+  - **QuickChatAgent (Discovery Mode)**: Uses RAG with Hybrid Search (Vector + Keyword)
+    - **Vector Similarity Search**: Uses `search_pages_by_embedding()` RPC function with pgvector (HNSW index)
+    - **Hybrid Search**: Combines vector similarity (60% weight) with keyword full-text search (40% weight) using Reciprocal Rank Fusion (RRF)
+    - **Embedding Generation**: Query embeddings generated using Google `text-embedding-004` (768 dimensions)
+    - **Fallback Strategy**: If embeddings unavailable, falls back to multi-keyword search with LLM-extracted keywords
+    - **Implementation**: `SearchTopicTool` uses `search_page_analyses_hybrid()` from `storage.py`
+    - **Purpose**: Find relevant pages across all courses when user searches for topics (semantic similarity needed)
+
 - **Structured Data**: Each page analysis contains pre-extracted `summary`, `key_terms`, `exam_questions`, `diagram_description` from Google Gemini 2.5 Flash (multimodal analysis)
-- **No Semantic Search**: We rely on exact page number matching rather than semantic similarity (faster, more reliable for our use case)
+- **Course Material Summary**: Retrieved via `get_course_material_summary` tool, cached in state (`course_material_summary` field)
+  - **Token Optimization**: Summary only included in system prompt on first call or when material changes (saves ~200-500 tokens)
+  - **Truncation**: Summary truncated to 500 characters with compact JSON formatting (saves ~200-1500 tokens/call)
 
 **Context Compression/Summarization:**
 
 - **Not Implemented**: We don't summarize older messages yet
-- **Future Enhancement**: Could implement two-tier memory (detailed last 2 turns, summarized turns 3-10)
+- **Future Enhancement**: Could implement two-tier memory (detailed last 5 turns, summarized turns 6-15)
 
 **Dynamic Context Selection:**
 
 - **Mode-Based Context**: QuickChatAgent uses different context templates:
-  - **Discovery Mode**: Includes `search_topic` and `get_user_courses` tool results
-  - **Tutoring Mode**: Includes `get_page_analysis` for current page, similar to TutorAgent
+  - **Discovery Mode**: Uses RAG (hybrid vector + keyword search) via `search_topic` tool to find relevant pages across all courses. Includes `get_user_courses` tool results for course listing
+  - **Tutoring Mode**: Switches to direct database access (no RAG) - includes `get_page_analysis` for current page, similar to TutorAgent
 - **Tool-Specific Context**: When `create_quiz` is called, QuizGeneratorAgent receives only relevant page analyses (start_page to end_page), not entire conversation
-
-**Example Context Flow:**
-
-```
-User: "Explain this slide"
-  ↓
-TutorAgent.call_model():
-  System Prompt: "You are a tutor. Current page: 5, Material: mat-123, User: user-456"
-  Messages: [
-    SystemMessage("..."),
-    HumanMessage("Explain this slide")
-  ]
-  ↓
-LLM decides: Need page analysis → Calls get_page_analysis
-  ↓
-Tool returns: ToolMessage({summary: "...", key_terms: [...], ...})
-  ↓
-TutorAgent.call_model() (next iteration):
-  System Prompt: (same)
-  Messages: [
-    SystemMessage("..."),
-    HumanMessage("Explain this slide"),
-    AIMessage(tool_calls=[...]),
-    ToolMessage({summary: "...", ...})
-  ]
-  ↓
-LLM generates explanation using tool results
-```
-
----
+- **State-Based Context Injection**: TutorAgent dynamically injects context into system prompt:
+  - Always: `current_page`, `material_id`
+  - Conditionally: `course_material_summary` (only on first call or material change)
+  - Language-aware: German/English context strings based on `self.language`
 
 ## 5. Evaluation & Challenges
 
@@ -885,43 +1204,83 @@ LLM generates explanation using tool results
 **Testing Approach:**
 
 We tested agents through:
-1. **Unit Tests**: `test_all_agents.py` - Tests each agent's graph execution, state management, tool calling (16+ test cases)
-2. **Integration Tests**: API endpoints with real database queries
+1. **Comprehensive Test Suite**: `test_all_agents.py` - A comprehensive automated test suite covering all agents, tools, and integrations. The test suite consists of 58 test cases organized into 7 main sections:
+   - **Section 1: Import Tests** - Verifies all critical imports (BaseAgent, TutorAgent, FlashcardGeneratorAgent, QuizGeneratorAgent, QuickChatAgent, all 16+ tools, schemas, and services)
+   - **Section 2: Tutor Agent Tests** - Tests TutorAgent initialization (default and custom personality configs), tool binding verification, state management, and message history sliding window
+   - **Section 2.5: QuickChat Agent Tests** - Tests QuickChatAgent initialization, tool binding (6 tools: search_topic, get_user_courses, get_page_analysis, get_course_material_summary, create_quiz, get_page_image), state management, and tool execution
+   - **Section 3: Flashcard Generator Agent Tests** - Tests FlashcardGeneratorAgent initialization, FlashcardState validation (17 required fields), and deduplication algorithm (both external and internal deduplication)
+   - **Section 4: Quiz Generator Agent Tests** - Tests QuizGeneratorAgent initialization, language configuration, QuizData schema validation, and QuizQuestion options validation
+   - **Section 5: Tool Tests** - Tests all 10 Anki tools (get_anki_deck_list, create_flashcard, create_flashcards_batch, search_anki_cards, get_anki_stats, etc.), TTS tool, Page Analysis Tool, Page Image Tool, Quiz Tool, Course Material Tool, and Knowledge Tool
+   - **Section 6: Integration Tests** - Tests database connection (Supabase), Gemini LLM integration, Langfuse client, AnkiClient with cache, and full graph compilation for all agents
+   - **Section 7: Error Handling Tests** - Tests graceful error handling for invalid material IDs, Anki not running scenarios, quiz validation errors, empty explanations, and flashcard deduplication edge cases
+
+2. **Integration Tests**: Service-level integration tests with real database queries - `test_full_integration.py` tests the complete flow of Anki integration, flashcard caching, deduplication, and database operations. These tests directly call service functions (not HTTP endpoints) but use real Supabase database connections to verify end-to-end functionality including cache operations, Anki sync, deck renaming, and tag extraction. **Note**: The test script is safe to run as it uses unique test deck names (e.g., `TestCourse::TestLecture_Integration`, `FullIntegrationTest::Lecture1`) and performs cleanup after each test, but requires Anki to be running.
+
 3. **Manual Testing**: Real study sessions with actual lecture PDFs (Software Engineering, Database Systems)
 
-**Example 1: TutorAgent Working Well**
+**Example 1: TutorAgent - Initializing New Lecture with Course Summary**
 
-**User Input:**
-```
-"Was ist ein Sequenzdiagramm?"
-```
+**Scenario:** User opens a Software Engineering lecture for the first time (starts on page 1).
 
-**Agent Process:**
-1. Agent receives message with `current_page=15`, `material_id="mat-123"`
-2. Agent calls `get_page_analysis` tool (automatic state injection: `course_material_id="mat-123"`, `page_number=15`)
-3. Tool returns: `{summary: "Sequence diagrams show object interactions...", key_terms: ["sequence diagram", "UML", "lifeline"], diagram_description: "Diagram shows User → System → Database interactions"}`
-4. Agent generates response using this context
+**API Endpoint:** `/chat/initiate` (called when user opens a new lecture or navigates to a new page)
+
+**Process:**
+1. **API loads course material summary** (lines 928-931 in `endpoints.py`):
+   ```python
+   course_summary = get_course_material_summary(
+       course_material_id=course_material_id,
+       user_id=request.user_id
+   )
+   ```
+   Returns: `{title: "Software Engineering", total_pages: 120, topics: ["UML", "Design Patterns", ...], ...}`
+
+2. **API creates initial state** (lines 1461-1471):
+   ```python
+   initial_state = {
+       "current_page": 1,  # First page when opening new lecture
+       "material_id": "mat-123",
+       "user_id": "user-456",
+       "course_material_summary": course_summary,  # Injected here!
+       "messages": [...]
+   }
+   ```
+
+3. **TutorAgent detects material change** (line 686-687 in `tutor_agent.py`):
+   ```python
+   material_changed = (self._last_material_id is None or 
+                      self._last_material_id != current_material_id)
+   ```
+   Since `_last_material_id` is `None` (first call), `material_changed = True`
+
+4. **Agent injects summary into system prompt** (lines 691-706):
+   - Summary is truncated to 500 chars to save tokens
+   - Added to context as `VORLESUNGSÜBERSICHT` (Course Overview)
+   - Only included on first call or when material changes (token optimization)
+
+5. **Agent calls `get_page_analysis` tool** (automatic state injection via StateAwareToolNode):
+   - `course_material_id="mat-123"` (from state)
+   - `page_number=1` (from state - first page when opening new lecture)
+   - `user_id="user-456"` (from state)
+
+6. **Tool returns page-specific data**:
+   ```json
+   {
+     "summary": "Introduction to Software Engineering: Overview of course structure, learning objectives, and key topics including UML diagrams, design patterns, and software architecture.",
+     "key_terms": ["software engineering", "UML", "design patterns", "architecture"],
+     "diagram_description": null
+   }
+   ```
 
 **Agent Output:**
 ```
-Ein Sequenzdiagramm ist eine Art von UML-Diagramm, das die Interaktion zwischen verschiedenen Objekten oder Komponenten in einem System über die Zeit zeigt.
+Hallo! 👋 Herzlich willkommen zur Vorlesung "Softwaretechnik: Design Patterns II". Schön, dass du da bist!
 
-Auf dieser Folie siehst du:
-- **Objekte/Lebenslinien**: Die vertikalen Linien repräsentieren verschiedene Objekte oder Akteure (z.B. User, System, Database)
-- **Nachrichten**: Die horizontalen Pfeile zeigen die Kommunikation zwischen Objekten
-- **Zeitachse**: Die Zeit verläuft von oben nach unten
+In dieser Vorlesung tauchen wir tief in die Welt der Entwurfsmuster ein. Wir werden uns speziell mit dem State-, Strategy- und Decorator-Pattern beschäftigen. Das Ziel ist, dass du am Ende nicht nur verstehst, wie diese Muster funktionieren, sondern auch, wann und wie du sie einsetzen kannst, um flexible und wartbare Software zu entwickeln. Stell dir vor, du lernst, wie man Software so baut, dass sie sich leicht an neue Anforderungen anpassen lässt, ohne dass alles auseinanderfällt – ziemlich cool, oder?
 
-**Beispiel aus der Folie:**
-Wenn du dir das Diagramm anschaust, siehst du wie "User" eine Nachricht an "System" sendet, und das System dann eine Antwort zurückgibt.
+Du wirst lernen, wie man komplexe Probleme in der Softwareentwicklung elegant löst und deine Programme robuster und einfacher erweiterbar macht.
 
-Möchtest du mehr über die verschiedenen Arten von Nachrichten erfahren (synchrone vs. asynchrone)?
+Bereit, loszulegen? Dann lass uns zur nächsten Folie springen oder frag mich, wenn du wissen möchtest, was uns in der kommenden Session alles erwartet! 😊
 ```
-
-**Why it worked:**
-- StateAwareToolNode correctly injected `material_id` and `page_number` (no hallucination)
-- Tool returned structured data from database (pre-analyzed by Google Gemini 2.5 Flash)
-- Agent used diagram_description to reference visual content
-- Agent proactively offered to explain more (proactive behavior)
 
 **Example 2: QuizGeneratorAgent Working Well**
 
@@ -940,22 +1299,17 @@ Möchtest du mehr über die verschiedenen Arten von Nachrichten erfahren (synchr
 - **1 medium**: "How would you apply the Single Responsibility Principle to this class design?" (application)
 - **2 hard**: "Analyze the trade-offs between inheritance and composition in this scenario" (analysis), "Design a class hierarchy that demonstrates both encapsulation and abstraction" (synthesis)
 
-**Why it worked:**
-- Structured output ensured valid JSON format (no parsing errors)
-- Difficulty distribution met requirements (1-2 easy, 1 medium, 1+ hard)
-- Questions tested comprehension, not memorization (application, analysis, synthesis)
-- All questions had exactly 4 options and explanations
 
 **Example 3: FlashcardGeneratorAgent Working Well**
 
 **Input:** 
 - 50-page PDF about "Software Engineering"
 - Conversation history with 20 Q&A pairs
-- Material classification: "general" (not language_learning or math)
+- Material classification: "computer science"
 
 **Agent Process:**
 1. Initializes: Loads all 50 page analyses and snippets
-2. Classifies material: "general" (cached in database)
+2. Classifies material: "computer_science" (cached in database)
 3. For each page (0-49):
    - Skip decision: LLM decides to skip pages 0-2 (title, TOC, intro)
    - Gets context: Conversation messages for page, snippet URL if available
@@ -965,11 +1319,6 @@ Möchtest du mehr über die verschiedenen Arten von Nachrichten erfahren (synchr
 
 **Output:** Generated 45 flashcards (5 pages skipped), 3 duplicates removed, successfully synced to Anki
 
-**Why it worked:**
-- Skip decision correctly identified intro/TOC pages
-- Conversation context influenced card content (cards addressed questions user asked)
-- Deduplication prevented redundant cards (hash-based O(n) algorithm)
-- Batch processing handled large PDFs efficiently (checkpointing enabled resumability)
 
 **Example 4: Agent Failing - Tool Hallucination (Fixed)**
 
@@ -993,40 +1342,51 @@ Möchtest du mehr über die verschiedenen Arten von Nachrichten erfahren (synchr
 **Solution:**
 - Implemented `StateAwareToolNode` that automatically injects `material_id` from state before tool execution
 - LLM no longer needs to specify IDs, preventing hallucination
-- Error rate dropped from ~30% to <5%
+- Result: Significantly reduced tool-calling errors
 
-**Example 5: Agent Struggling - Context Window**
+**Example 5: Agent Struggling - Gemini API Tool Call Truncation**
 
-**Scenario:** Long conversation (50+ messages) about multiple topics across 20 pages
+**Scenario:** Agent calls multiple tools (e.g., `get_page_analysis` + `get_course_material_summary`) during a conversation with long message history.
 
 **Problem:** 
-- Agent started losing context, repeating earlier explanations
-- Agent didn't remember what was discussed on page 5 when user asked follow-up on page 15
-- Agent couldn't reference earlier parts of conversation
+- Gemini API returned incomplete tool calls (some tool calls were truncated in the response)
+- When message history was truncated (sliding window), Tool-Call-Paare were broken apart:
+  - AIMessage with `tool_calls` was kept, but corresponding `ToolMessage` responses were removed
+  - This violated Gemini's strict message ordering requirements
+- API errors: `Invalid message order: AIMessage with tool_calls must come immediately after HumanMessage or ToolMessage`
+- Agent couldn't complete tool executions, leading to incomplete responses
 
 **Why it struggled:**
-- Sliding window (10 messages) was too small for long sessions
-- No summarization of older messages
-- Agent couldn't reference earlier parts of conversation beyond window
+- **Gemini API strict ordering**: Requires `HumanMessage → AIMessage(tool_calls) → ToolMessages → AIMessage` sequence
+- **Message truncation**: When sliding window (10 messages) removed old messages, it sometimes cut in the middle of a tool-call pair
+- **Incomplete tool calls**: Gemini sometimes returned partial tool calls that didn't have corresponding ToolMessages
+- **No validation**: Initial implementation didn't check for incomplete tool-call pairs before sending to API
 
-**Partial Solution:**
-- Increased window to 15 messages for QuickChatAgent (handles longer search contexts)
-- Added conversation summary in system prompt (future enhancement needed)
-- Considered two-tier memory but not yet implemented
+**Solution:**
+- **`_fix_incomplete_tool_calls()` function** (lines 494-605 in `tutor_agent.py`):
+  - Validates message ordering before every LLM call
+  - Removes AIMessages with tool_calls that don't have corresponding ToolMessages
+  - Removes orphaned ToolMessages (without preceding AIMessage)
+  - Ensures AIMessage with tool_calls only comes after HumanMessage or ToolMessage
+- **Safe truncation**: When truncating message history, ensures tool-call pairs stay together (lines 633-662)
+- **Applied before every LLM call**: `messages_for_llm = self._fix_incomplete_tool_calls(messages_for_llm)` (line 836)
+- **Same fix in API endpoints**: `fix_incomplete_tool_calls()` helper function in `endpoints.py` (lines 1050-1125)
+
+**Result:** Agent now handles incomplete tool calls gracefully, preventing Gemini API errors and ensuring reliable tool execution.
 
 ### Challenges Faced
 
 1. **Tool Argument Hallucination**
    - **Problem**: LLM sometimes generated incorrect IDs (`course_material_id="test-id"`) instead of using state values
-   - **Impact**: 30% of tool calls failed
+   - **Impact**: Many tool calls failed due to invalid IDs
    - **Solution**: Implemented `StateAwareToolNode` that automatically injects state values before tool execution
-   - **Result**: Error rate dropped to <5%
+   - **Result**: Dramatically reduced tool-calling errors
 
 2. **Gemini API Message Order Requirements**
    - **Problem**: Gemini requires strict message order: HumanMessage → AIMessage (tool_calls) → ToolMessages. Incomplete tool call pairs (AIMessage with tool_calls but no ToolMessages) caused API errors.
-   - **Impact**: 15% of API calls failed with "Invalid message order" errors
+   - **Impact**: Frequent API failures with "Invalid message order" errors
    - **Solution**: Implemented `_fix_incomplete_tool_calls()` that validates and removes incomplete pairs
-   - **Result**: Reduced API errors by 80%
+   - **Result**: Significantly reduced API errors
 
 3. **Flashcard Deduplication Performance**
    - **Problem**: Naive O(n²) similarity comparison for 1000+ cards was too slow (30+ seconds)
@@ -1045,6 +1405,12 @@ Möchtest du mehr über die verschiedenen Arten von Nachrichten erfahren (synchr
    - **Impact**: Required code deployment for every prompt change
    - **Solution**: Integrated Langfuse for prompt management with fallback to hardcoded versions
    - **Result**: Can now A/B test prompts without code deployments
+
+6. **Observability and Usage Tracking**
+   - **Problem**: Initially, consumption and usage patterns were unclear and unorganized. Prompt handling and model usage were difficult to track and analyze.
+   - **Impact**: No visibility into API costs, token usage, or which prompts were being used. Difficult to optimize costs and debug issues.
+   - **Solution**: Implemented comprehensive observability with Langfuse, including trace tracking, model cost monitoring, prompt versioning, and usage analytics
+   - **Result**: Complete visibility into system behavior - can track all traces, monitor costs in real-time, analyze prompt performance, and identify optimization opportunities
 
 ### Limitations
 
@@ -1373,14 +1739,14 @@ We successfully built **Lernkompanien**, a multi-agent adaptive learning system 
 
 **Achievements:**
 - ✅ **Four Specialized Agents**: TutorAgent, QuickChatAgent, QuizGeneratorAgent, and FlashcardGeneratorAgent, each with distinct responsibilities and LangGraph state machines
-- ✅ **Multimodal Content Analysis**: Successfully extracts structured information from PDF slides using Google Gemini 2.5 Flash (multimodal) with 95%+ accuracy
+- ✅ **Multimodal Content Analysis**: Successfully extracts structured information from PDF slides using Google Gemini 2.5 Flash (multimodal)
 - ✅ **Context-Aware Tutoring**: Agents maintain conversation context across sessions using LangGraph checkpointer
 - ✅ **Proactive Behavior**: Agents create quizzes and flashcards autonomously when appropriate
 - ✅ **Personalization**: Communication style adapts to user preferences (formality, humor, encouragement)
 - ✅ **Robust Architecture**: StateAwareToolNode eliminates tool-calling errors, Langfuse enables prompt versioning
 
 **Key Takeaways:**
-1. **State Management is Critical**: Automatic state injection (StateAwareToolNode) eliminated 95% of tool-calling errors
+1. **State Management is Critical**: Automatic state injection (StateAwareToolNode) dramatically reduced tool-calling errors
 2. **Prompt Engineering Requires Iteration**: Moving prompts to Langfuse enabled rapid iteration and A/B testing
 3. **Structured Output is Essential**: Using Pydantic models with `with_structured_output()` ensures reliable JSON generation
 4. **Context Window Management**: Sliding window approach balances context retention with token limits
@@ -1505,7 +1871,7 @@ If we had another month, we would prioritize:
 **Major Contributions:**
 
 - **TutorAgent Development**: Implemented the core TutorAgent with LangGraph state machine, including:
-  - StateAwareToolNode for automatic state injection (eliminated 95% of tool-calling errors)
+  - StateAwareToolNode for automatic state injection (dramatically reduced tool-calling errors)
   - Message history truncation and context management (sliding window approach)
   - Personality customization (formality, humor, encouragement)
   - Langfuse prompt integration with fallback mechanisms
@@ -1528,7 +1894,7 @@ If we had another month, we would prioritize:
 
 - **State Management**: Designed and implemented LangGraph checkpointer integration for conversation persistence, enabling seamless context across sessions.
 
-- **Prompt Engineering**: Developed system prompts for TutorAgent and QuizGeneratorAgent, including Langfuse integration with fallback mechanisms. Iterated through 5 versions to achieve <5% tool-calling error rate.
+- **Prompt Engineering**: Developed system prompts for TutorAgent and QuizGeneratorAgent, including Langfuse integration with fallback mechanisms. Iterated through multiple versions to improve tool-calling reliability.
 
 **Git Commits (Sample):**
 - `Add detailed logging to tutor agent _fix_incomplete_tool_calls`
