@@ -239,27 +239,15 @@ VERMEIDE:
         context_text = "\n".join(context_parts)
         
         # Create prompt for quiz generation
-        prompt = f"""Erstelle ein Quiz für das folgende Thema: {topic}
-
-Das Thema wurde auf den Seiten {start_page} bis {end_page} behandelt.
+        # TOKEN OPTIMIZATION: Removed redundant instructions already in system prompt (saves ~150 tokens/call)
+        # System prompt already contains: difficulty distribution, question requirements, format rules
+        prompt = f"""Thema: {topic}
+Seitenbereich: {start_page} bis {end_page}
 
 MATERIAL:
 {context_text}
 
-AUFGABE:
-Erstelle ein Quiz mit 3-5 Fragen (bei komplexen Themen können es auch mehr sein, max. 8), die das VERSTÄNDNIS prüfen.
-
-Schwierigkeitsverteilung:
-- 1-2 leichte Fragen (Grundverständnis)
-- 1 mittlere Frage (Anwendung)
-- Mindestens 1 schwere Frage (tiefes Verständnis, Analyse)
-
-Jede Frage muss:
-- Genau 4 Antwortmöglichkeiten haben (A, B, C, D)
-- Eine Erklärung der richtigen Antwort enthalten
-- Das Verständnis prüfen, nicht das Auswendiglernen
-
-Gib das Quiz im JSON-Format zurück (verwende das QuizData Schema)."""
+Erstelle jetzt das Quiz basierend auf dem obigen Material."""
         
         # Prepare LLM with structured output
         # Use descriptive run_name for Langfuse tracking (consistent with other agents)

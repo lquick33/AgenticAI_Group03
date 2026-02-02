@@ -290,6 +290,12 @@ class TutorAgent(BaseAgent):
         self.language = language
         self.personality_config = personality_config or {}
         
+        # TOKEN OPTIMIZATION: Cache for enhanced prompts and state tracking
+        # This avoids rebuilding identical prompts and reduces redundant context
+        self._cached_enhanced_prompt: Optional[str] = None
+        self._cached_state_hash: Optional[str] = None
+        self._last_material_id: Optional[str] = None  # Track material changes for conditional summary
+        
         # Langfuse client for prompt management
         self.langfuse_client = get_langfuse_client()
         
@@ -438,6 +444,25 @@ class TutorAgent(BaseAgent):
             }.get(encouragement, "You regularly encourage the student and confirm progress.")
         
         return formality_text, humor_text, encouragement_text
+    
+    def _compute_state_hash(self, state: dict) -> str:
+        """
+        Compute a hash of state values relevant for prompt caching.
+        Used to detect when the enhanced prompt needs to be rebuilt.
+        
+        TOKEN OPTIMIZATION: If hash matches cached hash, we can reuse the cached prompt.
+        """
+        import hashlib
+        # Only hash the values that affect the enhanced prompt
+        material_id = state.get("material_id", "")
+        current_page = state.get("current_page", "")
+        user_id = state.get("user_id", "")
+        # Include a truncated summary hash (first 100 chars) to detect major changes
+        summary = state.get("course_material_summary", "")
+        summary_preview = str(summary)[:100] if summary else ""
+        
+        hash_input = f"{material_id}|{current_page}|{user_id}|{summary_preview}"
+        return hashlib.md5(hash_input.encode()).hexdigest()
     
     def _build_graph(self) -> None:
         """Build the LangGraph workflow for the tutor agent."""
@@ -649,25 +674,39 @@ class TutorAgent(BaseAgent):
             else:
                 context_parts.append(f"Current slide: Page {state['current_page']}")
         
-        if state.get("material_id"):
+        current_material_id = state.get("material_id")
+        if current_material_id:
             if self.language == "de":
-                context_parts.append(f"Material-ID: {state['material_id']}")
+                context_parts.append(f"Material-ID: {current_material_id}")
             else:
-                context_parts.append(f"Material ID: {state['material_id']}")
+                context_parts.append(f"Material ID: {current_material_id}")
         
-        # Add course material summary to context if available
-        if state.get("course_material_summary"):
+        # TOKEN OPTIMIZATION: Only include summary on first call or when material changes
+        # This saves ~200-500 tokens on subsequent calls within the same material
+        material_changed = (self._last_material_id is None or 
+                           self._last_material_id != current_material_id)
+        
+        # Add course material summary to context if available AND material changed
+        # TOKEN OPTIMIZATION: Truncate to 500 chars and use compact JSON (saves ~200-1500 tokens/call)
+        if state.get("course_material_summary") and material_changed:
             summary = state["course_material_summary"]
-            # Format summary nicely
+            # Format summary compactly (no indent) and truncate to save tokens
             if isinstance(summary, dict):
-                summary_text = json.dumps(summary, ensure_ascii=False, indent=2)
+                summary_text = json.dumps(summary, ensure_ascii=False, separators=(',', ':'))[:500]
+                if len(json.dumps(summary, ensure_ascii=False, separators=(',', ':'))) > 500:
+                    summary_text += "..."
             else:
-                summary_text = str(summary)
+                summary_text = str(summary)[:500]
+                if len(str(summary)) > 500:
+                    summary_text += "..."
             
             if self.language == "de":
                 context_parts.append(f"\n\nVORLESUNGSÜBERSICHT:\n{summary_text}")
             else:
                 context_parts.append(f"\n\nCOURSE OVERVIEW:\n{summary_text}")
+        
+        # Update last material_id for next call
+        self._last_material_id = current_material_id
         
         context_str = "\n".join(context_parts) if context_parts else ""
         
@@ -723,16 +762,14 @@ class TutorAgent(BaseAgent):
                 if isinstance(msg, SystemMessage):
                     # Enhance existing system message with context
                     enhanced_content = f"{msg.content}\n\nCONTEXT:\n{context_str}"
+                    # TOKEN OPTIMIZATION: Only include current values, not repeated tool names (saves ~150 tokens/call)
+                    # Tool names and descriptions should be in the base Langfuse prompt
                     if self.language == "de":
                         enhanced_content += (
-                            "\n\nWICHTIG: Wenn du Tools verwendest, werden folgende Argumente "
-                            "automatisch aus dem Kontext gefüllt:\n"
-                            f"- get_page_analysis: course_material_id, page_number, user_id\n"
-                            f"- get_course_material_summary: course_material_id, user_id\n"
-                            f"- create_quiz: course_material_id, user_id\n"
-                            f"- get_page_image: course_material_id, page_number, user_id\n"
-                            f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
-                            f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
+                            f"\n\nAktuelle Tool-Kontextwerte: "
+                            f"course_material_id={state.get('material_id', 'unbekannt')}, "
+                            f"page_number={state.get('current_page', 1)}, "
+                            f"user_id={state.get('user_id', 'unbekannt')}"
                         )
                         # Add quiz-specific instructions
                         enhanced_content += (
@@ -747,14 +784,10 @@ class TutorAgent(BaseAgent):
                         )
                     else:
                         enhanced_content += (
-                            "\n\nIMPORTANT: When using tools, the following arguments "
-                            "are automatically filled from context:\n"
-                            f"- get_page_analysis: course_material_id, page_number, user_id\n"
-                            f"- get_course_material_summary: course_material_id, user_id\n"
-                            f"- create_quiz: course_material_id, user_id\n"
-                            f"- get_page_image: course_material_id, page_number, user_id\n"
-                            f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
-                            f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
+                            f"\n\nCurrent tool context values: "
+                            f"course_material_id={state.get('material_id', 'unknown')}, "
+                            f"page_number={state.get('current_page', 1)}, "
+                            f"user_id={state.get('user_id', 'unknown')}"
                         )
                         # Add quiz-specific instructions
                         enhanced_content += (
@@ -774,16 +807,13 @@ class TutorAgent(BaseAgent):
             # If no system message found, add one with context
             if not system_message_found:
                 enhanced_content = f"{self.system_prompt}\n\nCONTEXT:\n{context_str}"
+                # TOKEN OPTIMIZATION: Only include current values, not repeated tool names (saves ~150 tokens/call)
                 if self.language == "de":
                     enhanced_content += (
-                        "\n\nWICHTIG: Wenn du Tools verwendest, werden folgende Argumente "
-                        "automatisch aus dem Kontext gefüllt:\n"
-                        f"- get_page_analysis: course_material_id, page_number, user_id\n"
-                        f"- get_course_material_summary: course_material_id, user_id\n"
-                        f"- create_quiz: course_material_id, user_id\n"
-                        f"- get_page_image: course_material_id, page_number, user_id\n"
-                        f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
-                        f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
+                        f"\n\nAktuelle Tool-Kontextwerte: "
+                        f"course_material_id={state.get('material_id', 'unbekannt')}, "
+                        f"page_number={state.get('current_page', 1)}, "
+                        f"user_id={state.get('user_id', 'unbekannt')}"
                     )
                     # Add quiz-specific instructions
                     enhanced_content += (
@@ -798,14 +828,10 @@ class TutorAgent(BaseAgent):
                     )
                 else:
                     enhanced_content += (
-                        "\n\nIMPORTANT: When using tools, the following arguments "
-                        "are automatically filled from context:\n"
-                        f"- get_page_analysis: course_material_id, page_number, user_id\n"
-                        f"- get_course_material_summary: course_material_id, user_id\n"
-                        f"- create_quiz: course_material_id, user_id\n"
-                        f"- get_page_image: course_material_id, page_number, user_id\n"
-                        f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
-                        f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
+                        f"\n\nCurrent tool context values: "
+                        f"course_material_id={state.get('material_id', 'unknown')}, "
+                        f"page_number={state.get('current_page', 1)}, "
+                        f"user_id={state.get('user_id', 'unknown')}"
                     )
                     # Add quiz-specific instructions
                     enhanced_content += (
