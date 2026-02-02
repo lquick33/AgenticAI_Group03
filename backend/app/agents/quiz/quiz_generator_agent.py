@@ -90,29 +90,31 @@ class QuizGeneratorAgent(BaseAgent):
         'quiz-generator/system-prompt-{language}'. Any changes to the agent's behavior
         should be made in Langfuse first, and then mirrored here for fallback purposes.
         
-        Langfuse prompts:
-          - quiz-generator/system-prompt-de (German, production label)
-          - quiz-generator/system-prompt-en (English, production label)
-        
         Args:
-            language: Language code (e.g., "de", "en")
+            language: Language code (currently only "de" is supported in Langfuse)
             
         Returns:
             System prompt string
         """
         # Try to load from Langfuse first (PRIMARY source)
+        # Currently only German prompt exists in Langfuse, so always use "de"
+        prompt_language = "de"  # TODO: Add more languages to Langfuse when needed
         if self.langfuse_client:
             try:
-                prompt_name = f"quiz-generator/system-prompt-{language}"
+                prompt_name = f"quiz-generator/system-prompt-{prompt_language}"
                 langfuse_prompt = self.langfuse_client.get_prompt(
                     prompt_name,
                     label="production",
                     type="chat"
                 )
                 
+                # Compile the prompt to get the list of messages
+                # (even without variables, compile() is needed to get the message list)
+                compiled_prompt = langfuse_prompt.compile()
+                
                 # Extract system message content from compiled chat prompt
-                if langfuse_prompt and isinstance(langfuse_prompt, list) and len(langfuse_prompt) > 0:
-                    system_message = langfuse_prompt[0]
+                if compiled_prompt and isinstance(compiled_prompt, list) and len(compiled_prompt) > 0:
+                    system_message = compiled_prompt[0]
                     if isinstance(system_message, dict) and system_message.get("role") == "system":
                         logger.debug(f"✅ Using Langfuse prompt for {prompt_name}")
                         return system_message.get("content", "")
