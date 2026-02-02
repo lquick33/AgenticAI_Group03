@@ -17,6 +17,7 @@ export interface UserPreferences {
   default_deduplicate_flashcards?: boolean
   theme_preference?: 'light' | 'dark' | 'system'
   ankiweb_username?: string | null
+  auto_explain_on_page_change?: boolean
   created_at: string
   updated_at: string
 }

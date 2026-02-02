@@ -9,6 +9,7 @@ import { ChatInterface } from './chat-interface'
 import { CongratulationsScreen } from './congratulations-screen'
 import { useChatSession } from '@/hooks/use-chat-session'
 import { toast } from 'sonner'
+import { createClient } from '@/lib/supabase/client'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -53,7 +54,64 @@ export function StudyReader({
     }
     return false
   })
+  const [autoExplainOnPageChange, setAutoExplainOnPageChange] = useState(() => {
+    // Check localStorage first for immediate value
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('auto_explain_on_page_change')
+      if (saved !== null) {
+        return saved === 'true'
+      }
+    }
+    return true
+  })
   const chatPanelRef = useRef<HTMLDivElement | null>(null)
+
+  // Load user preference for auto-explain on page change from database
+  useEffect(() => {
+    const loadPreference = async () => {
+      const supabase = createClient()
+      try {
+        const { data: prefs } = await supabase
+          .from('user_preferences')
+          .select('auto_explain_on_page_change')
+          .eq('user_id', userId)
+          .single()
+        
+        if (prefs?.auto_explain_on_page_change !== undefined) {
+          setAutoExplainOnPageChange(prefs.auto_explain_on_page_change)
+          // Sync to localStorage
+          localStorage.setItem('auto_explain_on_page_change', String(prefs.auto_explain_on_page_change))
+        }
+      } catch (error) {
+        // Use default (true) if preference not found
+        console.log('[StudyReader] Using default auto-explain setting')
+      }
+    }
+    
+    loadPreference()
+  }, [userId])
+
+  // Listen for setting changes (when user changes setting in settings dialog)
+  useEffect(() => {
+    // Cross-tab changes via localStorage
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'auto_explain_on_page_change' && e.newValue !== null) {
+        setAutoExplainOnPageChange(e.newValue === 'true')
+      }
+    }
+    
+    // Same-tab changes via custom event
+    const handleCustomEvent = (e: CustomEvent<boolean>) => {
+      setAutoExplainOnPageChange(e.detail)
+    }
+    
+    window.addEventListener('storage', handleStorageChange)
+    window.addEventListener('autoExplainSettingChanged', handleCustomEvent as EventListener)
+    return () => {
+      window.removeEventListener('storage', handleStorageChange)
+      window.removeEventListener('autoExplainSettingChanged', handleCustomEvent as EventListener)
+    }
+  }, [])
 
   const {
     messages,
@@ -64,7 +122,7 @@ export function StudyReader({
     handleSendMessage,
     handlePageChange,
     handleQuizComplete
-  } = useChatSession(materialId, userId, pageCount, initialPage)
+  } = useChatSession(materialId, userId, pageCount, initialPage, autoExplainOnPageChange)
 
   // Track all snippets for the material
   const [allSnippets, setAllSnippets] = useState<Snippet[]>([])

@@ -9,7 +9,8 @@ export function useChatSession(
   materialId: string,
   userId: string,
   pageCount: number,
-  urlInitialPage?: number  // Optional initial page from URL query param (overrides session lastPage)
+  urlInitialPage?: number,  // Optional initial page from URL query param (overrides session lastPage)
+  autoExplainOnPageChange: boolean = true  // When false, AI only responds to user messages
 ) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -20,6 +21,10 @@ export function useChatSession(
   const streamControllerRef = useRef<{ close: () => void } | null>(null)
   const messageIdCounter = useRef(0)
   const eventQueueRef = useRef<EventQueue>(new EventQueue())
+  
+  // Use ref for autoExplainOnPageChange to avoid re-initializing when preference loads
+  const autoExplainRef = useRef(autoExplainOnPageChange)
+  autoExplainRef.current = autoExplainOnPageChange
   
   // Debouncing and request tracking for page changes
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
@@ -490,6 +495,12 @@ export function useChatSession(
         setCurrentPage(newPage)
       }
 
+      // Skip auto-explain if setting is disabled (but always allow initial open)
+      if (!autoExplainRef.current && !isInitialOpen) {
+        console.log('[useChatSession] Auto-explain disabled, skipping chat initiation for page', newPage)
+        return
+      }
+
       const now = Date.now()
       pageChangeHistoryRef.current.push({ page: newPage, timestamp: now })
       
@@ -912,9 +923,20 @@ export function useChatSession(
     }
   }, [userId, generateMessageId])
 
-  // Initialization effect
+  // Refs for stable function references in effects
+  const handlePageChangeRef = useRef(handlePageChange)
+  handlePageChangeRef.current = handlePageChange
+  const stopTypewriterRef = useRef(stopTypewriter)
+  stopTypewriterRef.current = stopTypewriter
+
+  // Initialization effect - only runs once per material/user
   const isInitializing = useRef(true)
+  const hasInitialized = useRef(false)
   useEffect(() => {
+    // Prevent re-initialization
+    if (hasInitialized.current) return
+    hasInitialized.current = true
+    
     let isMounted = true
     const initSession = async () => {
       try {
@@ -933,7 +955,7 @@ export function useChatSession(
 
         setCurrentPage(initialPage)
         isInitializing.current = false
-        await handlePageChange(initialPage, true, true)
+        await handlePageChangeRef.current(initialPage, true, true)
       } catch (error) {
         console.error('[useChatSession] Failed to load study session:', error)
         if (!isMounted) return
@@ -943,23 +965,23 @@ export function useChatSession(
           : 1
         setCurrentPage(fallbackPage)
         isInitializing.current = false
-        await handlePageChange(fallbackPage, true, true)
+        await handlePageChangeRef.current(fallbackPage, true, true)
       }
     }
     initSession()
     return () => {
       isMounted = false
-      stopTypewriter()
+      stopTypewriterRef.current()
       if (streamControllerRef.current) streamControllerRef.current.close()
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
     }
-  }, [materialId, userId, handlePageChange, stopTypewriter, urlInitialPage, pageCount])
+  }, [materialId, userId, urlInitialPage, pageCount])
 
   // Page change effect
   useEffect(() => {
     if (isInitializing.current) return
-    if (currentPage > 0) handlePageChange(currentPage)
-  }, [currentPage, handlePageChange])
+    if (currentPage > 0) handlePageChangeRef.current(currentPage)
+  }, [currentPage])
 
   return {
     messages,

@@ -36,6 +36,7 @@ interface UserPreferences {
   default_deduplicate_flashcards?: boolean
   theme_preference?: "light" | "dark" | "system"
   ankiweb_username?: string | null
+  auto_explain_on_page_change?: boolean
 }
 
 export function SettingsDialog() {
@@ -52,6 +53,7 @@ export function SettingsDialog() {
   const [agentPersona, setAgentPersona] = useState<"strict" | "humorous" | "buddy">("buddy")
   const [themePreference, setThemePreference] = useState<"light" | "dark" | "system">("system")
   const [ankiWebUsername, setAnkiWebUsername] = useState<string>("")
+  const [autoExplainOnPageChange, setAutoExplainOnPageChange] = useState(true)
 
   // AnkiWeb login state - start with not_logged_in to avoid loading spinner
   const [ankiWebStatus, setAnkiWebStatus] = useState<"loading" | "logged_in" | "not_logged_in" | "not_connected" | "error">("not_logged_in")
@@ -189,6 +191,7 @@ export function SettingsDialog() {
         setDeduplicateDefault(prefs.default_deduplicate_flashcards ?? false)
         setThemePreference(prefs.theme_preference || "system")
         setAnkiWebUsername(prefs.ankiweb_username || "")
+        setAutoExplainOnPageChange(prefs.auto_explain_on_page_change ?? true)
         
         // Use cached username to show instant UI (no loading spinner)
         if (prefs.ankiweb_username) {
@@ -257,6 +260,15 @@ export function SettingsDialog() {
     await savePreference("default_deduplicate_flashcards", checked)
   }
 
+  const handleAutoExplainChange = async (checked: boolean) => {
+    setAutoExplainOnPageChange(checked)
+    // Also update localStorage so active study sessions can react to the change
+    localStorage.setItem("auto_explain_on_page_change", String(checked))
+    // Dispatch custom event for same-tab listeners (storage event only fires cross-tab)
+    window.dispatchEvent(new CustomEvent('autoExplainSettingChanged', { detail: checked }))
+    await savePreference("auto_explain_on_page_change", checked)
+  }
+
   const handleLearningStyleChange = async (value: "linear" | "iterative") => {
     setLearningStyle(value)
     await savePreference("learning_style", value)
@@ -314,6 +326,29 @@ export function SettingsDialog() {
             </div>
           ) : (
             <div className="space-y-6 py-4">
+            {/* Auto-explain on page change */}
+            <div className="flex items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <Label
+                  htmlFor="auto-explain"
+                  className="text-sm font-medium cursor-pointer"
+                >
+                  Automatische Erklärung beim Seitenwechsel
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  KI-Tutor erklärt automatisch den Inhalt jeder neuen Seite
+                </p>
+              </div>
+              <Switch
+                id="auto-explain"
+                checked={autoExplainOnPageChange}
+                onCheckedChange={handleAutoExplainChange}
+                disabled={isSaving}
+              />
+            </div>
+
+            <Separator />
+
             {/* Deduplication Default */}
             <div className="flex items-center justify-between gap-4">
               <div className="space-y-0.5">
