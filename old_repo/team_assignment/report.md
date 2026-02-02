@@ -1842,34 +1842,49 @@ If we had another month, we would prioritize:
 
 **Major Contributions:**
 
-- **Anki Integration & Flashcard System**: Implemented complete Anki integration with Docker support, AnkiWeb sync, and conflict management. Built the FlashcardGeneratorAgent with LangGraph state machine, batch processing, and hash-based deduplication logic (O(n) instead of O(n²)).
+- **QuickChatAgent Development**: Developed the QuickChatAgent for topic discovery across multiple courses, including:
+  - Dual-mode operation (discovery and tutoring modes) with automatic mode switching
+  - Hybrid search implementation (vector + keyword with RRF fusion)
+  - Chapter heading detection and `_pick_best_intro_page()` algorithm for finding topic introductions
+  - StateAwareToolNode integration to prevent LLM hallucination of IDs
 
-- **QuickChatAgent**: Developed the QuickChatAgent for topic discovery across multiple courses, with dual-mode operation (discovery and tutoring modes) and automatic page navigation with user confirmation.
+- **FlashcardGeneratorAgent**: Refactored and expanded the FlashcardGeneratorAgent:
+  - LangGraph state machine with real-time progress tracking via SSE
+  - PostgreSQL persistency for resumable generation across backend restarts
+  - Classification-based prompt routing for material-specific flashcard generation
+  - Hash-based deduplication (O(n) instead of O(n²), reduced time from 30s to <2s for 1000 cards)
 
-- **Frontend Development**: Built comprehensive Next.js frontend including:
-  - Study Reader with PDF viewer and chat interface
-  - Quick Chat interface with inline PDF viewer and navigation
-  - Dashboard with real-time progress tracking and Anki study history
-  - Settings modal with user preferences
-  - Anki sync status UI and conflict management
+- **Tool Development**: Created multiple LangChain tools:
+  - `SearchTopicTool` - Hybrid RAG search with chapter beginning detection
+  - `KnowledgeTool` - Per-course mastery scores from Anki study data
+  - `TTSTool` - Text-to-speech with multi-language support
+  - 10+ Anki tools (deck management, flashcard sync, study history)
 
-- **Performance Optimizations**: 
-  - Implemented hash-based flashcard deduplication (reduced time from 30s to <2s for 1000 cards)
-  - Added caching for AnkiWeb login status checks
-  - Optimized flashcard generation with parallel processing
+- **Backend API**: Developed FastAPI endpoints for:
+  - QuickChat messaging and streaming (`/api/quickchat/message`)
+  - Anki integration (`/api/anki/study-history`, `/api/anki/sync`, `/api/anki/knowledge`)
+  - Flashcard generation with progress tracking and background tasks
+  - Course material deletion with cascade cleanup
 
-- **System Architecture**: Designed and implemented the BaseAgent pattern, LangGraph state machines, and tool architecture.
+- **Anki Integration**: Implemented complete Anki ecosystem with Docker support (`ankimcp/headless-anki` ARM64), native app fallback, AnkiWeb sync with programmatic login, sync conflict management, and knowledge tracking with per-deck mastery scores.
 
-- **Testing**: Created comprehensive test suite (`test_all_agents.py`) with 16+ test cases for all agents and tools.
+- **Search & RAG System**: Optimized topic search with hybrid vector + keyword search (RRF fusion), chapter heading detection, and `_pick_best_intro_page()` continuity-based scoring.
 
-- **Documentation**: Wrote `AGENT_ANALYSE_UND_DOKUMENTATION.md` with detailed agent analysis and architecture documentation.
+- **Frontend Development**: Quick Chat interface with inline PDF viewer, dashboard with Anki study history, settings modal, real-time progress tracking for PDF processing and flashcard generation.
+
+- **Performance Optimizations**: Reduced agent token usage per LLM call, added backend caching and frontend memoization, hash-based deduplication (O(n) instead of O(n²)).
+
+- **Prompt Engineering**: Developed system prompts for FlashcardGeneratorAgent (with classification-based routing for different material types), QuickChatAgent (discovery and tutoring modes), and material classification prompts. Integrated with Langfuse for prompt versioning and A/B testing.
+
+- **Testing & Documentation**: Created comprehensive test suite (`test_all_agents.py`) with 16+ test cases. Wrote `AGENT_ANALYSE_UND_DOKUMENTATION.md`.
 
 **Git Commits (Sample):**
-- `feat(anki): add Anki integration for flashcard sync`
 - `feat(quickchat): add Quick Chat with inline PDF viewer and navigation confirmation`
-- `perf(flashcards): optimize card generation with hash dedup and parallel processing`
-- `test(agents): add comprehensive test suite for all agents and tools`
-- `feat(dashboard): add real Anki study history to dashboard`
+- `feat: refactor FlashcardGeneratorAgent to LangGraph and implement progress tracking`
+- `feat(search): optimize search algorithm with hybrid vector + keyword search`
+- `feat(anki): add knowledge tracking with per-deck mastery scores`
+- `feat(classification): implement classification-based prompt routing`
+- `perf: reduce agent token usage by 40-60% per LLM call`
 
 ### Louis Braukmann (louis.braukmann@gmail.com)
 
