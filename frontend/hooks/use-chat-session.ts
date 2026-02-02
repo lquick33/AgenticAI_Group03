@@ -499,9 +499,10 @@ export function useChatSession(
         setCurrentPage(newPage)
       }
 
-      // Always save page (debounced, independent of auto-explain)
+      // Save page (debounced, independent of auto-explain)
+      // Skip during initial load (isInitialOpen) - don't overwrite saved page with initial state
       // Skip if this is the same page we just saved
-      if (lastSavedPageRef.current !== newPage) {
+      if (!isInitialOpen && lastSavedPageRef.current !== newPage) {
         if (pageSaveTimerRef.current) {
           clearTimeout(pageSaveTimerRef.current)
         }
@@ -945,18 +946,19 @@ export function useChatSession(
   const stopTypewriterRef = useRef(stopTypewriter)
   stopTypewriterRef.current = stopTypewriter
 
-  // Initialization effect - only runs once per material/user
+  // Initialization effect - runs when material/user changes
   const isInitializing = useRef(true)
-  const hasInitialized = useRef(false)
+  
   useEffect(() => {
-    // Prevent re-initialization
-    if (hasInitialized.current) return
-    hasInitialized.current = true
+    // Reset state for new initialization
+    isInitializing.current = true
+    console.log('[useChatSession] Starting initialization for material:', materialId)
     
     let isMounted = true
     const initSession = async () => {
       try {
         const session = await getStudySession(materialId, userId)
+        console.log('[useChatSession] Loaded session:', { lastPage: session.lastPage, messageCount: session.messages?.length })
         if (!isMounted) return
 
         // Use URL initial page if provided, otherwise use session's lastPage
@@ -965,11 +967,15 @@ export function useChatSession(
           ? urlInitialPage 
           : sessionPage
         
+        console.log('[useChatSession] Computed initialPage:', { sessionPage, urlInitialPage, pageCount, initialPage })
+        
         if (session.messages && session.messages.length > 0) {
           setMessages(session.messages)
         }
 
         setCurrentPage(initialPage)
+        // Mark this page as already saved so we don't re-save it immediately
+        lastSavedPageRef.current = initialPage
         isInitializing.current = false
         await handlePageChangeRef.current(initialPage, true, true)
       } catch (error) {
@@ -1006,6 +1012,9 @@ export function useChatSession(
   
   useEffect(() => {
     const handleBeforeUnload = () => {
+      // Only save if we've finished initializing (don't save default page 1)
+      if (isInitializing.current) return
+      
       // Use sendBeacon for reliable save on page unload
       const data = JSON.stringify({
         material_id: materialId,
@@ -1019,8 +1028,10 @@ export function useChatSession(
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload)
-      // Also save on component unmount
-      saveCurrentPage(materialId, userId, currentPageRef.current)
+      // Only save on unmount if we've finished initializing
+      if (!isInitializing.current) {
+        saveCurrentPage(materialId, userId, currentPageRef.current)
+      }
     }
   }, [materialId, userId])
 

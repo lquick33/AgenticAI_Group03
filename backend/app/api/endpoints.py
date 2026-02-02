@@ -2942,10 +2942,14 @@ async def save_page(request: SavePageRequest) -> dict:
             initial_page=request.page,
         )
 
+        logger.info(f"[save_page] Found/created conversation {conversation['id']} for material {course_material_id}, saving page {request.page}")
+
         # Update the page number
         update_conversation_progress(conversation["id"], request.page)
+        
+        logger.info(f"[save_page] Successfully saved page {request.page} for conversation {conversation['id']}")
 
-        return {"success": True, "page": request.page}
+        return {"success": True, "page": request.page, "conversation_id": conversation["id"]}
 
     except HTTPException:
         raise
