@@ -14,17 +14,22 @@ import {
 } from '@/lib/api/study'
 import { toast } from 'sonner'
 import { DeckCompletionDialog } from './deck-completion-dialog'
+import { useBackgroundTasksOptional } from '@/components/background-tasks'
 
 interface CongratulationsScreenProps {
   materialId: string
+  materialName?: string
   courseId: string
+  courseName?: string
   userId: string
   onClose?: () => void
 }
 
 export function CongratulationsScreen({
   materialId,
+  materialName,
   courseId,
+  courseName,
   userId,
   onClose,
 }: CongratulationsScreenProps) {
@@ -36,6 +41,9 @@ export function CongratulationsScreen({
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null)
   const [showCompletionDialog, setShowCompletionDialog] = useState(false)
   const [completedStatus, setCompletedStatus] = useState<FlashcardTaskStatus | null>(null)
+  
+  // Global background tasks context
+  const backgroundTasks = useBackgroundTasksOptional()
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -58,10 +66,28 @@ export function CongratulationsScreen({
           setIsGenerating(false)
           setCompletedStatus(status)
           setShowCompletionDialog(true)
+          
+          // Update global task as completed
+          if (backgroundTasks) {
+            backgroundTasks.updateTask(`flashcard-${materialId}`, {
+              status: 'completed',
+              progress: 100,
+              stageMessage: `${status.cards_generated} Karten erstellt`,
+            })
+          }
         } else if (status.status === 'failed' || status.status === 'cancelled') {
           clearInterval(interval)
           setPollingInterval(null)
           setIsGenerating(false)
+          
+          // Update global task as failed
+          if (backgroundTasks) {
+            backgroundTasks.updateTask(`flashcard-${materialId}`, {
+              status: status.status as 'failed' | 'cancelled',
+              stageMessage: status.error_message || 'Fehler aufgetreten',
+            })
+          }
+          
           toast.error('Fehler bei der Generierung', {
             description: status.error_message || 'Die Karteikarten konnten nicht generiert werden.',
           })
@@ -120,6 +146,12 @@ export function CongratulationsScreen({
       setIsGenerating(false)
       setTaskId(null)
       setTaskStatus(null)
+      
+      // Remove from global background tasks context
+      if (backgroundTasks) {
+        backgroundTasks.removeTask(`flashcard-${materialId}`)
+      }
+      
       toast.info('Generierung abgebrochen', {
         description: 'Die Karteikarten-Generierung wurde abgebrochen.',
       })
@@ -139,6 +171,22 @@ export function CongratulationsScreen({
     try {
       const { task_id } = await generateFlashcards(materialId, userId)
       setTaskId(task_id)
+      
+      // Register with global background tasks context
+      if (backgroundTasks) {
+        backgroundTasks.addTask({
+          id: `flashcard-${materialId}`,
+          type: 'flashcard_generation',
+          materialId: materialId,
+          materialName: materialName || 'Vorlesung',
+          courseId: courseId,
+          courseName: courseName,
+          progress: 0,
+          status: 'running',
+          stageMessage: 'Wird gestartet...',
+          taskId: task_id,
+        })
+      }
       
       // Start polling for status
       startPolling(task_id)

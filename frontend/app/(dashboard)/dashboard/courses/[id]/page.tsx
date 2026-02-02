@@ -167,6 +167,7 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
                 <CourseMaterialsContainer
                   courseId={id}
                   userId={user.id}
+                  courseName={course.title}
                   initialMaterials={(materials || []) as CourseMaterial[]}
                   deduplicateFlashcards={course.deduplicate_flashcards ?? false}
                 />

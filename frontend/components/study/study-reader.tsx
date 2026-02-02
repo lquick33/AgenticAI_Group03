@@ -31,7 +31,9 @@ interface Snippet {
 
 interface StudyReaderProps {
   materialId: string
+  materialName?: string
   courseId: string
+  courseName?: string
   pdfUrl: string
   pageCount: number
   userId: string
@@ -40,7 +42,9 @@ interface StudyReaderProps {
 
 export function StudyReader({
   materialId,
+  materialName,
   courseId,
+  courseName,
   pdfUrl,
   pageCount,
   userId,
@@ -227,7 +231,9 @@ export function StudyReader({
       {showCongratulations && (
         <CongratulationsScreen
           materialId={materialId}
+          materialName={materialName}
           courseId={courseId}
+          courseName={courseName}
           userId={userId}
           onClose={() => setShowCongratulations(false)}
         />

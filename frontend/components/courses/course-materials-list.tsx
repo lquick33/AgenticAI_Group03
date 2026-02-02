@@ -43,6 +43,7 @@ import { EditableFilename } from '@/components/courses/editable-filename'
 import { DeckCompletionDialog } from '@/components/study/deck-completion-dialog'
 import { toast } from 'sonner'
 import { deleteMaterial } from '@/lib/api/materials'
+import { useBackgroundTasksOptional } from '@/components/background-tasks'
 
 interface CourseMaterialsListProps {
   materials: CourseMaterial[]
@@ -73,6 +74,9 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
   const [isDialogDownloading, setIsDialogDownloading] = useState(false)
   const [dialogDownloadSuccess, setDialogDownloadSuccess] = useState(false)
   const startPollingRef = useRef<((materialId: string, taskId: string) => void) | null>(null)
+  
+  // Global background tasks context
+  const backgroundTasks = useBackgroundTasksOptional()
 
   // Update local materials when props change
   useEffect(() => {
@@ -120,12 +124,21 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     setIsGenerating(prev => ({ ...prev, [materialId]: false }))
     setFlashcardsStatus(prev => ({ ...prev, [materialId]: true }))
     
+    // Remove from global background tasks context (it will auto-cleanup but we can be explicit)
+    if (backgroundTasks) {
+      backgroundTasks.updateTask(`flashcard-${materialId}`, {
+        status: 'completed',
+        progress: 100,
+        stageMessage: `${status.cards_generated} Karten erstellt`,
+      })
+    }
+    
     // Show completion dialog with sync status
     setCompletedMaterialId(materialId)
     setCompletedStatus(status)
     setDialogDownloadSuccess(false)
     setShowCompletionDialog(true)
-  }, [])
+  }, [backgroundTasks])
 
   const startPolling = useCallback((materialId: string, taskId: string) => {
     const interval = setInterval(async () => {
@@ -241,6 +254,22 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
       const { task_id } = await generateFlashcards(materialId, userId, deduplicateFlashcards)
       setTaskIds(prev => ({ ...prev, [materialId]: task_id }))
       
+      // Register with global background tasks context
+      const material = localMaterials.find(m => m.id === materialId)
+      if (backgroundTasks && material) {
+        backgroundTasks.addTask({
+          id: `flashcard-${materialId}`,
+          type: 'flashcard_generation',
+          materialId: materialId,
+          materialName: material.file_name?.replace(/\.pdf$/i, '') || 'Unbekannt',
+          courseId: courseId,
+          progress: 0,
+          status: 'running',
+          stageMessage: 'Wird gestartet...',
+          taskId: task_id,
+        })
+      }
+      
       // Start polling for status
       startPolling(materialId, task_id)
       
@@ -281,6 +310,12 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
         delete newStatuses[materialId]
         return newStatuses
       })
+      
+      // Remove from global background tasks context
+      if (backgroundTasks) {
+        backgroundTasks.removeTask(`flashcard-${materialId}`)
+      }
+      
       toast.info('Generierung abgebrochen', {
         description: 'Die Karteikarten-Generierung wurde abgebrochen.',
       })
@@ -401,6 +436,14 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
           delete newIntervals[materialIdForDeletion]
           return newIntervals
         })
+      }
+      
+      // Remove any background tasks for this material
+      if (backgroundTasks) {
+        // Remove by material ID (for processing tasks)
+        backgroundTasks.removeTask(materialIdForDeletion)
+        // Also remove flashcard tasks
+        backgroundTasks.removeTask(`flashcard-${materialIdForDeletion}`)
       }
       
       toast.success('Material gelöscht', {

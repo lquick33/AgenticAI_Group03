@@ -32,6 +32,7 @@ import {
 } from '@/components/courses/multi-file-upload-list'
 import { Progress } from '@/components/ui/progress'
 import { calculateProcessingProgress, type ProcessingProgressData } from '@/lib/utils/progress'
+import { useBackgroundTasksOptional } from '@/components/background-tasks'
 
 interface UploadDialogProps {
   courses: Course[]
@@ -55,6 +56,9 @@ export function UploadDialog({ courses }: UploadDialogProps) {
   const [error, setError] = useState<string | null>(null)
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
+  
+  // Global background tasks context
+  const backgroundTasks = useBackgroundTasksOptional()
 
   const {
     register,
@@ -188,12 +192,32 @@ export function UploadDialog({ courses }: UploadDialogProps) {
       throw new Error('User not authenticated')
     }
 
+    // Use file ID as temporary task ID for uploading phase
+    const tempTaskId = `upload-${fileItem.id}`
+    const selectedCourse = courses.find(c => c.id === courseId)
+
     // Update status to uploading
     setFiles((prev) =>
       prev.map((f) =>
         f.id === fileItem.id ? { ...f, status: 'uploading', progress: 0 } : f
       )
     )
+
+    // Register with global background tasks context immediately (uploading phase)
+    if (backgroundTasks) {
+      backgroundTasks.addTask({
+        id: tempTaskId,
+        type: 'pdf_processing',
+        materialId: tempTaskId, // Will be updated when we get the real ID
+        materialName: fileItem.file.name.replace(/\.pdf$/i, ''),
+        courseId: courseId,
+        courseName: selectedCourse?.title,
+        progress: 0,
+        status: 'uploading',
+        stage: 'uploading',
+        stageMessage: 'Wird hochgeladen...',
+      })
+    }
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -210,6 +234,10 @@ export function UploadDialog({ courses }: UploadDialogProps) {
         
         clearTimeout(healthTimeout)
       } catch (healthError) {
+        // Remove task from global context on error
+        if (backgroundTasks) {
+          backgroundTasks.removeTask(tempTaskId)
+        }
         throw new Error(`Backend server is not reachable at ${apiUrl}. Please ensure the backend is running.`)
       }
       
@@ -218,12 +246,21 @@ export function UploadDialog({ courses }: UploadDialogProps) {
       formData.append('user_id', user.id)
       formData.append('course_id', courseId)
 
-      // Simulate progress (since fetch doesn't support progress events natively)
+      // Simulate progress and update global task
+      let currentProgress = 0
       const progressInterval = setInterval(() => {
+        currentProgress = Math.min(currentProgress + 10, 90)
         setUploadProgress((prev) => ({
           ...prev,
-          [fileItem.id]: Math.min((prev[fileItem.id] || 0) + 10, 90),
+          [fileItem.id]: currentProgress,
         }))
+        // Update global task progress during upload
+        if (backgroundTasks) {
+          backgroundTasks.updateTask(tempTaskId, {
+            progress: Math.round(currentProgress * 0.05), // 0-5% range for upload
+            stageMessage: `Wird hochgeladen... ${currentProgress}%`,
+          })
+        }
       }, 200)
 
       const response = await fetch(`${apiUrl}/api/upload`, {
@@ -237,6 +274,13 @@ export function UploadDialog({ courses }: UploadDialogProps) {
         const errorData = await response.json().catch(() => ({
           detail: 'Upload failed',
         }))
+        // Update task status on error
+        if (backgroundTasks) {
+          backgroundTasks.updateTask(tempTaskId, {
+            status: 'error',
+            stageMessage: errorData.detail || 'Upload fehlgeschlagen',
+          })
+        }
         throw new Error(errorData.detail || `Upload failed: ${response.statusText}`)
       }
 
@@ -255,6 +299,23 @@ export function UploadDialog({ courses }: UploadDialogProps) {
             : f
         )
       )
+
+      // Update global task: remove temp task and add real one with material ID
+      if (backgroundTasks && result.course_material_id) {
+        backgroundTasks.removeTask(tempTaskId)
+        backgroundTasks.addTask({
+          id: result.course_material_id,
+          type: 'pdf_processing',
+          materialId: result.course_material_id,
+          materialName: fileItem.file.name.replace(/\.pdf$/i, ''),
+          courseId: courseId,
+          courseName: selectedCourse?.title,
+          progress: 5,
+          status: 'processing',
+          stage: 'processing',
+          stageMessage: 'Wird verarbeitet...',
+        })
+      }
     } catch (err) {
       let errorMessage = err instanceof Error ? err.message : 'Upload fehlgeschlagen'
       
@@ -271,6 +332,15 @@ export function UploadDialog({ courses }: UploadDialogProps) {
             : f
         )
       )
+      
+      // Update global task status on error
+      if (backgroundTasks) {
+        backgroundTasks.updateTask(tempTaskId, {
+          status: 'error',
+          stageMessage: errorMessage,
+        })
+      }
+      
       throw err
     }
   }

@@ -10,6 +10,7 @@ import { calculateProcessingProgress, type ProcessingProgressData } from '@/lib/
 interface CourseMaterialsContainerProps {
   courseId: string
   userId: string
+  courseName?: string
   initialMaterials: CourseMaterial[]
   deduplicateFlashcards?: boolean
 }
@@ -17,6 +18,7 @@ interface CourseMaterialsContainerProps {
 export function CourseMaterialsContainer({
   courseId,
   userId,
+  courseName,
   initialMaterials,
   deduplicateFlashcards = false,
 }: CourseMaterialsContainerProps) {
@@ -279,6 +281,7 @@ export function CourseMaterialsContainer({
         <UploadSection 
           courseId={courseId} 
           userId={userId}
+          courseName={courseName}
           onUploadSuccess={handleUploadSuccess}
         />
       </div>

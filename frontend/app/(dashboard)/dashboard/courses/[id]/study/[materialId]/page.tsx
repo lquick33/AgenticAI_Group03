@@ -69,6 +69,9 @@ export default async function StudyPage({ params, searchParams }: StudyPageProps
     .eq('user_id', user.id)
     .order('updated_at', { ascending: false })
 
+  // Get current course name
+  const currentCourse = courses?.find(c => c.id === courseId)
+
   // Prepare user data for sidebar
   const userData = {
     name: user.email?.split('@')[0] || 'User',
@@ -96,7 +99,9 @@ export default async function StudyPage({ params, searchParams }: StudyPageProps
             <div className="h-full max-h-full min-h-0 overflow-hidden">
               <StudyReader
                 materialId={materialId}
+                materialName={material.file_name}
                 courseId={courseId}
+                courseName={currentCourse?.title}
                 pdfUrl={signedUrlData.signedUrl}
                 pageCount={material.page_count}
                 userId={user.id}
