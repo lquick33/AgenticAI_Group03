@@ -4694,3 +4694,152 @@ save_knowledge_snapshot(
 ```
 
 ---
+
+## Scripts
+
+### `start_anki.ps1`
+
+**Purpose**: PowerShell script to start Anki for agent integration. Windows-compatible version of `start_anki.sh` that can be executed directly in PowerShell without requiring Bash or WSL.
+
+**Key Components**:
+- **Docker Container Support**: Primary method - starts Anki in a Docker container using `docker-compose.yml`
+- **Native App Fallback**: Falls back to native Windows Anki installation if Docker is unavailable (when `$env:ANKI_APP_FALLBACK_ENABLED=1` is set)
+- **AnkiConnect Detection**: Checks if AnkiConnect add-on (code: 2055492159) is installed and running
+- **API Health Check**: Waits for AnkiConnect API to be ready at `http://localhost:8765` before completing
+- **Platform Detection**: Automatically detects Windows, macOS, or Linux
+- **Error Handling**: Provides clear error messages and fallback options
+
+**Key Functions**:
+- **Start-NativeAnkiWindows()**: Starts native Anki app on Windows, checks for installation and AnkiConnect add-on
+- **Show-NativeAppInstructions()**: Displays manual setup instructions if Docker is unavailable
+- **Fallback-ToNativeApp()**: Attempts to use native app as fallback when Docker fails
+- **Try-FallbackOrError()**: Handles fallback logic based on `ANKI_APP_FALLBACK_ENABLED` setting
+
+**Environment Variables**:
+- `$env:FORCE_NATIVE_APP=1`: Skip Docker and use native app directly
+- `$env:ANKI_APP_FALLBACK_ENABLED=1`: Enable native app fallback when Docker is unavailable
+
+**Usage**: 
+```powershell
+# Direct execution in PowerShell
+.\start_anki.ps1
+
+# Force native app mode
+$env:FORCE_NATIVE_APP=1; .\start_anki.ps1
+
+# Enable fallback to native app
+$env:ANKI_APP_FALLBACK_ENABLED=1; .\start_anki.ps1
+```
+
+**Dependencies**: 
+- Docker Desktop (for containerized mode)
+- OR native Anki installation with AnkiConnect add-on (for fallback mode)
+- PowerShell 5.1+ (Windows 10/11)
+
+**Output**: Provides colored console output indicating status, errors, and success messages. On completion, AnkiConnect API is ready at `http://localhost:8765` for agent integration.
+
+---
+
+## Utility Scripts
+
+### `backend/generate_tutor_graph_image.py`
+
+**Purpose**: Script to generate a visual representation (PNG image) of the Tutor Agent's LangGraph workflow. This is useful for documentation, debugging, and understanding the agent's execution flow.
+
+**Key Components**:
+- **Graph Visualization**: Uses LangGraph's built-in `draw_mermaid_png()` method to create a PNG image of the agent's state machine
+- **Agent Initialization**: Creates a minimal TutorAgent instance with a simple system prompt to bypass Langfuse dependency (for graph generation only)
+- **ASCII Preview**: Optionally displays an ASCII representation of the graph (requires `grandalf` package)
+- **Error Handling**: Gracefully handles missing dependencies and configuration issues
+
+**Key Functions**:
+- **generate_graph_image()**: Main function that initializes the agent, retrieves the compiled graph, and generates the PNG image
+
+**Output**:
+- Creates `tutor_agent_graph.png` in the `backend/` directory
+- Displays console output with status messages and file path
+- Optionally shows ASCII preview if `grandalf` is installed
+
+**Usage**:
+```bash
+# From backend directory
+cd backend
+python generate_tutor_graph_image.py
+```
+
+**Dependencies**:
+- LangGraph (for graph visualization methods)
+- LangChain Google GenAI (for LLM initialization)
+- TutorAgent and related tools (from `app.agents.tutor`)
+- Google API Key (set in `.env` file as `GOOGLE_API_KEY`)
+
+**Note**: The script uses a minimal system prompt to avoid Langfuse dependency during graph generation. The actual graph structure is independent of the prompt content.
+
+---
+
+### `backend/generate_flashcard_graph_image.py`
+
+**Purpose**: Script to generate a visual representation (PNG image) of the Flashcard Generator Agent's LangGraph workflow with transparent background. This is useful for documentation, debugging, and understanding the agent's execution flow.
+
+**Key Components**:
+- **Graph Visualization**: Uses LangGraph's built-in `draw_mermaid_png()` method to create a PNG image of the agent's state machine
+- **Agent Initialization**: Creates a FlashcardGeneratorAgent instance (doesn't require system prompt parameter)
+- **Transparent Background**: Generates image with transparent background using `background_color="transparent"` parameter or PIL post-processing
+- **ASCII Preview**: Optionally displays an ASCII representation of the graph (requires `grandalf` package)
+- **Error Handling**: Gracefully handles missing dependencies and configuration issues
+
+**Key Functions**:
+- **generate_graph_image()**: Main function that initializes the agent, retrieves the compiled graph, and generates the PNG image
+
+**Output**:
+- Creates `flashcard_agent_graph.png` in the `backend/` directory
+- Displays console output with status messages and file path
+- Optionally shows ASCII preview if `grandalf` is installed
+
+**Usage**:
+```bash
+# From backend directory
+cd backend
+python generate_flashcard_graph_image.py
+```
+
+**Dependencies**:
+- LangGraph (for graph visualization methods)
+- LangChain Google GenAI (for LLM initialization)
+- FlashcardGeneratorAgent and related tools (from `app.agents.flashcards`)
+- Google API Key (set in `.env` file as `GOOGLE_API_KEY`)
+- PIL/Pillow (for transparent background post-processing if needed)
+
+**Graph Structure**:
+The FlashcardGeneratorAgent has a more complex graph structure than the TutorAgent:
+- `initialize` → `classify` → (conditional) → `process_page` or `save_cards`
+- `process_page` → `skip_decision` → (conditional) → `skip` or `generate`
+- `get_context` → `generate_cards` → `update_progress` → (conditional) → `process_page` or `save_cards`
+- `save_cards` → `END`
+
+---
+
+### `backend/generate_quickchat_graph_image.py`
+
+**Purpose**: Script to generate a visual representation (PNG image) of the QuickChat Agent's LangGraph workflow with transparent background.
+
+**Key Components**:
+- **Graph Visualization**: Uses LangGraph's built-in `draw_mermaid_png()` method
+- **Agent Initialization**: Creates a QuickChatAgent instance with minimal configuration
+- **Transparent Background**: Ensures output image has transparent background
+- **Output**: Generates `quickchat_agent_graph.png` in the `backend/` directory
+
+**Usage**:
+```bash
+# From backend directory
+cd backend
+python generate_quickchat_graph_image.py
+```
+
+**Graph Structure**:
+Similar to TutorAgent but with specialized state management:
+- `agent` → (conditional) → `tools` or `END`
+- `tools` → `agent`
+- Supports dual modes: "discovery" (searching topics) and "tutoring" (explaining content)
+
+---
