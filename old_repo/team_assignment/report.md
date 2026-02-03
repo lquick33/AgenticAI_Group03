@@ -409,10 +409,9 @@ class QuickChatState(State):
    - **Vector Search**: Calls `search_pages_by_embedding()` RPC with query embedding (pgvector HNSW)
    - **Keyword Search**: Full-text search on `page_analyses.analysis_data` JSONB
    - **RRF Fusion**: Combines results with Reciprocal Rank Fusion (K=60, 60% vector + 40% keyword weight)
-   - **Chapter Beginning Detection**: `_pick_best_intro_page()` reorders results:
-     - Checks `is_chapter_heading` flag, scores title match against query
-     - Calculates continuity score (do following pages also match?)
-     - Applies aggregate scoring: title (20%) + key_terms (10%) + continuity (15%) + semantic (10%) + material_relevance (25%)
+   - **Best intro page selection** (`_pick_best_intro_page()`): finds where the topic is *introduced*, not just mentioned.
+     - **Phase 1 (optional, when LLM available)**: LLM picks best intro from top 15 candidates using Langfuse prompt `search-topic/intro-page-pick` (or fallback). Prefers section/chapter title slides, first page of a block, and pages whose title/summary clearly introduces the concept. If LLM returns a valid page, that is used.
+     - **Phase 2 (heuristic, when no LLM or LLM fails)**: (1) **Fast path**: If any result has `is_chapter_heading`, score by title match (with cross-language DE↔EN and focus factor for short titles); among similar scores, prefer earliest page. (2) **Aggregate scoring**: title (48%) + primary key_terms (16%) + continuity (24%) + semantic (8%) + material (18%), plus synergy bonus (title + material name match) and chapter-heading bonus. Continuity = avg correlation-to-query of the *next 6 pages* from DB (section start detection). (3) **First-of-block / earlier-block bonuses**: First page of adjacent-page blocks gets bonus (scales with block length); earlier blocks get +0.10, +0.05, etc. (4) **Tie-breaking**: Within top score band, prefer earliest chapter heading, then earliest first-of-block, then earliest page.
    - Returns: `{found: true, results: [...], recommended_page: 42}` with best intro page first
 
 7. **QuickChatAgent.call_model()** (next iteration) →
@@ -662,7 +661,7 @@ Our selection of Google Gemini 2.5 Flash as the sole foundational LLM for StudyB
 4. **`search_topic(query: str, user_id: str) -> List[dict]`**
    - Searches for topics across all user's courses and materials using RAG
    - Implementation: Hybrid search (vector + keyword via RRF fusion) with fallback to multi-keyword search
-   - **Chapter Beginning Detection**: `_pick_best_intro_page()` finds where topics are INTRODUCED using aggregate scoring: chapter headings (prioritized), title/key_term match with cross-language support (DE↔EN), continuity score (following pages also match = section start), and material relevance
+   - **Best intro page selection**: `_pick_best_intro_page()` finds where topics are *introduced* (best page to start revising). When LLM is available: LLM picks from top 15 candidates (Langfuse prompt or fallback). Otherwise heuristic: chapter headings (prioritized, prefer earliest page); aggregate scoring (title 48%, key_terms 16%, continuity 24%, semantic 8%, material 18% plus synergy/chapter bonuses); continuity = avg correlation of *next 6 pages* from DB; first-of-block and earlier-block bonuses; tie-break to earliest page in top band.
    - Returns: `[{material_id, page_number, summary, key_terms, relevance_score, ...}]`
    - Used by: QuickChatAgent in discovery mode
 
@@ -1174,6 +1173,7 @@ The TutorAgent uses **3 specialized Langfuse prompts** to initialize context for
     - **Hybrid Search**: Combines vector similarity (60% weight) with keyword full-text search (40% weight) using Reciprocal Rank Fusion (RRF)
     - **Embedding Generation**: Query embeddings generated using Google `text-embedding-004` (768 dimensions)
     - **Fallback Strategy**: If embeddings unavailable, falls back to multi-keyword search with LLM-extracted keywords
+    - **Best page to start revising**: `_pick_best_intro_page()` selects the best *introduction* page. When LLM is available, an LLM picks from top 15 candidates (Langfuse prompt `search-topic/intro-page-pick`). Otherwise a heuristic is used: chapter-heading fast path (prefer earliest), aggregate scoring (title, key_terms, continuity over next 6 pages from DB, semantic, material, synergy/chapter bonuses), first-of-block and earlier-block bonuses, and tie-breaking to earliest page in the top score band.
     - **Implementation**: `SearchTopicTool` uses `search_page_analyses_hybrid()` from `storage.py`
     - **Purpose**: Find relevant pages across all courses when user searches for topics (semantic similarity needed)
 
@@ -1845,7 +1845,7 @@ If we had another month, we would prioritize:
 - **QuickChatAgent Development**: Developed the QuickChatAgent for topic discovery across multiple courses, including:
   - Dual-mode operation (discovery and tutoring modes) with automatic mode switching
   - Hybrid search implementation (vector + keyword with RRF fusion)
-  - Chapter heading detection and `_pick_best_intro_page()` algorithm for finding topic introductions
+  - Best page to start revising: LLM-based intro pick (Langfuse prompt) when available, plus heuristic `_pick_best_intro_page()` (chapter headings, aggregate scoring, continuity over next 6 pages, first-of-block/earlier-block bonuses)
   - StateAwareToolNode integration to prevent LLM hallucination of IDs
 
 - **FlashcardGeneratorAgent**: Refactored and expanded the FlashcardGeneratorAgent:
@@ -1855,7 +1855,7 @@ If we had another month, we would prioritize:
   - Hash-based deduplication (O(n) instead of O(n²), reduced time from 30s to <2s for 1000 cards)
 
 - **Tool Development**: Created multiple LangChain tools:
-  - `SearchTopicTool` - Hybrid RAG search with chapter beginning detection
+  - `SearchTopicTool` - Hybrid RAG search with LLM/heuristic best intro page selection
   - `KnowledgeTool` - Per-course mastery scores from Anki study data
   - `TTSTool` - Text-to-speech with multi-language support
   - 10+ Anki tools (deck management, flashcard sync, study history)
@@ -1868,7 +1868,7 @@ If we had another month, we would prioritize:
 
 - **Anki Integration**: Implemented complete Anki ecosystem with Docker support (`ankimcp/headless-anki` ARM64), native app fallback, AnkiWeb sync with programmatic login, sync conflict management, and knowledge tracking with per-deck mastery scores.
 
-- **Search & RAG System**: Optimized topic search with hybrid vector + keyword search (RRF fusion), chapter heading detection, and `_pick_best_intro_page()` continuity-based scoring.
+- **Search & RAG System**: Optimized topic search with hybrid vector + keyword search (RRF fusion). Best page to start revising: LLM-based intro pick from top candidates (Langfuse prompt) when available, else heuristic `_pick_best_intro_page()` (chapter-heading fast path, aggregate scoring with continuity over next 6 pages, first-of-block/earlier-block bonuses, tie-break to earliest page).
 
 - **Frontend Development**: Quick Chat interface with inline PDF viewer, dashboard with Anki study history, settings modal, real-time progress tracking for PDF processing and flashcard generation.
 
