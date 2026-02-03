@@ -1886,41 +1886,96 @@ If we had another month, we would prioritize:
 - `feat(classification): implement classification-based prompt routing`
 - `perf: reduce agent token usage by 40-60% per LLM call`
 
-### Louis Braukmann (louis.braukmann@gmail.com)
+### Detailed Contribution Analysis: Louis Braukmann
+**Role:** Full Stack Lead & AI Engineer
+**Analysis Period:** Jan 10, 2026 - Jan 27, 2026
 
-**Major Contributions:**
+#### 1. Executive Summary
+Louis Braukmann acted as the primary architect and lead developer for the Lernkompanien project. His contributions span the entire stack, establishing the "Vision-First" AI architecture, the Next.js frontend foundation, and the FastAPI backend infrastructure. He was responsible for the critical implementation of the LangGraph-based agentic workflows (Tutor, Quiz, Flashcard), the robust multimodal ingestion pipeline (PDF to Image to Structured Data), and the final production hardening (Langfuse observability, custom hooks for streaming, and Anki integration).
 
-- **TutorAgent Development**: Implemented the core TutorAgent with LangGraph state machine, including:
-  - StateAwareToolNode for automatic state injection (dramatically reduced tool-calling errors)
-  - Message history truncation and context management (sliding window approach)
-  - Personality customization (formality, humor, encouragement)
-  - Langfuse prompt integration with fallback mechanisms
-  - Gemini API compatibility fixes (`_fix_incomplete_tool_calls()`)
+#### 2. Chronological Contribution Timeline
 
-- **QuizGeneratorAgent**: Built the QuizGeneratorAgent with structured output generation, difficulty distribution logic, and validation. Ensured 3-8 questions with appropriate difficulty levels.
+##### Phase 1: Architectural Foundation & Vision-First Ingestion (Jan 10)
+Louis initiated the project by defining the core architecture and development standards, moving away from traditional RAG to a multimodal approach.
 
-- **Tool Development**: Created multiple LangChain tools:
-  - `GetPageAnalysisTool` - Retrieves structured page analyses from database
-  - `GetCourseMaterialSummaryTool` - Gets course overview
-  - `CreateQuizTool` - Triggers QuizGeneratorAgent
-  - `GetPageImageTool` - Returns page image URLs
+*   **Repository & Standards Initialization**:
+    *   Created `AGENT_DEVELOPMENT_RULES.md` to define strict typing and LangGraph patterns.
+    *   Set up the monorepo structure: `frontend` (Next.js 14 App Router) and `backend` (FastAPI).
+    *   Implemented `PROJECT_PLAN.md` and initial Cursor rules.
+*   **Database Design**: Designed and applied the initial Supabase SQL schema (`20260110...initial_schema.sql`), establishing the core relational structure for courses, materials, and users.
+*   **The "Vision-First" Pivot**:
+    *   Wrote `poc_vision_gemini.py` to validate using Multimodal LLMs (Gemini Flash) for reading lecture slides as images instead of OCR text extraction.
+    *   Implemented the asynchronous PDF processing pipeline using FastAPI `BackgroundTasks` to handle large lectures without blocking requests.
 
-- **Backend API**: Developed FastAPI endpoints for:
-  - Chat initiation and messaging (`/api/chat/initiate`, `/api/chat/message`)
-  - Streaming responses with Server-Sent Events (SSE)
-  - Comprehensive error handling and logging
+##### Phase 2: Core MVP & Feature Implementation (Jan 12 - Jan 17)
+Focused on building the user interface and connecting the basic agentic loops.
 
-- **Multimodal Analysis**: Implemented PDF page analysis using Google Gemini 2.5 Flash (multimodal) API with structured JSON extraction and database storage. Handles image conversion, base64 encoding, and error recovery. Uses the same Gemini model as agents for consistency and simplified configuration.
+*   **Frontend Infrastructure**:
+    *   Implemented the entire dashboard using **shadcn/ui** components.
+    *   Built the Authentication flow using Supabase SSR (`frontend/lib/auth.ts`, Middleware).
+    *   Created the "Split-Screen" study interface (`StudyReader`), allowing side-by-side PDF viewing and AI chat.
+*   **Course Management**:
+    *   Developed full CRUD API endpoints for Courses and Learning Units.
+    *   Implemented file uploads with `pdf2image` integration for converting PDF pages to analyzing images.
+*   **Tutor Agent Prototype**:
+    *   Created the initial `TutorAgent` using LangGraph.
+    *   Implemented state injection mechanisms to allow agents to "see" the user's current page in the PDF.
 
-- **State Management**: Designed and implemented LangGraph checkpointer integration for conversation persistence, enabling seamless context across sessions.
+##### Phase 3: Agent Maturity, Refactoring & Production Polish (Jan 20 - Jan 27)
+The most active phase, focused on reliability, observability, and advanced AI features.
 
-- **Prompt Engineering**: Developed system prompts for TutorAgent and QuizGeneratorAgent, including Langfuse integration with fallback mechanisms. Iterated through multiple versions to improve tool-calling reliability.
+*   **Flashcard Agent: From Inception to Anki Integration**:
+    *   **Initial Creation (Jan 20)**: Built the `FlashcardAgent` from scratch, defining the LangGraph nodes and structured output schemas to generate flashcards from lecture content.
+    *   **Evolution**: Evolved the system from simple JSON/CSV export to generating full **Anki decks (`.apkg`)**.
+    *   **Tech**: Integrated `genanki` to bundle base64 images directly into Anki cards (critical for math/diagram-heavy lectures).
+    *   **UI**: Added snippet selection tools allowing users to crop multiple distinct areas of a slide for flashcards.
+*   **Quiz Agent Rewrite & UI**:
+    *   **Agent**: Refactored `QuizGeneratorAgent` from scratch to fix state consistency bugs and implemented `quiz_creation_lock.py` to prevent race conditions.
+    *   **UI**: Designed and implemented the interactive `QuizComponent` widget (`frontend/components/study/quiz-component.tsx`), handling user selection, feedback display, and result tracking.
+*   **Observability (DevOps)**:
+    *   **Langfuse Integration**: Completely integrated Langfuse for tracing agent steps, prompts, and costs (`backend/app/services/observability.py`).
+    *   Migrated all hardcoded prompts to Langfuse Prompt Management, enabling version control for prompts.
+*   **Frontend Performance & UX**:
+    *   **Math Rendering**: Migrated chat rendering from MathJax to **KaTeX** for faster, OpenAI-compatible LaTeX rendering.
+    *   **Custom Hooks**: Refactored the monolithic `StudyReader` into modular hooks:
+        *   `useChatSession`: Handles SSE streaming, history, and optimistic updates.
+        *   `useTypewriter`: Handles the "typing effect" for AI messages.
+    *   **Streaming**: Fixed critical SSE (Server-Sent Events) issues to ensure smooth token streaming without JSON parsing errors.
 
-**Git Commits (Sample):**
-- `Add detailed logging to tutor agent _fix_incomplete_tool_calls`
-- `Add detailed logging to tutor agent truncation in call_model`
-- `feat: Add support for multiple snippets per page in flashcard generation`
-- `merge of the branches - stable`
+#### 3. Technical Deep Dive & Key Innovations
+
+##### A. The "StateAwareToolNode" Pattern
+To solve the issue of LLMs losing context of the user's UI state, Louis implemented a custom `StateAwareToolNode` in the backend.
+*   **Problem**: Standard LangChain tools didn't know which PDF page the user was looking at.
+*   **Solution**: He intercepted the tool execution loop to inject `current_page_context` and `slide_analysis` directly into the tool's runtime args before the LLM logic executed.
+*   **Impact**: Dramatically reduced hallucination when users asked "Explain this slide".
+
+##### B. Asynchronous Multimodal Ingestion
+Instead of simple text extraction, Louis built a pipeline that "sees" the lecture:
+1.  **Upload**: PDF is uploaded to Supabase Storage.
+2.  **Processing**: `pdf_processor.py` runs in a background thread.
+3.  **Conversion**: Uses `pdf2image` to convert pages to high-res JPEGs.
+4.  **Analysis**: Sends images to Gemini 2.5 Flash for structured JSON extraction (Summary, Key Terms, Exam Questions).
+5.  **Storage**: Saves structured analysis in `page_analyses` (JSONB) for retrieval by agents.
+
+##### C. Robust Frontend Streaming Architecture
+Louis refactored the chat interface (`useChatSession.ts`) to handle complex streaming requirements:
+*   **Hybrid State**: Manages local optimistic UI state while syncing with Supabase database.
+*   **Stream Parsing**: Handles raw text streams mixed with tool call markers using a robust parsing logic in `frontend/lib/api/study.ts`.
+*   **Debounced Navigation**: Implemented debouncing for page flips to prevent flooding the Tutor Agent with context updates.
+
+##### D. Flashcard & Snippet System
+*   **Multi-Snippet Support**: Added ability to select *multiple* distinct regions on a single PDF page to generate separate flashcards.
+*   **Anki Engineering**: Wrote `langfuse_to_anki_csv.py` and service layers to package media files and HTML content into importable Anki packages, moving beyond simple text cards.
+
+#### 4. Summary of Git Statistics
+*   **Commits Analyzed**: ~50+ significant commits.
+*   **Key Files Created/Owned**:
+    *   `backend/app/agents/tutor/tutor_agent.py`
+    *   `backend/app/services/pdf_processor.py`
+    *   `frontend/hooks/use-chat-session.ts`
+    *   `frontend/components/study/study-reader.tsx`
+*   **Technologies Introduced**: LangGraph, Supabase SSR, Langfuse, Genanki, KaTeX, Framer Motion (for typewriter effects).
 
 **Collaboration:**
 - Both team members worked closely on integrating agents, debugging tool-calling issues, and refining the overall architecture.
