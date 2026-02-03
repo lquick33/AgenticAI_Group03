@@ -1647,8 +1647,7 @@ if user_feedback == "helpful":
 
 **Current State:**
 - Agent reasoning is partially transparent: Tool calls are logged and can be viewed in Langfuse
-- Users see tool results indirectly through agent explanations
-- Internal tool selection logic (which tool to call) is not fully transparent to end users
+- Users see tool results indirectly through agent explanations and can also toggle to see them directly
 
 **Transparency Features:**
 - Langfuse tracing shows all LLM calls, tool invocations, and state transitions
