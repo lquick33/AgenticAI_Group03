@@ -1032,20 +1032,19 @@ Respond with a JSON object matching this structure:
         messages = state.get("current_page_messages", [])
         conversation_context = ""
         if messages:
-            relevant_messages = []
+            formatted_messages = []
             for msg in messages:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 if role in ("user", "assistant") and content:
-                    # Look for questions or clarifications
-                    if role == "user" and ("?" in content or "verstehe" in content.lower() or "erkläre" in content.lower()):
-                        relevant_messages.append(f"User: {content}")
-                    elif role == "assistant" and len(relevant_messages) > 0:
-                        # Include assistant response if it follows a user question
-                        relevant_messages.append(f"Assistant: {content[:200]}...")  # Truncate long responses
+                    # Capitalize role for prompt readability
+                    role_display = "User" if role == "user" else "Assistant"
+                    formatted_messages.append(f"{role_display}: {content}")
             
-            if relevant_messages:
-                conversation_context = "\n".join(relevant_messages[-6:])  # Last 3 Q&A pairs
+            if formatted_messages:
+                # Include last 10 messages to ensure Tutor explanations are captured
+                # This covers ~5 Q&A pairs which is usually enough for context
+                conversation_context = "\n".join(formatted_messages[-10:])
         
         # Get prompt from Langfuse
         try:
