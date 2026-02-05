@@ -74,7 +74,8 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
   const [isDialogDownloading, setIsDialogDownloading] = useState(false)
   const [dialogDownloadSuccess, setDialogDownloadSuccess] = useState(false)
   const startPollingRef = useRef<((materialId: string, taskId: string) => void) | null>(null)
-  
+  const handleGenerationCompleteRef = useRef<(materialId: string, status: FlashcardTaskStatus) => Promise<void> | null>(null)
+
   // Global background tasks context
   const backgroundTasks = useBackgroundTasksOptional()
 
@@ -140,6 +141,9 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     setShowCompletionDialog(true)
   }, [backgroundTasks])
 
+  // Keep ref updated so restore effect can call it without depending on it (avoids re-running on every context re-render)
+  handleGenerationCompleteRef.current = handleGenerationComplete
+
   const startPolling = useCallback((materialId: string, taskId: string) => {
     const interval = setInterval(async () => {
       try {
@@ -196,33 +200,28 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     setFlashcardsStatus(initialStatus)
   }, [localMaterials])
 
-  // Restore active flashcard generation tasks (still need API calls for in-progress tasks)
+  // Restore active flashcard generation tasks only when course page is loaded or materials/user change (e.g. reload or navigate to this course).
+  // We do NOT depend on handleGenerationComplete so this effect does not re-run on every context re-render.
   useEffect(() => {
     const restoreActiveTasks = async () => {
       for (const material of localMaterials) {
         if (material.processing_status === 'completed') {
-          // Check for active flashcard generation task
           try {
             const activeTask = await getActiveFlashcardTask(material.id, userId)
             if (activeTask) {
-              // Restore task state
               setTaskIds(prev => ({ ...prev, [material.id]: activeTask.task_id }))
               setTaskStatuses(prev => ({ ...prev, [material.id]: activeTask }))
               setIsGenerating(prev => ({ ...prev, [material.id]: true }))
-              
-              // Resume polling if task is still running
+
               if (activeTask.status === 'pending' || activeTask.status === 'running') {
                 startPollingRef.current?.(material.id, activeTask.task_id)
               } else if (activeTask.status === 'completed') {
-                // Task completed but we just loaded - show completion status
-                await handleGenerationComplete(material.id, activeTask)
+                await handleGenerationCompleteRef.current?.(material.id, activeTask)
               } else if (activeTask.status === 'failed' || activeTask.status === 'cancelled') {
-                // Task failed or was cancelled - reset state
                 setIsGenerating(prev => ({ ...prev, [material.id]: false }))
               }
             }
           } catch (error) {
-            // If error checking for active task, just continue
             console.error(`Error checking active task for material ${material.id}:`, error)
           }
         }
@@ -232,7 +231,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
     if (localMaterials.length > 0) {
       restoreActiveTasks()
     }
-  }, [localMaterials, userId, handleGenerationComplete])
+  }, [localMaterials, userId])
 
   // Cleanup polling intervals on unmount
   useEffect(() => {
