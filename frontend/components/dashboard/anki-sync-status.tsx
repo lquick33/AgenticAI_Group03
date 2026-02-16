@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { AlertCircle, CheckCircle2, Cloud, CloudOff, Settings, RefreshCw, Upload, Download } from 'lucide-react'
+import { AlertCircle, Cloud, CloudOff, Settings, RefreshCw, Upload, Download } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {

@@ -38,6 +38,16 @@ interface ChartDataPoint {
   timeSpentMinutes: number
 }
 
+// Parse YYYY-MM-DD as a *local* date (avoids UTC day-shift issues).
+function parseYmdToLocalDate(value: string): Date {
+  const parts = value.split("-").map((p) => Number(p))
+  if (parts.length === 3 && parts.every((n) => Number.isFinite(n))) {
+    const [y, m, d] = parts
+    return new Date(y, (m ?? 1) - 1, d ?? 1)
+  }
+  return new Date(value)
+}
+
 // Type for data coming from server-side Supabase query
 export interface StudyHistoryServerData {
   study_date: string
@@ -205,7 +215,7 @@ export function ProgressChart({ userId, initialData }: ProgressChartProps) {
     startDate.setDate(startDate.getDate() - daysToSubtract)
     
     return chartData.filter((item) => {
-      const date = new Date(item.date)
+      const date = parseYmdToLocalDate(item.date)
       return date >= startDate
     })
   }, [chartData, timeRange])
@@ -326,7 +336,7 @@ export function ProgressChart({ userId, initialData }: ProgressChartProps) {
                 tickMargin={8}
                 minTickGap={32}
                 tickFormatter={(value) => {
-                  const date = new Date(value)
+                  const date = parseYmdToLocalDate(String(value))
                   return format(date, "d. MMM")
                 }}
               />
@@ -342,7 +352,7 @@ export function ProgressChart({ userId, initialData }: ProgressChartProps) {
                 content={
                   <ChartTooltipContent
                     labelFormatter={(value) => {
-                      return format(new Date(value), "d. MMMM yyyy")
+                      return format(parseYmdToLocalDate(String(value)), "d. MMMM yyyy")
                     }}
                     formatter={(value, name) => {
                       if (name === "cardsStudied") {

@@ -30,6 +30,16 @@ interface KPIData {
   isDemo: boolean
 }
 
+// Parse YYYY-MM-DD as a *local* date (avoids UTC day-shift issues).
+function parseYmdToLocalDate(value: string): Date {
+  const parts = value.split("-").map((p) => Number(p))
+  if (parts.length === 3 && parts.every((n) => Number.isFinite(n))) {
+    const [y, m, d] = parts
+    return new Date(y, (m ?? 1) - 1, d ?? 1)
+  }
+  return new Date(value)
+}
+
 // Demo data for new users
 const DEMO_KPI_DATA: KPIData = {
   cardsThisWeek: 156,
@@ -58,7 +68,7 @@ function calculateKPIs(data: StudyHistoryEntry[]): KPIData {
   let totalPreviousWeek = 0
 
   for (const entry of data) {
-    const entryDate = new Date(entry.date)
+    const entryDate = parseYmdToLocalDate(entry.date)
     
     if (entryDate >= oneWeekAgo) {
       // This week
@@ -107,7 +117,7 @@ function calculateKPIsFromServerData(data: StudyHistoryServerData[]): KPIData {
   let totalPreviousWeek = 0
 
   for (const entry of data) {
-    const entryDate = new Date(entry.study_date)
+    const entryDate = parseYmdToLocalDate(entry.study_date)
     
     if (entryDate >= oneWeekAgo) {
       // This week

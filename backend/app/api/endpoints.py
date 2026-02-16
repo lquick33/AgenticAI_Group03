@@ -4405,7 +4405,8 @@ async def get_anki_study_history(
                 "days_requested": days,
                 "data": [
                     {
-                        "date": record["study_date"],
+                        # Ensure JSON-serializable date string (YYYY-MM-DD)
+                        "date": str(record["study_date"]),
                         "cards_reviewed": record["cards_reviewed"],
                         "time_spent_seconds": record["time_spent_seconds"],
                         "again_count": record["again_count"],
@@ -4432,7 +4433,13 @@ async def get_anki_study_history(
         
         try:
             client = AnkiClient()
-            if client.is_running():
+            # Support both Docker (default) and native AnkiConnect (macOS) setups.
+            # Some users study in native Anki while the Docker container is stopped.
+            anki_running = (
+                client.is_running(require_docker=True) or
+                client.is_running(require_docker=False)
+            )
+            if anki_running:
                 fresh_data = client.get_detailed_study_history(days=days)
                 anki_available = True
                 
@@ -4502,7 +4509,11 @@ async def get_anki_sync_status():
         client = AnkiClient()
         
         # First check if Anki is running
-        if not client.is_running():
+        anki_running = (
+            client.is_running(require_docker=True) or
+            client.is_running(require_docker=False)
+        )
+        if not anki_running:
             return {
                 "status": "not_connected",
                 "message": "Anki is not running. Please start the Docker container.",
