@@ -12,8 +12,9 @@ import sys
 import traceback
 import uuid
 import time
+from datetime import datetime, timezone
 from collections import defaultdict
-from typing import Optional, AsyncGenerator
+from typing import Optional, AsyncGenerator, Any
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body, Request
 from fastapi.responses import StreamingResponse
@@ -99,6 +100,79 @@ import os
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _parse_supabase_created_at(value: Any) -> Optional[datetime]:
+    """
+    Parse Supabase `created_at` values (usually ISO strings) into UTC datetimes.
+    Returns None if parsing fails.
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        s = value.strip()
+        # Common Supabase format: "2026-02-17T12:34:56.789Z"
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        # Some drivers may return offsets without minutes/colon (e.g. "+00", "+0000").
+        # Normalize these to "+00:00" so datetime.fromisoformat can parse them.
+        if len(s) >= 3 and (s[-3] in ["+", "-"]) and s[-2:].isdigit():
+            # "+00" -> "+00:00"
+            s = s + ":00"
+        elif len(s) >= 5 and (s[-5] in ["+", "-"]) and s[-4:].isdigit() and s[-3] != ":":
+            # "+0000" -> "+00:00"
+            s = s[:-2] + ":" + s[-2:]
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            return None
+    else:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _to_utc_iso_z(dt: datetime) -> str:
+    """Return UTC ISO string with trailing 'Z' and no microseconds."""
+    dt_utc = dt.astimezone(timezone.utc).replace(microsecond=0)
+    return dt_utc.isoformat().replace("+00:00", "Z")
+
+
+def _build_recency_state_from_message_rows_desc(rows_desc: list[dict]) -> dict:
+    """
+    Build TutorAgent state fields for recency/continuity from message rows.
+    Expects rows in newest-first order and dicts containing: role, created_at.
+    """
+    now = datetime.now(timezone.utc)
+    last_dt: Optional[datetime] = None
+    last_assistant_dt: Optional[datetime] = None
+
+    for row in rows_desc or []:
+        if last_dt is None:
+            last_dt = _parse_supabase_created_at(row.get("created_at"))
+        if last_assistant_dt is None and row.get("role") == "assistant":
+            last_assistant_dt = _parse_supabase_created_at(row.get("created_at"))
+        if last_dt is not None and last_assistant_dt is not None:
+            break
+
+    state: dict = {
+        "conversation_has_history": bool(last_dt),
+        "last_message_at": _to_utc_iso_z(last_dt) if last_dt else None,
+        "last_assistant_message_at": _to_utc_iso_z(last_assistant_dt) if last_assistant_dt else None,
+        "seconds_since_last_message": None,
+        "seconds_since_last_assistant_message": None,
+    }
+
+    if last_dt:
+        state["seconds_since_last_message"] = max(0, int((now - last_dt).total_seconds()))
+    if last_assistant_dt:
+        state["seconds_since_last_assistant_message"] = max(0, int((now - last_assistant_dt).total_seconds()))
+
+    return state
 
 
 # =============================================================================
@@ -1229,6 +1303,61 @@ async def initiate_chat(
 
                 # Update state with current page information (according to AGENT_DEVELOPMENT_RULES.md)
                 # The agent should always know which page we are currently viewing
+                #
+                # Recency / continuity hints:
+                # We compute these from Supabase `messages.created_at` so the TutorAgent system prompt
+                # can decide whether to skip long re-introductions when the last interaction was very recent.
+                recency_state: dict = {}
+                try:
+                    if stored_messages:
+                        # stored_messages are oldest-first (see load_conversation_with_messages), convert to newest-first
+                        recency_state = _build_recency_state_from_message_rows_desc(list(reversed(stored_messages)))
+                    else:
+                        # Fallback: query only lightweight metadata (role + created_at)
+                        msg_meta_resp = (
+                            client.table("messages")
+                            .select("role, created_at")
+                            .eq("conversation_id", conversation_id)
+                            .order("created_at", desc=True)
+                            .limit(30)
+                            .execute()
+                        )
+                        recency_state = _build_recency_state_from_message_rows_desc(msg_meta_resp.data or [])
+                except Exception as recency_error:
+                    # Non-critical: do not break chat init if timestamp parsing/query fails
+                    logger.debug(f"Failed to compute message recency state: {recency_error}")
+                    recency_state = {}
+
+                # Ensure history flag is consistent with timestamp-derived recency_state.
+                # We keep the greeting logic (conversation_has_history) unchanged, but for the TutorAgent
+                # prompt we want a reliable "has history" signal. If we have a valid last_message_at (or
+                # last_assistant_message_at), we definitely have stored history even if earlier bootstrap
+                # logic didn't load messages (e.g. existing thread, non-initial open, etc.).
+                has_history_for_prompt = bool(
+                    conversation_has_history
+                    or recency_state.get("last_message_at")
+                    or recency_state.get("last_assistant_message_at")
+                )
+                recency_state["conversation_has_history"] = has_history_for_prompt
+
+                logger.debug(
+                    "Tutor recency_state (initiate): "
+                    f"conversation_has_history={recency_state.get('conversation_has_history')}, "
+                    f"seconds_since_last_message={recency_state.get('seconds_since_last_message')}, "
+                    f"seconds_since_last_assistant_message={recency_state.get('seconds_since_last_assistant_message')}, "
+                    f"last_message_at={recency_state.get('last_message_at')}, "
+                    f"last_assistant_message_at={recency_state.get('last_assistant_message_at')}"
+                )
+
+                # Variables available to Langfuse HumanMessage prompts (page open / greetings).
+                # You can reference these in Langfuse as {{seconds_since_last_message}}, etc.
+                recency_prompt_vars = {
+                    "conversation_has_history": recency_state.get("conversation_has_history"),
+                    "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                    "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
+                    "last_message_at": recency_state.get("last_message_at"),
+                    "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                }
                 
                 # Determine greeting type based on is_initial_open flag and conversation history
                 if request.is_initial_open:
@@ -1248,7 +1377,8 @@ async def initiate_chat(
                             initial_human_content = get_tutor_prompt(
                                 "tutor-agent/normal-greeting-after-welcome-back",
                                 page_number=request.page_number,
-                                summary=summary
+                                summary=summary,
+                                **recency_prompt_vars,
                             )
                         else:
                             # No recent Welcome Back message, send one now
@@ -1275,7 +1405,8 @@ async def initiate_chat(
                                 "tutor-agent/welcome-back",
                                 completed_pages=completed_pages,
                                 total_pages=total_pages_safe,
-                                topics_instructions=topics_instructions
+                                topics_instructions=topics_instructions,
+                                **recency_prompt_vars,
                             )
                     else:
                         # First visit for this material (no previous chat history)
@@ -1284,7 +1415,8 @@ async def initiate_chat(
                             "tutor-agent/first-visit",
                             page_number=request.page_number,
                             total_pages=total_pages_safe,
-                            summary=summary
+                            summary=summary,
+                            **recency_prompt_vars,
                         )
 
                     # Fix incomplete tool call pairs in base_messages before adding new messages
@@ -1302,6 +1434,12 @@ async def initiate_chat(
                         "material_id": request.material_id,
                         "user_id": request.user_id,
                         "course_material_summary": course_summary,
+                        # Recency / continuity hints for the TutorAgent prompt
+                        "conversation_has_history": recency_state.get("conversation_has_history"),
+                        "last_message_at": recency_state.get("last_message_at"),
+                        "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                        "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                        "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                     }
                 else:
                     # This is just a page change within an ongoing session
@@ -1326,6 +1464,12 @@ async def initiate_chat(
                                 "material_id": request.material_id,
                                 "user_id": request.user_id,
                                 "course_material_summary": course_summary,
+                                # Recency / continuity hints for the TutorAgent prompt
+                                "conversation_has_history": recency_state.get("conversation_has_history"),
+                                "last_message_at": recency_state.get("last_message_at"),
+                                "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                                "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                                "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                             }
                             
                             # Update state silently without generating a response
@@ -1366,7 +1510,8 @@ async def initiate_chat(
                                     content=get_tutor_prompt(
                                         "tutor-agent/page-change-new-thread",
                                         page_number=request.page_number,
-                                        summary=summary
+                                        summary=summary,
+                                        **recency_prompt_vars,
                                     )
                                 ),
                             ],
@@ -1374,6 +1519,12 @@ async def initiate_chat(
                             "material_id": request.material_id,
                             "user_id": request.user_id,
                             "course_material_summary": course_summary,
+                            # Recency / continuity hints for the TutorAgent prompt
+                            "conversation_has_history": recency_state.get("conversation_has_history"),
+                            "last_message_at": recency_state.get("last_message_at"),
+                            "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                            "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                            "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                         }
                     else:
                         # Existing thread in this backend process: load existing messages from snapshot
@@ -1397,6 +1548,12 @@ async def initiate_chat(
                                 "material_id": request.material_id,
                                 "user_id": request.user_id,
                                 "course_material_summary": snapshot.values.get("course_material_summary") or course_summary,
+                                # Recency / continuity hints for the TutorAgent prompt
+                                "conversation_has_history": recency_state.get("conversation_has_history"),
+                                "last_message_at": recency_state.get("last_message_at"),
+                                "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                                "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                                "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                             }
                             
                             # Update state silently without generating a response
@@ -1435,7 +1592,8 @@ async def initiate_chat(
                             content=get_tutor_prompt(
                                 "tutor-agent/page-change-existing-thread",
                                 page_number=request.page_number,
-                                summary=summary
+                                summary=summary,
+                                **recency_prompt_vars,
                             )
                         )
 
@@ -1468,6 +1626,12 @@ async def initiate_chat(
                             "material_id": request.material_id,
                             "user_id": request.user_id,
                             "course_material_summary": existing_summary,
+                            # Recency / continuity hints for the TutorAgent prompt
+                            "conversation_has_history": recency_state.get("conversation_has_history"),
+                            "last_message_at": recency_state.get("last_message_at"),
+                            "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                            "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                            "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                         }
                 
                 # Prepare buffer for assistant response text for persistence
@@ -1967,10 +2131,42 @@ async def send_chat_message(
                 # Add user message to existing thread and preserve state
                 # Include page context in the message so agent knows what page user is viewing
                 message_with_context = request.message + page_context if page_context else request.message
+
+                # Recency / continuity hints (non-critical): compute from DB timestamps BEFORE adding this new message.
+                recency_state: dict = {}
+                try:
+                    msg_meta_resp = (
+                        client.table("messages")
+                        .select("role, created_at")
+                        .eq("conversation_id", conversation_id)
+                        .order("created_at", desc=True)
+                        .limit(30)
+                        .execute()
+                    )
+                    recency_state = _build_recency_state_from_message_rows_desc(msg_meta_resp.data or [])
+                except Exception as recency_error:
+                    logger.debug(f"Failed to compute message recency state: {recency_error}")
+                    recency_state = {}
+
+                logger.debug(
+                    "Tutor recency_state (message): "
+                    f"conversation_has_history={recency_state.get('conversation_has_history')}, "
+                    f"seconds_since_last_message={recency_state.get('seconds_since_last_message')}, "
+                    f"seconds_since_last_assistant_message={recency_state.get('seconds_since_last_assistant_message')}, "
+                    f"last_message_at={recency_state.get('last_message_at')}, "
+                    f"last_assistant_message_at={recency_state.get('last_assistant_message_at')}"
+                )
+
                 initial_state = {
                     "messages": [HumanMessage(content=message_with_context)],
                     "material_id": material_id,
-                    "user_id": user_id
+                    "user_id": user_id,
+                    # Recency / continuity hints for the TutorAgent prompt
+                    "conversation_has_history": recency_state.get("conversation_has_history"),
+                    "last_message_at": recency_state.get("last_message_at"),
+                    "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                    "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                    "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                 }
                 
                 # Only add current_page if it exists in previous state or metadata

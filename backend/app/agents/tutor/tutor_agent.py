@@ -38,6 +38,14 @@ class TutorState(State):
     material_id: Optional[str] = None
     user_id: Optional[str] = None
     course_material_summary: Optional[dict] = None
+    # Recency / session continuity hints (populated by API layer, derived from DB timestamps)
+    # These are intended to be used by the system prompt (Langfuse) to adjust verbosity:
+    # - If the last interaction was very recent, skip lengthy re-introductions.
+    conversation_has_history: Optional[bool] = None
+    last_message_at: Optional[str] = None  # ISO timestamp string (UTC)
+    last_assistant_message_at: Optional[str] = None  # ISO timestamp string (UTC)
+    seconds_since_last_message: Optional[int] = None
+    seconds_since_last_assistant_message: Optional[int] = None
 
 
 class StateAwareToolNode(ToolNode):
@@ -666,6 +674,50 @@ class TutorAgent(BaseAgent):
                 context_parts.append(f"Material-ID: {current_material_id}")
             else:
                 context_parts.append(f"Material ID: {current_material_id}")
+
+        # Recency / continuity signals (provided by API layer)
+        # Keep these short; the system prompt can decide how to use them.
+        if state.get("conversation_has_history") is not None:
+            if self.language == "de":
+                context_parts.append(
+                    f"Hat Chat-Verlauf: {bool(state.get('conversation_has_history'))}"
+                )
+            else:
+                context_parts.append(
+                    f"Has chat history: {bool(state.get('conversation_has_history'))}"
+                )
+
+        if state.get("seconds_since_last_message") is not None:
+            if self.language == "de":
+                context_parts.append(
+                    f"Zeit seit letzter Nachricht: {state.get('seconds_since_last_message')} Sekunden"
+                )
+            else:
+                context_parts.append(
+                    f"Time since last message: {state.get('seconds_since_last_message')} seconds"
+                )
+
+        if state.get("seconds_since_last_assistant_message") is not None:
+            if self.language == "de":
+                context_parts.append(
+                    f"Zeit seit letzter Tutor-Antwort: {state.get('seconds_since_last_assistant_message')} Sekunden"
+                )
+            else:
+                context_parts.append(
+                    f"Time since last tutor reply: {state.get('seconds_since_last_assistant_message')} seconds"
+                )
+
+        if state.get("last_message_at"):
+            if self.language == "de":
+                context_parts.append(f"Letzte Nachricht um (UTC): {state.get('last_message_at')}")
+            else:
+                context_parts.append(f"Last message at (UTC): {state.get('last_message_at')}")
+
+        if state.get("last_assistant_message_at"):
+            if self.language == "de":
+                context_parts.append(f"Letzte Tutor-Antwort um (UTC): {state.get('last_assistant_message_at')}")
+            else:
+                context_parts.append(f"Last tutor reply at (UTC): {state.get('last_assistant_message_at')}")
         
         # TOKEN OPTIMIZATION: Only include summary on first call or when material changes
         # This saves ~200-500 tokens on subsequent calls within the same material
@@ -755,14 +807,20 @@ class TutorAgent(BaseAgent):
                             f"\n\nAktuelle Kontextwerte: "
                             f"course_material_id={state.get('material_id', 'unbekannt')}, "
                             f"page_number={state.get('current_page', 1)}, "
-                            f"user_id={state.get('user_id', 'unbekannt')}"
+                            f"user_id={state.get('user_id', 'unbekannt')}, "
+                            f"conversation_has_history={state.get('conversation_has_history')}, "
+                            f"seconds_since_last_message={state.get('seconds_since_last_message')}, "
+                            f"seconds_since_last_assistant_message={state.get('seconds_since_last_assistant_message')}"
                         )
                     else:
                         enhanced_content += (
                             f"\n\nCurrent context values: "
                             f"course_material_id={state.get('material_id', 'unknown')}, "
                             f"page_number={state.get('current_page', 1)}, "
-                            f"user_id={state.get('user_id', 'unknown')}"
+                            f"user_id={state.get('user_id', 'unknown')}, "
+                            f"conversation_has_history={state.get('conversation_has_history')}, "
+                            f"seconds_since_last_message={state.get('seconds_since_last_message')}, "
+                            f"seconds_since_last_assistant_message={state.get('seconds_since_last_assistant_message')}"
                         )
                     messages_for_llm[i] = SystemMessage(content=enhanced_content)
                     system_message_found = True
@@ -778,14 +836,20 @@ class TutorAgent(BaseAgent):
                         f"\n\nAktuelle Kontextwerte: "
                         f"course_material_id={state.get('material_id', 'unbekannt')}, "
                         f"page_number={state.get('current_page', 1)}, "
-                        f"user_id={state.get('user_id', 'unbekannt')}"
+                        f"user_id={state.get('user_id', 'unbekannt')}, "
+                        f"conversation_has_history={state.get('conversation_has_history')}, "
+                        f"seconds_since_last_message={state.get('seconds_since_last_message')}, "
+                        f"seconds_since_last_assistant_message={state.get('seconds_since_last_assistant_message')}"
                     )
                 else:
                     enhanced_content += (
                         f"\n\nCurrent context values: "
                         f"course_material_id={state.get('material_id', 'unknown')}, "
                         f"page_number={state.get('current_page', 1)}, "
-                        f"user_id={state.get('user_id', 'unknown')}"
+                        f"user_id={state.get('user_id', 'unknown')}, "
+                        f"conversation_has_history={state.get('conversation_has_history')}, "
+                        f"seconds_since_last_message={state.get('seconds_since_last_message')}, "
+                        f"seconds_since_last_assistant_message={state.get('seconds_since_last_assistant_message')}"
                     )
                 messages_for_llm.insert(0, SystemMessage(content=enhanced_content))
         
@@ -807,6 +871,10 @@ class TutorAgent(BaseAgent):
                 "langfuse_session_id": state.get("material_id"),  # Use material_id as session
                 "material_id": state.get("material_id"),
                 "current_page": state.get("current_page"),
+                # Recency/continuity hints (useful for debugging prompt behavior in traces)
+                "conversation_has_history": state.get("conversation_has_history"),
+                "seconds_since_last_message": state.get("seconds_since_last_message"),
+                "seconds_since_last_assistant_message": state.get("seconds_since_last_assistant_message"),
                 "agent_name": self.name,
                 "language": self.language
             }
