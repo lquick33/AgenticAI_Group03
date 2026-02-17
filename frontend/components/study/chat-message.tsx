@@ -92,7 +92,7 @@ export const ChatMessage = React.memo(function ChatMessage({
       {/* Message Body */}
       <div
         className={cn(
-          "flex-1",
+          "flex-1 min-w-0",
           role === "user" && "order-first"
         )}
       >
@@ -137,7 +137,7 @@ export const ChatMessage = React.memo(function ChatMessage({
               </div>
             </div>
           ) : (
-            <div className="markdown-gemini max-w-none">
+            <div className="markdown-gemini max-w-none min-w-0">
               <ReactMarkdown
                 remarkPlugins={[remarkMath]}
                 rehypePlugins={[rehypeKatex]}
@@ -169,7 +169,7 @@ export const ChatMessage = React.memo(function ChatMessage({
                     return isInline ? (
                       <code
                         className={cn(
-                          "px-1 py-0.5 rounded text-xs font-mono",
+                          "px-1 py-0.5 rounded text-xs font-mono whitespace-pre-wrap break-words",
                           role === "assistant"
                             ? "bg-white/10 text-white"
                             : "bg-gray-200 text-gray-900"
@@ -184,7 +184,7 @@ export const ChatMessage = React.memo(function ChatMessage({
                   pre: ({ children }) => (
                     <pre
                       className={cn(
-                        "p-2 rounded text-xs font-mono overflow-x-auto",
+                        "p-2 rounded text-xs font-mono max-w-full overflow-x-hidden whitespace-pre-wrap break-words",
                         role === "assistant"
                           ? "bg-white/10 text-white"
                           : "bg-gray-200 text-gray-900"

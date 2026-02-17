@@ -104,7 +104,7 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
               Parameters
             </h4>
             <div className="rounded-md bg-muted/50 p-3">
-              <pre className="text-xs overflow-x-auto">
+              <pre className="text-xs max-w-full overflow-x-hidden whitespace-pre-wrap break-words">
                 <code>{JSON.stringify(toolCall.args, null, 2)}</code>
               </pre>
             </div>
@@ -141,7 +141,7 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
                 Result
               </h4>
               <div className="rounded-md bg-green-50 dark:bg-green-950/20 p-3 border border-green-200 dark:border-green-900">
-                <pre className="text-xs overflow-x-auto">
+                <pre className="text-xs max-w-full overflow-x-hidden whitespace-pre-wrap break-words">
                   <code>
                     {typeof toolCall.result === 'string' 
                       ? (() => {
