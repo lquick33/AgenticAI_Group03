@@ -22,6 +22,27 @@ const QuizComponent = dynamic(
 
 type ChatRole = "user" | "assistant"
 
+function normalizeMarkdownForRendering(content: string) {
+  let out = content ?? ""
+
+  // Ensure fenced code blocks start on their own line
+  out = out.replace(/([^\n])```/g, "$1\n```")
+
+  // Ensure code fence and its content are separated by a newline
+  // Example: ```sql SELECT ... -> ```sql\nSELECT ...
+  out = out.replace(/```([a-zA-Z0-9_-]+)\s+(?=\S)/g, "```$1\n")
+  out = out.replace(/```\s+(?=\S)/g, "```\n")
+
+  // If a fence was opened but never closed, close it to avoid
+  // the rest of the message rendering as a single code block.
+  const fenceCount = out.match(/```/g)?.length ?? 0
+  if (fenceCount % 2 === 1) {
+    out += "\n```"
+  }
+
+  return out
+}
+
 interface ChatMessageProps {
   id: string
   role: ChatRole
@@ -58,6 +79,7 @@ export const ChatMessage = React.memo(function ChatMessage({
 }: ChatMessageProps) {
   // Ensure content is always a string
   const contentString = typeof content === 'string' ? content : (content?.toString() || '')
+  const normalizedContent = normalizeMarkdownForRendering(contentString)
   
   // Show typing indicator ONLY if there's no content yet (even during streaming, show content if available)
   const showTypingIndicator = role === "assistant" && (!contentString || contentString.trim() === "") && isStreaming
@@ -216,7 +238,7 @@ export const ChatMessage = React.memo(function ChatMessage({
                   ),
                 }}
               >
-                {contentString}
+                {normalizedContent}
               </ReactMarkdown>
             </div>
           )}
