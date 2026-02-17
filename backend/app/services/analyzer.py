@@ -176,7 +176,13 @@ async def analyze_pdf_page(
 Gib eine prägnante Zusammenfassung des Inhalts, identifiziere die wichtigsten Fachbegriffe,
 formuliere genau 2 mögliche Prüfungsfragen basierend auf dem Inhalt, und beschreibe alle
 visuellen Elemente (Diagramme, Charts, Grafiken). Falls keine visuellen Elemente vorhanden sind,
-schreibe 'Kein Diagramm' für diagram_description."""
+schreibe 'Kein Diagramm' für diagram_description.
+
+Kapitelüberschriften erkennen:
+Wenn diese Folie hauptsächlich eine Kapitelüberschrift oder Abschnittstitel zeigt
+(großer Titel, wenig oder kein Fließtext), setze is_chapter_heading=true und
+extrahiere den Titel in chapter_title (z.B. 'Klassendiagramme', 'Sequence Diagrams').
+Ansonsten setze is_chapter_heading=false und chapter_title=null."""
     
     # Create HumanMessage with image
     message = HumanMessage(

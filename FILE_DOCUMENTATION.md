@@ -132,6 +132,84 @@ ON slide_snippets(course_material_id, page_number, user_id);
 
 ---
 
+### `supabase/migrations/20260127000000_add_classification_to_course_materials.sql`
+
+**Purpose**: Migration that adds material classification support to the `course_materials` table. Classification categorizes uploaded materials into domain-specific types (language_learning, math, business_administration, general) to enable classification-specific flashcard generation prompts.
+
+**Key Components**:
+- **Enum Type**: `material_classification_enum` with values: `language_learning`, `math`, `business_administration`, `general`
+- **New Columns**:
+  - `classification`: Enum type for material category
+  - `classification_confidence`: Float (0.0-1.0) - LLM confidence score
+  - `classification_reasoning`: Text - LLM reasoning for the classification
+  - `classification_override`: Boolean (default: FALSE) - Indicates manual override
+- **Index**: `idx_course_materials_classification` for querying by classification
+
+**Classification Behavior**:
+- **Automatic Generation**: Classification is performed automatically during PDF upload/processing, after all page analyses complete
+- **Timing**: Classification happens in `process_pdf_background()` after material summary generation, before status is set to 'completed'
+- **Caching**: Classification is stored in database immediately after generation; flashcard generation uses cached classification
+- **Fallback**: For older materials not yet classified, classification is generated on-demand during flashcard generation
+- **Cache Key**: `material_id` + `user_id` (classification is user-specific)
+
+**Classification Process** (in `app.services.classifier.classify_material`):
+1. Get all page analyses for the material
+2. Aggregate page summaries (first 10 pages) and key terms (first 50 terms)
+3. Generate classification using:
+   - Input: Aggregated page summaries and key terms
+   - LLM: Gemini model with structured output (`MaterialClassification` schema)
+   - Prompt: Langfuse prompt `material-classifier/classification` (production label)
+   - Output: Category, confidence score (0.0-1.0), and reasoning
+4. Store classification in database for future use
+5. Flashcard generation uses cached classification to select appropriate prompts
+
+**Classification Usage**:
+- **Flashcard Generation**: Classification determines which prompt template to use
+  - Prompts loaded from Langfuse: `flashcard-agent/card-generation-{classification}`
+  - Falls back to `flashcard-agent/card-generation-general` if classification-specific prompt not found
+- **Customization**: Classification-specific prompts guide LLM to generate flashcards appropriate for material type:
+  - `language_learning`: Focus on vocabulary, grammar, translations, verb conjugations
+  - `math`: Focus on formulas, equations, proofs, mathematical concepts
+  - `business_administration`: Focus on business models, case studies, management concepts
+  - `general`: General educational materials without specific domain focus
+
+**Workflow**:
+```
+User Uploads PDF → POST /api/upload
+    ↓
+Background: process_pdf_background()
+    ├─ Analyze all pages → analyze_pdf_page() for each page
+    ├─ Generate material summary
+    ├─ Classify material ← CLASSIFICATION HAPPENS HERE
+    │   └─ classify_material() → store in DB
+    └─ Material Status: 'completed'
+    
+User Generates Flashcards → POST /api/flashcards/generate
+    ↓
+Background: FlashcardGeneratorAgent.generate_flashcards()
+    ↓
+LangGraph Workflow:
+    ├─ initialize_node (load page analyses)
+    ├─ classify_node ← Uses cached classification from upload
+    │   └─ Check cache → use cached (or generate on-demand for older materials)
+    └─ process_page_node (generate flashcards using classification)
+```
+
+**Related Files**:
+- `backend/app/services/classifier.py` - Classification service (extracted reusable logic)
+- `backend/app/services/pdf_processor.py` - Calls classification during upload (after page analyses)
+- `backend/app/agents/flashcards/flashcard_agent.py` - Uses cached classification (lines 234-288)
+- `backend/app/services/storage.py` - Storage functions (lines 1014-1072)
+- `backend/app/api/endpoints.py` - Flashcard generation endpoint (lines 2263-2428)
+- `backend/langfuse_prompts/material-classifier-classification.md` - Classification prompt
+- `backend/scripts/create_classification_prompt.py` - Script to create prompt in Langfuse
+
+**Dependencies**: Requires `course_materials` table from initial schema migration
+
+**Usage**: Apply via Supabase SQL editor or CLI as part of the normal migration flow (`supabase db push`)
+
+---
+
 ## Backend Configuration Files
 
 ### `backend/requirements.txt`
@@ -4316,5 +4394,452 @@ image_bytes = download_snippet_image(snippet["image_path"])
 - `backend/app/api/endpoints.py` - Snippet CRUD endpoints
 - `backend/supabase/migrations/20260126000000_add_slide_snippets.sql` - Initial table definition
 - Database change "Allow Multiple Snippets Per Page (2026-01-27)" - Applied via Supabase MCP
+
+---
+
+## Anki Knowledge Tracking System
+
+### `supabase/migrations/20260131000000_add_knowledge_tracking.sql`
+
+**Purpose**: Migration that adds tables for tracking Anki deck knowledge levels per user. Enables the agent to analyze user mastery based on Anki spaced repetition data.
+
+**Key Components**:
+- **course_deck_mappings**: Links courses and course_materials to Anki deck names
+  - `user_id`, `course_id`, `course_material_id` - Foreign keys
+  - `deck_name` - Hierarchical deck name (e.g., "Marketing 101::Lecture 1 - Introduction")
+  - `UNIQUE(user_id, deck_name)` - One mapping per user per deck
+- **deck_knowledge_snapshots**: Stores periodic snapshots of deck knowledge for trend analysis
+  - Card counts: `total_cards`, `new_cards`, `learning_cards`, `young_cards`, `mature_cards`, `suspended_cards`
+  - Metrics: `avg_ease_factor`, `avg_interval_days`, `retention_rate`, `mastery_score`
+  - Optional course links for faster queries
+  - `captured_at` - Timestamp for historical tracking
+- **anki_card_mappings**: Links agent-generated flashcards to Anki note IDs
+  - `flashcard_id` - Optional link to internal flashcard table
+  - `anki_note_id` - Anki's unique note identifier
+  - `deck_name` - Which deck the card belongs to
+  - `UNIQUE(user_id, anki_note_id)` - One mapping per user per Anki note
+
+**RLS Policies**: All three tables have Row Level Security enabled with policies ensuring users can only access their own data.
+
+**Indexes**: Optimized for common query patterns (user+deck, course, captured_at DESC)
+
+**Dependencies**: Requires existing `profiles`, `courses`, `course_materials`, `flashcards` tables from initial schema.
+
+**Usage**: Apply via Supabase SQL editor or CLI: `supabase db push`
+
+---
+
+### `backend/app/services/anki/__init__.py`
+
+**Purpose**: Package exports for the Anki integration service. Updated to export knowledge tracking classes and helper functions.
+
+**Exports**:
+- **Client Classes**: `AnkiClient`, `AnkiError`, `AnkiConnectionError`
+- **Data Classes**: `DeckStats`, `ReviewStats`, `CardKnowledge`, `DeckKnowledge`, `CourseKnowledge`
+- **Knowledge Service**: `KnowledgeService`, `LectureKnowledge`, `CourseKnowledgeResult`
+- **Helper Functions**: `build_deck_name`, `parse_deck_name`
+
+**Usage**: 
+```python
+from app.services.anki import (
+    AnkiClient,
+    KnowledgeService,
+    CardKnowledge,
+    DeckKnowledge,
+    build_deck_name,
+)
+```
+
+---
+
+### `backend/app/services/anki/client.py` (Knowledge Tracking Extensions)
+
+**Purpose**: Extended AnkiConnect API wrapper with knowledge tracking capabilities. Queries Anki for detailed card states and calculates deck-level mastery metrics.
+
+**New Data Classes**:
+- **CardKnowledge**: Knowledge state for a single card
+  - `card_id`, `note_id`, `deck_name` - Identifiers
+  - `ease_factor` - Card difficulty (1.3-2.5+, higher = easier)
+  - `interval` - Days until next review
+  - `queue` - Card queue (0=new, 1=learning, 2=review, -1=suspended, -2=buried)
+  - `card_type` - Type (0=new, 1=learning, 2=review, 3=relearning)
+  - `reviews`, `lapses` - Total review count and times forgotten
+  - Properties: `is_mature` (interval >= 21 days), `is_young` (interval < 21 days), `is_learning`, `is_new`
+
+- **DeckKnowledge**: Aggregated knowledge metrics for a deck
+  - Card counts: `total_cards`, `new_cards`, `learning_cards`, `young_cards`, `mature_cards`, `suspended_cards`
+  - Metrics: `avg_ease`, `avg_interval`, `total_reviews`, `total_lapses`, `mastery_score`
+  - `is_leaf` - **Critical flag**: True if deck has no subdecks (counted in totals), False for parent decks (excluded to prevent double-counting)
+  - Properties: `retention_rate` (1 - lapses/reviews), `status` (mastered/progressing/needs_review/not_started)
+
+**New Methods**:
+- **find_cards(query)**: Find card IDs matching Anki search query
+- **get_cards_info(card_ids)**: Get detailed info for specific cards
+- **get_cards_knowledge(deck_name)**: Get CardKnowledge list for a deck
+- **get_deck_knowledge(deck_name)**: Get aggregated DeckKnowledge for a deck
+- **get_all_decks_knowledge()**: Get knowledge for all decks with parent detection
+  - **Important**: Parent decks (those with `::` subdecks) are marked `is_leaf=False`
+  - This prevents double-counting when calculating totals (parent deck cards are duplicates of subdeck cards)
+
+**Mastery Score Calculation**:
+```python
+# Weighted combination of:
+# - Progress: (mature + young + learning) / total_cards (40%)
+# - Maturity: mature_cards / studied_cards (30%)
+# - Ease: normalized ease factor (15%)
+# - Retention: 1 - (lapses / reviews) (15%)
+mastery_score = 0.4 * progress + 0.3 * maturity + 0.15 * ease_norm + 0.15 * retention
+```
+
+**Usage**: 
+```python
+from app.services.anki import AnkiClient
+
+client = AnkiClient()
+all_knowledge = client.get_all_decks_knowledge()
+
+# Filter leaf decks for accurate totals
+leaf_decks = {n: dk for n, dk in all_knowledge.items() if dk.is_leaf}
+total_cards = sum(dk.total_cards for dk in leaf_decks.values())
+```
+
+---
+
+### `backend/app/services/anki/knowledge_service.py`
+
+**Purpose**: High-level service for tracking user knowledge levels based on Anki data. Provides course-aware knowledge aggregation and study recommendations.
+
+**Helper Functions**:
+- **build_deck_name(course_title, material_name)**: Builds hierarchical deck name
+  - Input: `"Marketing 101"`, `"Lecture 1 - Introduction.pdf"`
+  - Output: `"Marketing 101::Lecture 1 - Introduction"`
+- **parse_deck_name(deck_name)**: Parses deck name into course and lecture parts
+  - Input: `"Marketing 101::Lecture 1 - Introduction"`
+  - Output: `("Marketing 101", "Lecture 1 - Introduction")`
+
+**Data Classes**:
+- **LectureKnowledge**: Knowledge metrics for a single lecture/material
+  - `material_id`, `name`, `deck_name` - Identifiers
+  - Same metrics as DeckKnowledge plus `status`
+- **CourseKnowledgeResult**: Complete knowledge result for a course
+  - `status`, `course_id`, `course_title`, `overall_mastery`, `total_cards`
+  - `lectures` - List of LectureKnowledge
+  - `weakest_lecture`, `strongest_lecture` - Quick identification
+  - `recommendations` - Study suggestions
+
+**KnowledgeService Class**:
+- **get_all_knowledge_levels()**: Get knowledge for all Anki decks
+  - Returns dict with `status`, `overall_mastery`, `total_cards`, `decks`, `recommendations`
+  - **Important**: Only counts leaf decks in totals to prevent double-counting
+  - Includes `is_leaf` flag in deck data for consumers
+- **get_course_knowledge(course_id, course_title, materials)**: Get per-lecture breakdown for a course
+  - Maps course materials to deck names using `build_deck_name()`
+  - Calculates weighted overall mastery
+  - Identifies weakest/strongest lectures
+  - Generates course-specific recommendations
+- **_generate_recommendations()**: Study recommendations based on deck states
+- **_generate_course_recommendations()**: Course-specific study suggestions
+- **to_snapshot_dict()**: Convert DeckKnowledge to database storage format
+
+**Usage**: 
+```python
+from app.services.anki import KnowledgeService
+
+service = KnowledgeService()
+
+# Global knowledge
+result = service.get_all_knowledge_levels()
+print(f"Overall mastery: {result['overall_mastery']:.0%}")
+print(f"Total cards: {result['total_cards']}")
+
+# Course-specific knowledge
+course_result = service.get_course_knowledge(
+    course_id="...",
+    course_title="Marketing 101",
+    materials=[{"id": "...", "file_name": "Lecture 1.pdf"}, ...]
+)
+print(f"Weakest lecture: {course_result.weakest_lecture}")
+```
+
+---
+
+### `backend/app/tools/anki_tools.py` (Knowledge Tracking Tools)
+
+**Purpose**: Extended with agent tools for knowledge tracking. Allows agents to query user mastery levels and create course-aware flashcards.
+
+**New Tools**:
+- **get_knowledge_levels(save_snapshot, user_id)**: Get knowledge level per Anki deck
+  - Returns comprehensive mastery info for all decks
+  - Card distribution (new, learning, young, mature)
+  - Status labels (mastered, progressing, needs_review, not_started)
+  - Study recommendations
+  - Optional: Save snapshot to database for trend tracking
+
+- **get_course_knowledge_levels(course_id, user_id, save_snapshot)**: Per-lecture breakdown for a course
+  - Course-level overall mastery (weighted by card count)
+  - Per-lecture mastery scores and card distributions
+  - Identifies weakest and strongest lectures
+  - Targeted study recommendations
+  - Optional: Save snapshots and deck mappings to database
+
+- **create_course_flashcard(course_id, user_id, material_id, question, answer, tags, sync_immediately)**: Create flashcard with auto deck naming
+  - Deck name generated from course structure: "Course Title::Lecture Name"
+  - Saves deck mapping and card mapping to database
+  - Returns note_id, deck_name, course_title, lecture_name
+
+- **create_course_flashcards_batch(course_id, user_id, material_id, cards, sync_after)**: Bulk flashcard creation
+  - Same auto deck naming as single card creation
+  - Efficient batch creation with single sync
+  - Saves all mappings to database
+
+**Dependencies**: 
+- `app.services.anki.KnowledgeService` - Knowledge aggregation
+- `app.services.storage` - Database operations for mappings and snapshots
+
+**Usage**: 
+```python
+from app.tools.anki_tools import get_knowledge_levels, get_course_knowledge_levels
+
+# Agent can call these tools to understand user's knowledge state
+levels = get_knowledge_levels()
+if levels["status"] == "success":
+    for deck_name, deck_info in levels["decks"].items():
+        if deck_info["is_leaf"]:  # Only leaf decks in totals
+            print(f"{deck_name}: {deck_info['mastery_score']:.0%}")
+```
+
+---
+
+### `backend/app/tools/knowledge_tool.py`
+
+**Purpose**: LangChain-compatible tool wrapper for the KnowledgeService. Enables integration with LangGraph agents.
+
+**Key Components**:
+- **GetCourseKnowledgeInput**: Pydantic model for tool input validation
+  - `course_id`, `user_id` - Required UUIDs
+  - `save_snapshot` - Optional boolean for persistence
+- **GetCourseKnowledgeTool**: Tool class wrapping KnowledgeService
+  - `name`, `description` - Tool metadata for agent discovery
+  - `run()` - Executes knowledge query
+  - `to_langchain_tool()` - Converts to StructuredTool for LangGraph
+
+**Usage**: 
+```python
+from app.tools.knowledge_tool import GetCourseKnowledgeTool
+
+tool = GetCourseKnowledgeTool()
+langchain_tool = tool.to_langchain_tool()
+
+# Add to agent's tool list
+tools = [langchain_tool, ...]
+```
+
+**Integration with TutorAgent**: The knowledge tool can be added to the TutorAgent's toolset to enable personalized tutoring based on the user's actual Anki study data.
+
+---
+
+### `backend/app/services/storage.py` (Knowledge Tracking Functions)
+
+**Purpose**: Extended with database operations for knowledge tracking tables.
+
+**New Functions**:
+- **save_deck_mapping(user_id, course_id, deck_name, course_material_id)**: 
+  - Creates or updates course-to-deck mapping
+  - Uses upsert with `on_conflict` for idempotency
+- **get_deck_mappings_for_course(user_id, course_id)**: 
+  - Retrieves all deck mappings for a course
+  - Returns list of mapping dicts
+- **save_knowledge_snapshot(user_id, deck_name, ...)**: 
+  - Saves a point-in-time snapshot of deck knowledge
+  - Includes all card counts and metrics
+  - Optional course_id and course_material_id for linking
+- **get_latest_knowledge_snapshot(user_id, deck_name)**: 
+  - Retrieves most recent snapshot for a deck
+  - Ordered by captured_at DESC
+- **get_knowledge_snapshots_for_course(user_id, course_id, limit)**: 
+  - Retrieves snapshots for all decks in a course
+  - Useful for trend analysis
+- **save_anki_card_mapping(user_id, anki_note_id, deck_name, flashcard_id)**: 
+  - Links agent-created cards to Anki note IDs
+  - Optional flashcard_id for internal linking
+- **get_course_with_materials(user_id, course_id)**: 
+  - Helper to fetch course with its materials
+  - Used by knowledge tools to resolve course structure
+
+**Usage**: 
+```python
+from app.services.storage import (
+    save_deck_mapping,
+    save_knowledge_snapshot,
+    get_course_with_materials,
+)
+
+# Save deck mapping when creating flashcards
+save_deck_mapping(
+    user_id="...",
+    course_id="...",
+    deck_name="Marketing 101::Lecture 1",
+    course_material_id="...",
+)
+
+# Save knowledge snapshot for trend tracking
+save_knowledge_snapshot(
+    user_id="...",
+    deck_name="Marketing 101::Lecture 1",
+    total_cards=50,
+    mature_cards=35,
+    mastery_score=0.75,
+    ...
+)
+```
+
+---
+
+## Scripts
+
+### `start_anki.ps1`
+
+**Purpose**: PowerShell script to start Anki for agent integration. Windows-compatible version of `start_anki.sh` that can be executed directly in PowerShell without requiring Bash or WSL.
+
+**Key Components**:
+- **Docker Container Support**: Primary method - starts Anki in a Docker container using `docker-compose.yml`
+- **Native App Fallback**: Falls back to native Windows Anki installation if Docker is unavailable (when `$env:ANKI_APP_FALLBACK_ENABLED=1` is set)
+- **AnkiConnect Detection**: Checks if AnkiConnect add-on (code: 2055492159) is installed and running
+- **API Health Check**: Waits for AnkiConnect API to be ready at `http://localhost:8765` before completing
+- **Platform Detection**: Automatically detects Windows, macOS, or Linux
+- **Error Handling**: Provides clear error messages and fallback options
+
+**Key Functions**:
+- **Start-NativeAnkiWindows()**: Starts native Anki app on Windows, checks for installation and AnkiConnect add-on
+- **Show-NativeAppInstructions()**: Displays manual setup instructions if Docker is unavailable
+- **Fallback-ToNativeApp()**: Attempts to use native app as fallback when Docker fails
+- **Try-FallbackOrError()**: Handles fallback logic based on `ANKI_APP_FALLBACK_ENABLED` setting
+
+**Environment Variables**:
+- `$env:FORCE_NATIVE_APP=1`: Skip Docker and use native app directly
+- `$env:ANKI_APP_FALLBACK_ENABLED=1`: Enable native app fallback when Docker is unavailable
+
+**Usage**: 
+```powershell
+# Direct execution in PowerShell
+.\start_anki.ps1
+
+# Force native app mode
+$env:FORCE_NATIVE_APP=1; .\start_anki.ps1
+
+# Enable fallback to native app
+$env:ANKI_APP_FALLBACK_ENABLED=1; .\start_anki.ps1
+```
+
+**Dependencies**: 
+- Docker Desktop (for containerized mode)
+- OR native Anki installation with AnkiConnect add-on (for fallback mode)
+- PowerShell 5.1+ (Windows 10/11)
+
+**Output**: Provides colored console output indicating status, errors, and success messages. On completion, AnkiConnect API is ready at `http://localhost:8765` for agent integration.
+
+---
+
+## Utility Scripts
+
+### `backend/generate_tutor_graph_image.py`
+
+**Purpose**: Script to generate a visual representation (PNG image) of the Tutor Agent's LangGraph workflow. This is useful for documentation, debugging, and understanding the agent's execution flow.
+
+**Key Components**:
+- **Graph Visualization**: Uses LangGraph's built-in `draw_mermaid_png()` method to create a PNG image of the agent's state machine
+- **Agent Initialization**: Creates a minimal TutorAgent instance with a simple system prompt to bypass Langfuse dependency (for graph generation only)
+- **ASCII Preview**: Optionally displays an ASCII representation of the graph (requires `grandalf` package)
+- **Error Handling**: Gracefully handles missing dependencies and configuration issues
+
+**Key Functions**:
+- **generate_graph_image()**: Main function that initializes the agent, retrieves the compiled graph, and generates the PNG image
+
+**Output**:
+- Creates `tutor_agent_graph.png` in the `backend/` directory
+- Displays console output with status messages and file path
+- Optionally shows ASCII preview if `grandalf` is installed
+
+**Usage**:
+```bash
+# From backend directory
+cd backend
+python generate_tutor_graph_image.py
+```
+
+**Dependencies**:
+- LangGraph (for graph visualization methods)
+- LangChain Google GenAI (for LLM initialization)
+- TutorAgent and related tools (from `app.agents.tutor`)
+- Google API Key (set in `.env` file as `GOOGLE_API_KEY`)
+
+**Note**: The script uses a minimal system prompt to avoid Langfuse dependency during graph generation. The actual graph structure is independent of the prompt content.
+
+---
+
+### `backend/generate_flashcard_graph_image.py`
+
+**Purpose**: Script to generate a visual representation (PNG image) of the Flashcard Generator Agent's LangGraph workflow with transparent background. This is useful for documentation, debugging, and understanding the agent's execution flow.
+
+**Key Components**:
+- **Graph Visualization**: Uses LangGraph's built-in `draw_mermaid_png()` method to create a PNG image of the agent's state machine
+- **Agent Initialization**: Creates a FlashcardGeneratorAgent instance (doesn't require system prompt parameter)
+- **Transparent Background**: Generates image with transparent background using `background_color="transparent"` parameter or PIL post-processing
+- **ASCII Preview**: Optionally displays an ASCII representation of the graph (requires `grandalf` package)
+- **Error Handling**: Gracefully handles missing dependencies and configuration issues
+
+**Key Functions**:
+- **generate_graph_image()**: Main function that initializes the agent, retrieves the compiled graph, and generates the PNG image
+
+**Output**:
+- Creates `flashcard_agent_graph.png` in the `backend/` directory
+- Displays console output with status messages and file path
+- Optionally shows ASCII preview if `grandalf` is installed
+
+**Usage**:
+```bash
+# From backend directory
+cd backend
+python generate_flashcard_graph_image.py
+```
+
+**Dependencies**:
+- LangGraph (for graph visualization methods)
+- LangChain Google GenAI (for LLM initialization)
+- FlashcardGeneratorAgent and related tools (from `app.agents.flashcards`)
+- Google API Key (set in `.env` file as `GOOGLE_API_KEY`)
+- PIL/Pillow (for transparent background post-processing if needed)
+
+**Graph Structure**:
+The FlashcardGeneratorAgent has a more complex graph structure than the TutorAgent:
+- `initialize` → `classify` → (conditional) → `process_page` or `save_cards`
+- `process_page` → `skip_decision` → (conditional) → `skip` or `generate`
+- `get_context` → `generate_cards` → `update_progress` → (conditional) → `process_page` or `save_cards`
+- `save_cards` → `END`
+
+---
+
+### `backend/generate_quickchat_graph_image.py`
+
+**Purpose**: Script to generate a visual representation (PNG image) of the QuickChat Agent's LangGraph workflow with transparent background.
+
+**Key Components**:
+- **Graph Visualization**: Uses LangGraph's built-in `draw_mermaid_png()` method
+- **Agent Initialization**: Creates a QuickChatAgent instance with minimal configuration
+- **Transparent Background**: Ensures output image has transparent background
+- **Output**: Generates `quickchat_agent_graph.png` in the `backend/` directory
+
+**Usage**:
+```bash
+# From backend directory
+cd backend
+python generate_quickchat_graph_image.py
+```
+
+**Graph Structure**:
+Similar to TutorAgent but with specialized state management:
+- `agent` → (conditional) → `tools` or `END`
+- `tools` → `agent`
+- Supports dual modes: "discovery" (searching topics) and "tutoring" (explaining content)
 
 ---

@@ -1,5 +1,7 @@
 "use client"
 
+import React from "react"
+import dynamic from "next/dynamic"
 import { cn } from "@/lib/utils"
 import ReactMarkdown from "react-markdown"
 import remarkMath from "remark-math"
@@ -7,8 +9,16 @@ import rehypeKatex from "rehype-katex"
 import { User } from "lucide-react"
 import { Loader } from "@/components/ui/loader"
 import { Tool } from "@/components/ui/tool"
-import { QuizComponent } from "./quiz-component"
 import type { ChatMessage as ChatMessageType, ToolCall } from "@/types"
+
+// OPTIMIZED: Lazy load QuizComponent since it's large and not always needed
+const QuizComponent = dynamic(
+  () => import("./quiz-component").then((mod) => mod.QuizComponent),
+  { 
+    loading: () => <div className="p-4 text-center text-muted-foreground">Quiz wird geladen...</div>,
+    ssr: false 
+  }
+)
 
 type ChatRole = "user" | "assistant"
 
@@ -35,7 +45,7 @@ interface ChatMessageProps {
   isQuizSubmitting?: boolean
 }
 
-export function ChatMessage({ 
+export const ChatMessage = React.memo(function ChatMessage({ 
   id, 
   role, 
   content, 
@@ -221,4 +231,4 @@ export function ChatMessage({
       )}
     </div>
   )
-}
+})

@@ -16,7 +16,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_apkg
-from app.services.storage import save_flashcards
+# NOTE: save_flashcards removed - now using cache_flashcards in agent
 from app.services.db_migration_helper import get_postgres_connection_string
 
 logger = logging.getLogger(__name__)
@@ -74,11 +74,17 @@ class FlashcardTask:
         course_material_id: str,
         user_id: str,
         course_id: str,
+        deduplicate_course: bool = False,
+        parent_deck_name: Optional[str] = None,
+        target_deck_name: Optional[str] = None,
     ):
         self.task_id = task_id
         self.course_material_id = course_material_id
         self.user_id = user_id
         self.course_id = course_id
+        self.deduplicate_course = deduplicate_course
+        self.parent_deck_name = parent_deck_name
+        self.target_deck_name = target_deck_name
         self.status = TaskStatus.PENDING
         self.progress = 0.0  # 0.0 to 1.0
         self.total_pages = 0
@@ -87,6 +93,8 @@ class FlashcardTask:
         self.error_message: Optional[str] = None
         self.apkg_bytes: Optional[bytes] = None
         self.filename: Optional[str] = None
+        self.anki_synced: bool = False  # Cards added to local Anki
+        self.ankiweb_synced: bool = False  # Cards synced to AnkiWeb
         self.created_at = time.time()
         self.completed_at: Optional[float] = None
         self._cancelled = False
@@ -102,6 +110,8 @@ class FlashcardTask:
             "cards_generated": self.cards_generated,
             "error_message": self.error_message,
             "filename": self.filename,
+            "anki_synced": self.anki_synced,
+            "ankiweb_synced": self.ankiweb_synced,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
         }
@@ -129,6 +139,9 @@ class FlashcardTaskService:
         course_material_id: str,
         user_id: str,
         course_id: str,
+        deduplicate_course: bool = False,
+        parent_deck_name: Optional[str] = None,
+        target_deck_name: Optional[str] = None,
     ) -> str:
         """
         Create a new flashcard generation task.
@@ -137,6 +150,9 @@ class FlashcardTaskService:
             course_material_id: Course material ID
             user_id: User ID
             course_id: Course ID
+            deduplicate_course: Enable course-wide deduplication
+            parent_deck_name: Course deck name (e.g., "Marketing 101")
+            target_deck_name: Full deck name (e.g., "Marketing 101::Lecture 3")
             
         Returns:
             Task ID
@@ -147,6 +163,9 @@ class FlashcardTaskService:
             course_material_id=course_material_id,
             user_id=user_id,
             course_id=course_id,
+            deduplicate_course=deduplicate_course,
+            parent_deck_name=parent_deck_name,
+            target_deck_name=target_deck_name,
         )
         
         async with self._lock:
@@ -262,20 +281,28 @@ class FlashcardTaskService:
                     # Don't let callback errors crash the generation
                     logger.warning(f"Error updating task progress in callback: {e}")
             
-            cards = await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 agent.generate_flashcards_with_progress,
                 course_material_id=task.course_material_id,
                 user_id=task.user_id,
                 course_id=task.course_id,
-                save_to_db=False,  # We'll save manually after generation
+                save_to_db=True,  # Let agent handle Anki + cache
                 task_id=task.task_id,
                 progress_callback=progress_callback,
+                deduplicate_course=task.deduplicate_course,
+                parent_deck_name=task.parent_deck_name,
+                target_deck_name=task.target_deck_name,
             )
             
             if task._cancelled:
                 task.status = TaskStatus.CANCELLED
                 task.completed_at = time.time()
                 return
+            
+            # Extract cards and sync statuses from result
+            cards = result.get("cards", []) if isinstance(result, dict) else result
+            task.anki_synced = result.get("anki_synced", False) if isinstance(result, dict) else False
+            task.ankiweb_synced = result.get("ankiweb_synced", False) if isinstance(result, dict) else False
             
             if not cards:
                 task.status = TaskStatus.FAILED
@@ -285,13 +312,8 @@ class FlashcardTaskService:
             
             task.cards_generated = len(cards)
             
-            # Save flashcards to Supabase
-            try:
-                save_flashcards(cards, task.user_id, task.course_id)
-                logger.info(f"Saved {len(cards)} flashcards to database for task {task.task_id}")
-            except Exception as e:
-                logger.warning(f"Failed to save flashcards to database: {str(e)}")
-                # Continue anyway - APKG generation should still work
+            # Note: Flashcards are now saved by the agent (Anki + cache)
+            # No additional save needed here
             
             # Generate filename first (needed for deck name)
             from app.services.storage import get_supabase_client, get_all_page_analyses_for_material
@@ -351,13 +373,26 @@ class FlashcardTaskService:
             course_title = course_response.data.get("title", "course") if course_response.data else "course"
             
             import re
-            safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
-            safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
+            lecture_name = file_name.replace('.pdf', '')
             
             # Build .apkg with embedded images
-            deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
+            deck_name = f"{course_title}::{lecture_name}"
             task.apkg_bytes = build_anki_apkg(cards, deck_name=deck_name)
-            task.filename = f"flashcards_{safe_course_title}_{safe_file_name}.apkg"
+            
+            # Use deck_name format for filename, replacing :: with - for filesystem compatibility
+            # Only remove characters that are invalid in filenames: / \ : * ? " < > |
+            safe_deck_name = re.sub(r'[/\\:*?"<>|]', '', f"{course_title} - {lecture_name}").strip()[:100]
+            task.filename = f"{safe_deck_name}.apkg"
+            
+            # Update has_flashcards flag on course_materials for instant status display
+            try:
+                client.table("course_materials").update(
+                    {"has_flashcards": True}
+                ).eq("id", task.course_material_id).execute()
+                logger.info(f"Set has_flashcards=True for material {task.course_material_id}")
+            except Exception as flag_error:
+                # Log but don't fail the task if flag update fails
+                logger.warning(f"Failed to update has_flashcards flag: {flag_error}")
             
             task.status = TaskStatus.COMPLETED
             task.progress = 1.0

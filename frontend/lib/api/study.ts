@@ -257,6 +257,40 @@ export async function getStudySession(
 }
 
 /**
+ * Save current page number for a study session
+ * 
+ * This lightweight function saves the user's current page without
+ * triggering a full chat initiation. Used for page persistence.
+ */
+export async function saveCurrentPage(
+  materialId: string,
+  userId: string,
+  page: number
+): Promise<void> {
+  try {
+    const response = await fetch(`${API_URL}/api/study/save-page`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        material_id: materialId,
+        user_id: userId,
+        page,
+      }),
+    })
+
+    if (!response.ok) {
+      // Log error but don't throw - page save is best-effort
+      console.error('[saveCurrentPage] Failed to save page:', response.status)
+    }
+  } catch (error) {
+    // Log error but don't throw - page save is best-effort
+    console.error('[saveCurrentPage] Error saving page:', error)
+  }
+}
+
+/**
  * Flashcard generation task status
  */
 export interface FlashcardTaskStatus {
@@ -268,6 +302,8 @@ export interface FlashcardTaskStatus {
   cards_generated: number
   error_message?: string
   filename?: string
+  anki_synced?: boolean  // Cards added to local Anki
+  ankiweb_synced?: boolean  // Cards synced to AnkiWeb
   created_at: number
   completed_at?: number
 }
@@ -277,9 +313,15 @@ export interface FlashcardTaskStatus {
  */
 export async function generateFlashcards(
   materialId: string,
-  userId: string
+  userId: string,
+  deduplicateCourse: boolean = false
 ): Promise<{ task_id: string; status: string; message: string }> {
-  const url = `${API_URL}/api/flashcards/generate?course_material_id=${encodeURIComponent(materialId)}&user_id=${encodeURIComponent(userId)}`
+  const params = new URLSearchParams({
+    course_material_id: materialId,
+    user_id: userId,
+    deduplicate_course: String(deduplicateCourse),
+  })
+  const url = `${API_URL}/api/flashcards/generate?${params.toString()}`
   
   const response = await fetch(url, {
     method: 'POST',
@@ -315,12 +357,12 @@ export async function getFlashcardTaskStatus(
 }
 
 /**
- * Download generated flashcard CSV file
+ * Download generated flashcard .apkg file
  */
 export async function downloadFlashcards(
   taskId: string,
   userId: string
-): Promise<Blob> {
+): Promise<{ blob: Blob; filename: string }> {
   const url = `${API_URL}/api/flashcards/download/${encodeURIComponent(taskId)}?user_id=${encodeURIComponent(userId)}`
   
   const response = await fetch(url, {
@@ -332,7 +374,20 @@ export async function downloadFlashcards(
     throw new Error(error.detail || `HTTP ${response.status}`)
   }
 
-  return response.blob()
+  // Extract filename from Content-Disposition header
+  const contentDisposition = response.headers.get('Content-Disposition')
+  let filename = `flashcards_${taskId}.apkg`
+  
+  if (contentDisposition) {
+    // Parse filename from header: attachment; filename="Course - Lecture.apkg"
+    const match = contentDisposition.match(/filename="?([^";\n]+)"?/)
+    if (match && match[1]) {
+      filename = match[1]
+    }
+  }
+
+  const blob = await response.blob()
+  return { blob, filename }
 }
 
 /**
@@ -357,12 +412,12 @@ export async function getFlashcardsForMaterial(
 }
 
 /**
- * Download flashcards directly from database as CSV
+ * Download flashcards directly from database as .apkg file
  */
 export async function downloadFlashcardsFromDb(
   materialId: string,
   userId: string
-): Promise<Blob> {
+): Promise<{ blob: Blob; filename: string }> {
   const url = `${API_URL}/api/flashcards/${encodeURIComponent(materialId)}/download?user_id=${encodeURIComponent(userId)}`
   
   const response = await fetch(url, {
@@ -374,7 +429,20 @@ export async function downloadFlashcardsFromDb(
     throw new Error(error.detail || `HTTP ${response.status}`)
   }
 
-  return response.blob()
+  // Extract filename from Content-Disposition header
+  const contentDisposition = response.headers.get('Content-Disposition')
+  let filename = `flashcards_${materialId}.apkg`
+  
+  if (contentDisposition) {
+    // Parse filename from header: attachment; filename="Course - Lecture.apkg"
+    const match = contentDisposition.match(/filename="?([^";\n]+)"?/)
+    if (match && match[1]) {
+      filename = match[1]
+    }
+  }
+
+  const blob = await response.blob()
+  return { blob, filename }
 }
 
 /**
@@ -431,6 +499,26 @@ export async function getActiveFlashcardTask(
 }
 
 /**
+ * Retry syncing unsynced flashcards to AnkiWeb
+ */
+export async function retryAnkiWebSync(
+  userId: string
+): Promise<{ status: string; message: string; synced_count?: number; unsynced_count?: number }> {
+  const url = `${API_URL}/api/flashcards/retry-ankiweb-sync?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'POST',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
  * Export flashcards for a course material as CSV (legacy - now uses background tasks)
  * @deprecated Use generateFlashcards + getFlashcardTaskStatus + downloadFlashcards instead
  */
@@ -483,6 +571,193 @@ export async function submitQuiz(
       answers,
       user_id: userId,
     }),
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+// =============================================================================
+// Knowledge Tracking API
+// =============================================================================
+
+/**
+ * Knowledge level data for a single deck
+ */
+export interface DeckKnowledge {
+  mastery_score: number
+  total_cards: number
+  new_cards: number
+  learning_cards: number
+  young_cards: number
+  mature_cards: number
+  avg_ease: number
+  avg_interval_days: number
+  retention_rate: number
+  status: 'mastered' | 'progressing' | 'needs_review' | 'not_started' | 'no_cards'
+  is_leaf: boolean
+}
+
+/**
+ * Response from get_knowledge_levels endpoint
+ */
+export interface KnowledgeLevelsResponse {
+  status: 'success' | 'error'
+  overall_mastery: number
+  total_cards: number
+  decks: Record<string, DeckKnowledge>
+  recommendations: string[]
+  error?: string
+}
+
+/**
+ * Knowledge level data for a single lecture
+ */
+export interface LectureKnowledge {
+  material_id: string | null
+  name: string
+  deck_name: string
+  mastery_score: number
+  total_cards: number
+  new_cards: number
+  learning_cards: number
+  young_cards: number
+  mature_cards: number
+  avg_ease: number
+  avg_interval_days: number
+  retention_rate: number
+  status: string
+}
+
+/**
+ * Response from get_course_knowledge_levels endpoint
+ */
+export interface CourseKnowledgeResponse {
+  status: 'success' | 'error'
+  course: {
+    id: string
+    title: string
+    overall_mastery: number
+    total_cards: number
+  }
+  lectures: LectureKnowledge[]
+  weakest_lecture: string | null
+  strongest_lecture: string | null
+  recommendations: string[]
+  error?: string
+}
+
+/**
+ * Get knowledge levels for all Anki decks
+ * 
+ * Returns comprehensive mastery information for all decks:
+ * - Mastery score (0.0-1.0) based on card states, ease factors, and retention
+ * - Card distribution (new, learning, young, mature)
+ * - Status labels (mastered, progressing, needs_review, not_started)
+ * - Study recommendations
+ */
+export async function getKnowledgeLevels(
+  userId: string
+): Promise<KnowledgeLevelsResponse> {
+  const url = `${API_URL}/api/knowledge/levels?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * Get knowledge levels for all lectures within a specific course
+ * 
+ * Returns per-lecture mastery breakdown:
+ * - Course-level overall mastery (weighted by card count)
+ * - Per-lecture mastery scores and card distributions
+ * - Identifies weakest and strongest lectures
+ * - Targeted study recommendations
+ */
+export async function getCourseKnowledgeLevels(
+  courseId: string,
+  userId: string
+): Promise<CourseKnowledgeResponse> {
+  const url = `${API_URL}/api/knowledge/course/${encodeURIComponent(courseId)}?user_id=${encodeURIComponent(userId)}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
+  })
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+    throw new Error(error.detail || `HTTP ${response.status}`)
+  }
+
+  return response.json()
+}
+
+// =============================================================================
+// Anki Study History API
+// =============================================================================
+
+/**
+ * Comprehensive daily study statistics from Anki
+ */
+export interface StudyHistoryEntry {
+  date: string                    // "yyyy-MM-dd" format
+  cards_reviewed: number          // Total reviews on this day
+  time_spent_seconds: number      // Total study time in seconds
+  again_count: number             // "Again" button presses (forgotten)
+  hard_count: number              // "Hard" button presses
+  good_count: number              // "Good" button presses
+  easy_count: number              // "Easy" button presses
+  new_cards: number               // Cards learned for first time
+  review_cards: number            // Regular reviews
+  relearn_cards: number           // Cards being relearned (lapses)
+  avg_time_per_card_ms: number    // Average time per review in milliseconds
+}
+
+/**
+ * Response from the study history endpoint
+ */
+export interface StudyHistoryResponse {
+  status: 'success' | 'error'
+  source: 'anki' | 'cache'
+  days_requested: number
+  data: StudyHistoryEntry[]
+  error?: string
+}
+
+/**
+ * Get Anki study history for a user
+ * 
+ * Returns comprehensive daily study statistics including:
+ * - Cards reviewed per day
+ * - Time spent studying
+ * - Button press breakdown (Again/Hard/Good/Easy)
+ * - Card type breakdown (New/Review/Relearn)
+ * 
+ * @param userId - User ID
+ * @param days - Number of days of history (default 90)
+ * @param cacheOnly - If true, returns cached data immediately without fetching from Anki (fast)
+ */
+export async function getStudyHistory(
+  userId: string,
+  days: number = 90,
+  cacheOnly: boolean = false
+): Promise<StudyHistoryResponse> {
+  const url = `${API_URL}/api/anki/study-history?user_id=${encodeURIComponent(userId)}&days=${days}&cache_only=${cacheOnly}`
+  
+  const response = await fetch(url, {
+    method: 'GET',
   })
 
   if (!response.ok) {

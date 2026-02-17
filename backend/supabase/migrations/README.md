@@ -2,6 +2,54 @@
 
 This directory contains database migration files for the Lernkompanien project.
 
+## Migration List
+
+| File | Description |
+|------|-------------|
+| `20260110111927_initial_schema.sql` | Initial database schema |
+| `20260112000000_add_course_material_id_to_learning_units.sql` | Link learning units to materials |
+| `20260113000000_add_summary_to_course_materials.sql` | Add summary field |
+| `20260126000000_add_slide_snippets.sql` | Add slide snippets table |
+| `20260127000000_add_classification_to_course_materials.sql` | Material classification |
+| `20260128000000_make_classification_text.sql` | Classification as text |
+| `20260131000000_add_knowledge_tracking.sql` | Knowledge tracking tables |
+| `20260201000000_add_anki_study_history.sql` | Anki study history |
+| `20260202000000_flashcard_anki_cache.sql` | **Flashcard cache (Anki-aligned)** |
+
+---
+
+## Flashcard Anki Cache Migration
+
+**File**: `20260202000000_flashcard_anki_cache.sql`
+
+This migration adds the `flashcard_cache` table - an Anki-aligned cache that serves as the local backup for flashcards stored in Anki.
+
+### What's Included
+
+- **flashcard_cache table**: Mirrors Anki note structure with `anki_note_id`, `deck_name`, `front`, `back`, `tags`
+- **Indexes**: Optimized for deck pattern queries and user lookups
+- **RLS Policies**: Users can only access their own cached cards
+- **Helper functions**: `extract_source_from_tags()`, `extract_page_from_tags()`
+
+### Key Design Decisions
+
+1. **Anki is source of truth**: Cards are added to Anki first, then cached locally
+2. **Tags encode metadata**: `page:N` and `source:UUID` stored in tags array (no extra columns)
+3. **Deck hierarchy**: Uses Anki's `Parent::Child` naming convention
+4. **Bidirectional sync**: `sync_cache_from_anki()` pulls changes from Anki
+
+### Rollback
+
+```sql
+DROP TABLE IF EXISTS flashcard_cache CASCADE;
+```
+
+### Note on Old Table
+
+The original `flashcards` table is preserved but no longer written to. It can be dropped after production testing confirms the new system works.
+
+---
+
 ## Initial Schema Migration
 
 **File**: `20260110111927_initial_schema.sql`
@@ -62,10 +110,31 @@ profiles (extends auth.users)
   └── courses
       └── course_materials
           └── page_analyses (multimodal analysis results)
+          └── slide_snippets (visual snippets)
       └── learning_units (calendar events)
-      └── flashcards
+      └── flashcards (legacy - deprecated)
+      └── flashcard_cache (Anki-aligned, current)
   └── conversations
       └── messages (with context_page_id → page_analyses)
+  └── anki_study_history (daily study aggregates)
+```
+
+### Flashcard Storage Strategy
+
+```
+                     ┌─────────────────┐
+                     │   AnkiWeb       │  ← Source of truth (cloud)
+                     └────────┬────────┘
+                              │ sync
+                     ┌────────▼────────┐
+                     │  Anki Desktop   │  ← Source of truth (local)
+                     │   (Docker)      │
+                     └────────┬────────┘
+                              │ AnkiConnect API
+                     ┌────────▼────────┐
+                     │ flashcard_cache │  ← Local backup/cache
+                     │   (Supabase)    │
+                     └─────────────────┘
 ```
 
 ## Notes

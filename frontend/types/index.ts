@@ -14,6 +14,10 @@ export interface UserPreferences {
   learning_style: 'linear' | 'iterative'
   agent_persona: 'strict' | 'humorous' | 'buddy'
   preferred_study_times: string[]
+  default_deduplicate_flashcards?: boolean
+  theme_preference?: 'light' | 'dark' | 'system'
+  ankiweb_username?: string | null
+  auto_explain_on_page_change?: boolean
   created_at: string
   updated_at: string
 }
@@ -25,6 +29,7 @@ export interface Course {
   description?: string | null
   exam_date?: string | null
   color_code?: string | null
+  deduplicate_flashcards?: boolean
   created_at: string
   updated_at: string
 }
@@ -48,6 +53,7 @@ export interface CourseMaterial {
   error_message?: string | null
   created_at: string
   summary?: string | null
+  has_flashcards?: boolean
 }
 
 export interface PageAnalysis {

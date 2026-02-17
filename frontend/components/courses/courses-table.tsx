@@ -1,5 +1,6 @@
 "use client"
 
+import React from 'react'
 import Link from 'next/link'
 import { ArrowRight } from 'lucide-react'
 import {
@@ -14,25 +15,28 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { CourseWithStats } from '@/types'
 
+// OPTIMIZED: Move utility functions outside component to avoid recreation
+const formatDate = (dateString: string | null) => {
+  if (!dateString) return 'Nie'
+  const date = new Date(dateString)
+  return date.toLocaleDateString('de-DE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  })
+}
+
+const calculateProgress = (analyzedPages: number, totalPages: number) => {
+  if (totalPages === 0) return 0
+  return Math.round((analyzedPages / totalPages) * 100)
+}
+
 interface CoursesTableProps {
   courses: CourseWithStats[]
 }
 
-export function CoursesTable({ courses }: CoursesTableProps) {
-  const formatDate = (dateString: string | null) => {
-    if (!dateString) return 'Nie'
-    const date = new Date(dateString)
-    return date.toLocaleDateString('de-DE', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    })
-  }
-
-  const calculateProgress = (analyzedPages: number, totalPages: number) => {
-    if (totalPages === 0) return 0
-    return Math.round((analyzedPages / totalPages) * 100)
-  }
+// OPTIMIZED: Wrap with React.memo to prevent unnecessary re-renders
+export const CoursesTable = React.memo(function CoursesTable({ courses }: CoursesTableProps) {
 
   if (courses.length === 0) {
     return (
@@ -101,4 +105,4 @@ export function CoursesTable({ courses }: CoursesTableProps) {
       </TableBody>
     </Table>
   )
-}
+})

@@ -11,7 +11,7 @@ import {
   Sparkles,
 } from "lucide-react"
 
-import { NavMain } from "@/components/nav-main"
+import { NavMain, type NavMainItem } from "@/components/nav-main"
 import { NavProjects } from "@/components/nav-projects"
 import { NavUser } from "@/components/nav-user"
 import { TeamSwitcher } from "@/components/team-switcher"
@@ -21,6 +21,8 @@ import {
   SidebarFooter,
   SidebarHeader,
 } from "@/components/ui/sidebar"
+import { useSettings } from "@/components/settings/settings-context"
+import { BackgroundTasksIndicator } from "@/components/background-tasks"
 
 interface DashboardSidebarProps {
   user: {
@@ -36,6 +38,7 @@ interface DashboardSidebarProps {
 
 export function DashboardSidebar({ user, courses = [], ...props }: DashboardSidebarProps & React.ComponentProps<typeof Sidebar>) {
   const pathname = usePathname()
+  const { openSettings } = useSettings()
 
   // Sample teams data - in a real app, this would come from your data source
   const teams = [
@@ -46,7 +49,7 @@ export function DashboardSidebar({ user, courses = [], ...props }: DashboardSide
     },
   ]
 
-  const navMain = [
+  const navMain: NavMainItem[] = [
     {
       title: "Dashboard",
       url: "/dashboard",
@@ -67,23 +70,9 @@ export function DashboardSidebar({ user, courses = [], ...props }: DashboardSide
     },
     {
       title: "Einstellungen",
-      url: "/dashboard/settings",
+      url: "#",
       icon: Settings2,
-      isActive: pathname?.startsWith("/dashboard/settings"),
-      items: [
-        {
-          title: "Allgemein",
-          url: "/dashboard/settings",
-        },
-        {
-          title: "Profil",
-          url: "/dashboard/settings/profile",
-        },
-        {
-          title: "Benachrichtigungen",
-          url: "/dashboard/settings/notifications",
-        },
-      ],
+      onClick: openSettings,
     },
   ]
 
@@ -104,6 +93,7 @@ export function DashboardSidebar({ user, courses = [], ...props }: DashboardSide
         <NavProjects projects={projects} />
       </SidebarContent>
       <SidebarFooter>
+        <BackgroundTasksIndicator />
         <NavUser user={user} />
       </SidebarFooter>
     </Sidebar>

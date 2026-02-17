@@ -11,6 +11,7 @@ from typing import List
 from pdf2image import convert_from_bytes
 from PIL import Image
 
+from app.core.config import settings
 from app.services.analyzer import analyze_pdf_page, generate_material_summary, generate_material_filename, detect_naming_pattern, image_bytes_to_base64
 from app.services.storage import (
     update_processing_status,
@@ -21,6 +22,10 @@ from app.services.storage import (
     get_page_analysis,
     get_course_materials_for_naming,
     get_course_material_filename,
+)
+from app.services.embedding_service import (
+    generate_embeddings_for_material_async,
+    check_embedding_availability,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,7 +69,7 @@ def extract_page_image(pdf_bytes: bytes, page_number: int) -> str:
             pdf_bytes,
             first_page=page_number,
             last_page=page_number,
-            dpi=300,
+            dpi=settings.PDF_PROCESSING_DPI,
             fmt='jpeg'
         )
         
@@ -169,7 +174,7 @@ async def process_pdf_background(
         try:
             images = convert_from_bytes(
                 file_bytes,
-                dpi=300,
+                dpi=settings.PDF_PROCESSING_DPI,
                 fmt='jpeg'
             )
             page_count = len(images)
@@ -320,6 +325,41 @@ async def process_pdf_background(
                     f"{summary_error}",
                     exc_info=True,
                 )
+            
+            # Classify material if at least one page succeeded.
+            # This is best-effort only: failures here must not overwrite the main status.
+            try:
+                logger.info(
+                    f"Classifying material {material_id} based on {pages_analyzed} analyzed pages"
+                )
+                from app.services.classifier import classify_material
+                from app.services.storage import update_material_classification
+                
+                classification_result = await classify_material(
+                    material_id=material_id,
+                    user_id=user_id,
+                    course_id=course_id
+                )
+                
+                # Store classification in database
+                update_material_classification(
+                    material_id=material_id,
+                    classification=classification_result["category"],
+                    confidence=classification_result["confidence"],
+                    reasoning=classification_result["reasoning"],
+                    override=False
+                )
+                logger.info(
+                    f"Successfully classified material {material_id} as: {classification_result['category']} "
+                    f"(confidence: {classification_result['confidence']})"
+                )
+            except Exception as classification_error:
+                logger.error(
+                    f"Failed to classify material {material_id}: {classification_error}",
+                    exc_info=True,
+                )
+                # Don't fail the whole process if classification fails
+                # Material will be classified later when flashcards are generated (fallback)
 
         # Update final status in course_materials
         update_processing_status(material_id, status, error_message)
@@ -384,6 +424,26 @@ async def process_pdf_background(
                 )
                 # Don't fail the whole process if filename generation fails
         
+        # Generate embeddings in the background (for semantic search)
+        # This runs after all other processing is complete, so it doesn't block the user
+        if status == "completed" and pages_analyzed > 0:
+            if check_embedding_availability():
+                try:
+                    logger.info(f"Starting background embedding generation for material {material_id}")
+                    # Run embedding generation asynchronously - don't await to not block
+                    asyncio.create_task(
+                        _generate_embeddings_background(material_id)
+                    )
+                except Exception as embed_error:
+                    # Log but don't fail - embeddings are optional enhancement
+                    logger.warning(
+                        f"Failed to start embedding generation for {material_id}: {embed_error}"
+                    )
+            else:
+                logger.debug(
+                    f"Skipping embedding generation for {material_id}: OpenAI API key not configured"
+                )
+        
     except Exception as e:
         # Unexpected error during processing
         error_msg = f"Unexpected error during background processing: {str(e)}"
@@ -392,3 +452,27 @@ async def process_pdf_background(
             update_processing_status(material_id, "error", error_msg)
         except Exception as update_error:
             logger.error(f"Failed to update error status: {str(update_error)}", exc_info=True)
+
+
+async def _generate_embeddings_background(material_id: str) -> None:
+    """
+    Background task to generate embeddings for a material.
+    
+    This runs after PDF processing completes and doesn't block the user.
+    Embeddings enable semantic search in QuickChat.
+    
+    Args:
+        material_id: Course material ID
+    """
+    try:
+        pages_processed = await generate_embeddings_for_material_async(material_id)
+        logger.info(
+            f"Background embedding generation completed for material {material_id}: "
+            f"{pages_processed} pages embedded"
+        )
+    except Exception as e:
+        # Log error but don't propagate - this is a background enhancement
+        logger.error(
+            f"Background embedding generation failed for material {material_id}: {e}",
+            exc_info=True
+        )

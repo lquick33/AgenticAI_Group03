@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { Upload, Loader2, Plus, Trash2, FileText } from 'lucide-react'
 import {
@@ -31,6 +31,8 @@ import {
   type FileUploadItem,
 } from '@/components/courses/multi-file-upload-list'
 import { Progress } from '@/components/ui/progress'
+import { calculateProcessingProgress, type ProcessingProgressData } from '@/lib/utils/progress'
+import { useBackgroundTasksOptional } from '@/components/background-tasks'
 
 interface UploadDialogProps {
   courses: Course[]
@@ -54,6 +56,9 @@ export function UploadDialog({ courses }: UploadDialogProps) {
   const [error, setError] = useState<string | null>(null)
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
+  
+  // Global background tasks context
+  const backgroundTasks = useBackgroundTasksOptional()
 
   const {
     register,
@@ -187,12 +192,32 @@ export function UploadDialog({ courses }: UploadDialogProps) {
       throw new Error('User not authenticated')
     }
 
+    // Use file ID as temporary task ID for uploading phase
+    const tempTaskId = `upload-${fileItem.id}`
+    const selectedCourse = courses.find(c => c.id === courseId)
+
     // Update status to uploading
     setFiles((prev) =>
       prev.map((f) =>
         f.id === fileItem.id ? { ...f, status: 'uploading', progress: 0 } : f
       )
     )
+
+    // Register with global background tasks context immediately (uploading phase)
+    if (backgroundTasks) {
+      backgroundTasks.addTask({
+        id: tempTaskId,
+        type: 'pdf_processing',
+        materialId: tempTaskId, // Will be updated when we get the real ID
+        materialName: fileItem.file.name.replace(/\.pdf$/i, ''),
+        courseId: courseId,
+        courseName: selectedCourse?.title,
+        progress: 0,
+        status: 'uploading',
+        stage: 'uploading',
+        stageMessage: 'Wird hochgeladen...',
+      })
+    }
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -209,6 +234,10 @@ export function UploadDialog({ courses }: UploadDialogProps) {
         
         clearTimeout(healthTimeout)
       } catch (healthError) {
+        // Remove task from global context on error
+        if (backgroundTasks) {
+          backgroundTasks.removeTask(tempTaskId)
+        }
         throw new Error(`Backend server is not reachable at ${apiUrl}. Please ensure the backend is running.`)
       }
       
@@ -217,12 +246,21 @@ export function UploadDialog({ courses }: UploadDialogProps) {
       formData.append('user_id', user.id)
       formData.append('course_id', courseId)
 
-      // Simulate progress (since fetch doesn't support progress events natively)
+      // Simulate progress and update global task
+      let currentProgress = 0
       const progressInterval = setInterval(() => {
+        currentProgress = Math.min(currentProgress + 10, 90)
         setUploadProgress((prev) => ({
           ...prev,
-          [fileItem.id]: Math.min((prev[fileItem.id] || 0) + 10, 90),
+          [fileItem.id]: currentProgress,
         }))
+        // Update global task progress during upload
+        if (backgroundTasks) {
+          backgroundTasks.updateTask(tempTaskId, {
+            progress: Math.round(currentProgress * 0.05), // 0-5% range for upload
+            stageMessage: `Wird hochgeladen... ${currentProgress}%`,
+          })
+        }
       }, 200)
 
       const response = await fetch(`${apiUrl}/api/upload`, {
@@ -236,6 +274,13 @@ export function UploadDialog({ courses }: UploadDialogProps) {
         const errorData = await response.json().catch(() => ({
           detail: 'Upload failed',
         }))
+        // Update task status on error
+        if (backgroundTasks) {
+          backgroundTasks.updateTask(tempTaskId, {
+            status: 'error',
+            stageMessage: errorData.detail || 'Upload fehlgeschlagen',
+          })
+        }
         throw new Error(errorData.detail || `Upload failed: ${response.statusText}`)
       }
 
@@ -248,36 +293,29 @@ export function UploadDialog({ courses }: UploadDialogProps) {
             ? {
                 ...f,
                 status: 'processing',
-                progress: 95,
+                progress: 5,
                 materialId: result.course_material_id,
               }
             : f
         )
       )
 
-      // Simulate processing progress
-      const processingInterval = setInterval(() => {
-        setUploadProgress((prev) => ({
-          ...prev,
-          [fileItem.id]: Math.min((prev[fileItem.id] || 95) + 1, 99),
-        }))
-      }, 500)
-
-      // Poll for completion (simplified - in production, use WebSocket or better polling)
-      setTimeout(() => {
-        clearInterval(processingInterval)
-        setFiles((prev) =>
-          prev.map((f) =>
-            f.id === fileItem.id
-              ? { ...f, status: 'completed', progress: 100 }
-              : f
-          )
-        )
-        setUploadProgress((prev) => ({
-          ...prev,
-          [fileItem.id]: 100,
-        }))
-      }, 2000)
+      // Update global task: remove temp task and add real one with material ID
+      if (backgroundTasks && result.course_material_id) {
+        backgroundTasks.removeTask(tempTaskId)
+        backgroundTasks.addTask({
+          id: result.course_material_id,
+          type: 'pdf_processing',
+          materialId: result.course_material_id,
+          materialName: fileItem.file.name.replace(/\.pdf$/i, ''),
+          courseId: courseId,
+          courseName: selectedCourse?.title,
+          progress: 5,
+          status: 'processing',
+          stage: 'processing',
+          stageMessage: 'Wird verarbeitet...',
+        })
+      }
     } catch (err) {
       let errorMessage = err instanceof Error ? err.message : 'Upload fehlgeschlagen'
       
@@ -294,6 +332,15 @@ export function UploadDialog({ courses }: UploadDialogProps) {
             : f
         )
       )
+      
+      // Update global task status on error
+      if (backgroundTasks) {
+        backgroundTasks.updateTask(tempTaskId, {
+          status: 'error',
+          stageMessage: errorMessage,
+        })
+      }
+      
       throw err
     }
   }
@@ -381,6 +428,99 @@ export function UploadDialog({ courses }: UploadDialogProps) {
     const totalProgress = files.reduce((sum, f) => sum + (uploadProgress[f.id] || 0), 0)
     return Math.round(totalProgress / files.length)
   }
+
+  // Poll for progress updates on processing files
+  useEffect(() => {
+    const processingFiles = files.filter(
+      (f) => f.status === 'processing' && f.materialId
+    )
+
+    if (processingFiles.length === 0) {
+      return
+    }
+
+    const pollInterval = setInterval(async () => {
+      const supabase = createClient()
+
+      for (const fileItem of processingFiles) {
+        if (!fileItem.materialId) continue
+
+        try {
+          // Query material with all progress-related fields
+          const { data: materialData, error: materialError } = await supabase
+            .from('course_materials')
+            .select('processing_status, page_count, summary, classification')
+            .eq('id', fileItem.materialId)
+            .single()
+
+          if (materialError) {
+            // FIX: If material not found (deleted), remove file from list completely
+            // PGRST116 = "The result contains 0 rows" (row was deleted)
+            if (materialError.code === 'PGRST116') {
+              setFiles((prev) => prev.filter((f) => f.id !== fileItem.id))
+            }
+            continue
+          }
+
+          if (materialData) {
+            // Query completed pages count
+            const { count: completedPages, error: pagesError } = await supabase
+              .from('page_analyses')
+              .select('*', { count: 'exact', head: true })
+              .eq('course_material_id', fileItem.materialId)
+
+            if (pagesError) {
+              console.error(`Error counting pages for material ${fileItem.materialId}:`, pagesError)
+            }
+
+            // Calculate progress
+            const progressData: ProcessingProgressData = {
+              status: materialData.processing_status as 'uploading' | 'processing' | 'completed' | 'error',
+              completedPages: completedPages || 0,
+              totalPages: materialData.page_count || 0,
+              hasSummary: !!materialData.summary,
+              hasClassification: !!materialData.classification,
+            }
+
+            const progressResult = calculateProcessingProgress(progressData)
+
+            // Update file with progress
+            setFiles((prev) =>
+              prev.map((f) =>
+                f.id === fileItem.id
+                  ? {
+                      ...f,
+                      status: progressData.status === 'completed' ? 'completed' : f.status,
+                      processingProgress: progressResult.progress,
+                      processingStage: progressResult.stage,
+                      processingStageMessage: progressResult.stageMessage,
+                      progress: progressResult.progress,
+                    }
+                  : f
+              )
+            )
+
+            // Update upload progress for overall calculation
+            setUploadProgress((prev) => ({
+              ...prev,
+              [fileItem.id]: progressResult.progress,
+            }))
+
+            // If completed, stop polling for this file
+            if (progressData.status === 'completed' || progressData.status === 'error') {
+              // File will be removed from processingFiles on next render
+            }
+          }
+        } catch (error) {
+          console.error(`Error polling material ${fileItem.materialId}:`, error)
+        }
+      }
+    }, 2000) // Poll every 2 seconds
+
+    return () => {
+      clearInterval(pollInterval)
+    }
+  }, [files])
 
   const completedCount = files.filter((f) => f.status === 'completed').length
   const errorCount = files.filter((f) => f.status === 'error').length

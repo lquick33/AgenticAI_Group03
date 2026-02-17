@@ -1,0 +1,33 @@
+# Headless Anki Container Configuration
+# Uses ankimcp/headless-anki with AnkiConnect addon pre-installed
+# Works on both ARM64 (Apple Silicon) and x86_64 (Intel/AMD)
+# See: start_anki.sh for startup script
+
+services:
+  anki:
+    build:
+      context: https://github.com/ankimcp/headless-anki.git#main:x11-vnc-addons
+      args:
+        ADDON_IDS: "2055492159"  # AnkiConnect addon
+    container_name: anki-agent
+    ports:
+      - "8765:8765"   # AnkiConnect API
+      - "5900:5900"   # VNC for debugging (login is done via app Settings)
+    volumes:
+      # Use named volume so Docker initializes from container's /data
+      - anki-data:/data
+      # Persist Qt/Anki config (sync credentials may be stored here)
+      - anki-config:/root/.config
+      # Custom startup script that forwards SIGTERM to Anki for graceful shutdown
+      - ./anki-startup.sh:/startup.sh:ro
+      # Custom addon for force sync and AnkiWeb login
+      - ./anki-addons/force_sync:/data/addons21/force_sync:ro
+    restart: unless-stopped
+    # Give Anki time to save state before killing
+    stop_grace_period: 30s
+    # Use SIGTERM for graceful shutdown
+    stop_signal: SIGTERM
+
+volumes:
+  anki-data:
+  anki-config:

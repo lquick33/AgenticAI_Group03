@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useRef } from 'react'
-import { Upload, Loader2, Trash2 } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { Upload, Loader2, Trash2, FileText, CheckCircle2, XCircle, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { Label } from '@/components/ui/label'
@@ -12,17 +12,20 @@ import {
   MultiFileUploadList,
   type FileUploadItem,
 } from '@/components/courses/multi-file-upload-list'
+import { calculateProcessingProgress, type ProcessingProgressData } from '@/lib/utils/progress'
+import { useBackgroundTasksOptional, type BackgroundTask } from '@/components/background-tasks'
 
 interface UploadSectionProps {
   courseId: string
   userId: string
+  courseName?: string
   onUploadSuccess?: () => void
 }
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50MB
 const MAX_FILES = 20
 
-export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSectionProps) {
+export function UploadSection({ courseId, userId, courseName, onUploadSuccess }: UploadSectionProps) {
   const [files, setFiles] = useState<FileUploadItem[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -30,6 +33,9 @@ export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSecti
   const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
   const supabase = createClient()
+  
+  // Global background tasks context
+  const backgroundTasks = useBackgroundTasksOptional()
 
   const validateFile = (file: File): string | null => {
     if (file.type !== 'application/pdf') {
@@ -116,12 +122,31 @@ export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSecti
   }
 
   const uploadSingleFile = async (fileItem: FileUploadItem): Promise<void> => {
+    // Use file ID as temporary task ID for uploading phase
+    const tempTaskId = `upload-${fileItem.id}`
+    
     // Update status to uploading
     setFiles((prev) =>
       prev.map((f) =>
         f.id === fileItem.id ? { ...f, status: 'uploading', progress: 0 } : f
       )
     )
+
+    // Register with global background tasks context immediately (uploading phase)
+    if (backgroundTasks) {
+      backgroundTasks.addTask({
+        id: tempTaskId,
+        type: 'pdf_processing',
+        materialId: tempTaskId, // Will be updated when we get the real ID
+        materialName: fileItem.file.name.replace(/\.pdf$/i, ''),
+        courseId: courseId,
+        courseName: courseName,
+        progress: 0,
+        status: 'uploading',
+        stage: 'uploading',
+        stageMessage: 'Wird hochgeladen...',
+      })
+    }
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -138,6 +163,10 @@ export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSecti
         
         clearTimeout(healthTimeout)
       } catch (healthError) {
+        // Remove task from global context on error
+        if (backgroundTasks) {
+          backgroundTasks.removeTask(tempTaskId)
+        }
         throw new Error(`Backend server is not reachable at ${apiUrl}. Please ensure the backend is running.`)
       }
       
@@ -146,12 +175,21 @@ export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSecti
       formData.append('user_id', userId)
       formData.append('course_id', courseId)
 
-      // Simulate progress
+      // Simulate progress and update global task
+      let currentProgress = 0
       const progressInterval = setInterval(() => {
+        currentProgress = Math.min(currentProgress + 10, 90)
         setUploadProgress((prev) => ({
           ...prev,
-          [fileItem.id]: Math.min((prev[fileItem.id] || 0) + 10, 90),
+          [fileItem.id]: currentProgress,
         }))
+        // Update global task progress during upload
+        if (backgroundTasks) {
+          backgroundTasks.updateTask(tempTaskId, {
+            progress: Math.round(currentProgress * 0.05), // 0-5% range for upload
+            stageMessage: `Wird hochgeladen... ${currentProgress}%`,
+          })
+        }
       }, 200)
 
       const response = await fetch(`${apiUrl}/api/upload`, {
@@ -165,6 +203,13 @@ export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSecti
         const errorData = await response.json().catch(() => ({
           detail: 'Upload failed',
         }))
+        // Remove task from global context on error
+        if (backgroundTasks) {
+          backgroundTasks.updateTask(tempTaskId, {
+            status: 'error',
+            stageMessage: errorData.detail || 'Upload fehlgeschlagen',
+          })
+        }
         throw new Error(errorData.detail || `Upload failed: ${response.statusText}`)
       }
 
@@ -177,40 +222,33 @@ export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSecti
             ? {
                 ...f,
                 status: 'processing',
-                progress: 95,
+                progress: 5,
                 materialId: result.course_material_id,
               }
             : f
         )
       )
 
+      // Update global task: remove temp task and add real one with material ID
+      if (backgroundTasks && result.course_material_id) {
+        backgroundTasks.removeTask(tempTaskId)
+        backgroundTasks.addTask({
+          id: result.course_material_id,
+          type: 'pdf_processing',
+          materialId: result.course_material_id,
+          materialName: fileItem.file.name.replace(/\.pdf$/i, ''),
+          courseId: courseId,
+          courseName: courseName,
+          progress: 5,
+          status: 'processing',
+          stage: 'processing',
+          stageMessage: 'Wird verarbeitet...',
+        })
+      }
+
       // Call onUploadSuccess callback immediately after successful upload
       // The material is already in the database at this point
       onUploadSuccess?.()
-
-      // Simulate processing progress
-      const processingInterval = setInterval(() => {
-        setUploadProgress((prev) => ({
-          ...prev,
-          [fileItem.id]: Math.min((prev[fileItem.id] || 95) + 1, 99),
-        }))
-      }, 500)
-
-      // Poll for completion
-      setTimeout(() => {
-        clearInterval(processingInterval)
-        setFiles((prev) =>
-          prev.map((f) =>
-            f.id === fileItem.id
-              ? { ...f, status: 'completed', progress: 100 }
-              : f
-          )
-        )
-        setUploadProgress((prev) => ({
-          ...prev,
-          [fileItem.id]: 100,
-        }))
-      }, 2000)
     } catch (err) {
       let errorMessage = err instanceof Error ? err.message : 'Upload fehlgeschlagen'
       
@@ -227,6 +265,15 @@ export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSecti
             : f
         )
       )
+      
+      // Update global task status on error
+      if (backgroundTasks) {
+        backgroundTasks.updateTask(tempTaskId, {
+          status: 'error',
+          stageMessage: errorMessage,
+        })
+      }
+      
       throw err
     }
   }
@@ -292,11 +339,128 @@ export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSecti
     return Math.round(totalProgress / files.length)
   }
 
+  // Poll for progress updates on processing files
+  useEffect(() => {
+    const processingFiles = files.filter(
+      (f) => f.status === 'processing' && f.materialId
+    )
+
+    if (processingFiles.length === 0) {
+      return
+    }
+
+    const pollInterval = setInterval(async () => {
+      const supabase = createClient()
+
+      for (const fileItem of processingFiles) {
+        if (!fileItem.materialId) continue
+
+        try {
+          // Query material with all progress-related fields
+          const { data: materialData, error: materialError } = await supabase
+            .from('course_materials')
+            .select('processing_status, page_count, summary, classification')
+            .eq('id', fileItem.materialId)
+            .single()
+
+          if (materialError) {
+            // If material not found (deleted), remove file from list completely
+            // PGRST116 = "The result contains 0 rows" (row was deleted)
+            if (materialError.code === 'PGRST116') {
+              setFiles((prev) => prev.filter((f) => f.id !== fileItem.id))
+            }
+            continue
+          }
+
+          if (materialData) {
+            // Query completed pages count
+            const { count: completedPages, error: pagesError } = await supabase
+              .from('page_analyses')
+              .select('*', { count: 'exact', head: true })
+              .eq('course_material_id', fileItem.materialId)
+
+            if (pagesError) {
+              console.error(`Error counting pages for material ${fileItem.materialId}:`, pagesError)
+            }
+
+            // Calculate progress
+            const progressData: ProcessingProgressData = {
+              status: materialData.processing_status as 'uploading' | 'processing' | 'completed' | 'error',
+              completedPages: completedPages || 0,
+              totalPages: materialData.page_count || 0,
+              hasSummary: !!materialData.summary,
+              hasClassification: !!materialData.classification,
+            }
+
+            const progressResult = calculateProcessingProgress(progressData)
+
+            // Update file with progress
+            setFiles((prev) =>
+              prev.map((f) =>
+                f.id === fileItem.id
+                  ? {
+                      ...f,
+                      status: progressData.status === 'completed' ? 'completed' : f.status,
+                      processingProgress: progressResult.progress,
+                      processingStage: progressResult.stage,
+                      processingStageMessage: progressResult.stageMessage,
+                      progress: progressResult.progress,
+                    }
+                  : f
+              )
+            )
+
+            // Update upload progress for overall calculation
+            setUploadProgress((prev) => ({
+              ...prev,
+              [fileItem.id]: progressResult.progress,
+            }))
+
+            // If completed, stop polling for this file
+            if (progressData.status === 'completed' || progressData.status === 'error') {
+              // File will be removed from processingFiles on next render
+            }
+          }
+        } catch (error) {
+          console.error(`Error polling material ${fileItem.materialId}:`, error)
+        }
+      }
+    }, 2000) // Poll every 2 seconds
+
+    return () => {
+      clearInterval(pollInterval)
+    }
+  }, [files])
+
   const completedCount = files.filter((f) => f.status === 'completed').length
   const errorCount = files.filter((f) => f.status === 'error').length
   const uploadingCount = files.filter(
     (f) => f.status === 'uploading' || f.status === 'processing'
   ).length
+
+  // Get active tasks for this course from global context
+  const activeCourseTasks = backgroundTasks?.getTasksByCourse(courseId).filter(t => 
+    t.type === 'pdf_processing' && 
+    !['completed', 'failed', 'cancelled', 'error'].includes(t.status)
+  ) || []
+
+  // Also show recently completed tasks (last 30 seconds) that aren't in local files
+  const recentCourseTasks = backgroundTasks?.getTasksByCourse(courseId).filter(t => {
+    if (t.type !== 'pdf_processing') return false
+    if (!['completed', 'failed', 'cancelled', 'error'].includes(t.status)) return false
+    // Check if this task is already shown in local files list
+    const isInLocalFiles = files.some(f => f.materialId === t.materialId)
+    if (isInLocalFiles) return false
+    // Show for 30 seconds after completion
+    const age = new Date().getTime() - new Date(t.createdAt).getTime()
+    return age < 30000
+  }) || []
+
+  const allGlobalTasks = [...activeCourseTasks, ...recentCourseTasks]
+  // Filter out tasks that are already shown in local files list
+  const globalTasksToShow = allGlobalTasks.filter(t => 
+    !files.some(f => f.materialId === t.materialId || f.materialId === t.id)
+  )
 
   return (
     <div className="space-y-4">
@@ -338,6 +502,64 @@ export function UploadSection({ courseId, userId, onUploadSuccess }: UploadSecti
               />
             </label>
           </div>
+
+          {/* Active Global Tasks - Show uploads/processing from global context */}
+          {globalTasksToShow.length > 0 && (
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Laufende Verarbeitungen ({globalTasksToShow.length})
+              </Label>
+              <div className="space-y-2">
+                {globalTasksToShow.map((task) => {
+                  const isActive = !['completed', 'failed', 'cancelled', 'error'].includes(task.status)
+                  return (
+                    <div 
+                      key={task.id}
+                      className="flex flex-col gap-2 p-3 rounded-lg border bg-muted/30"
+                    >
+                      <div className="flex items-center gap-2">
+                        <FileText className="h-4 w-4 text-blue-500 shrink-0" />
+                        <span className="text-sm font-medium truncate flex-1">
+                          {task.materialName}
+                        </span>
+                        {task.status === 'completed' ? (
+                          <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
+                        ) : task.status === 'error' || task.status === 'failed' ? (
+                          <XCircle className="h-4 w-4 text-red-500 shrink-0" />
+                        ) : (
+                          <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        <Progress value={task.progress} className="h-1.5" />
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-muted-foreground">
+                            {task.stageMessage || 'Wird verarbeitet...'}
+                          </span>
+                          <span className="text-xs font-medium text-muted-foreground">
+                            {task.progress}%
+                          </span>
+                        </div>
+                      </div>
+                      {/* Allow dismiss for completed tasks OR stuck uploading tasks */}
+                      {(!isActive || task.status === 'uploading') && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                          onClick={() => backgroundTasks?.removeTask(task.id)}
+                        >
+                          <X className="h-3 w-3 mr-1" />
+                          {task.status === 'uploading' ? 'Abbrechen' : 'Entfernen'}
+                        </Button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
 
           {/* File List */}
           {files.length > 0 && (

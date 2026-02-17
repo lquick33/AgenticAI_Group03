@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { initiateChat, sendMessage, getStudySession, submitQuiz } from '@/lib/api/study'
+import { initiateChat, sendMessage, getStudySession, submitQuiz, saveCurrentPage } from '@/lib/api/study'
 import { parseQuizToolResponse } from '@/lib/quiz-validation'
 import { EventQueue } from '@/lib/event-queue'
 import type { ChatMessage, ToolCall } from '@/types'
@@ -8,7 +8,9 @@ import { useTypewriter } from './use-typewriter'
 export function useChatSession(
   materialId: string,
   userId: string,
-  pageCount: number
+  pageCount: number,
+  urlInitialPage?: number,  // Optional initial page from URL query param (overrides session lastPage)
+  autoExplainOnPageChange: boolean = true  // When false, AI only responds to user messages
 ) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -20,10 +22,18 @@ export function useChatSession(
   const messageIdCounter = useRef(0)
   const eventQueueRef = useRef<EventQueue>(new EventQueue())
   
+  // Use ref for autoExplainOnPageChange to avoid re-initializing when preference loads
+  const autoExplainRef = useRef(autoExplainOnPageChange)
+  autoExplainRef.current = autoExplainOnPageChange
+  
   // Debouncing and request tracking for page changes
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
   const currentRequestIdRef = useRef<string | null>(null)
   const pageChangeHistoryRef = useRef<Array<{ page: number; timestamp: number }>>([])
+  
+  // Separate debounce timer for page saving (independent of chat initiation)
+  const pageSaveTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const lastSavedPageRef = useRef<number | null>(null)
   
   // Use typewriter hook
   const { startTypewriter, stopTypewriter, typewriterRef } = useTypewriter(setMessages)
@@ -489,6 +499,25 @@ export function useChatSession(
         setCurrentPage(newPage)
       }
 
+      // Save page (debounced, independent of auto-explain)
+      // Skip during initial load (isInitialOpen) - don't overwrite saved page with initial state
+      // Skip if this is the same page we just saved
+      if (!isInitialOpen && lastSavedPageRef.current !== newPage) {
+        if (pageSaveTimerRef.current) {
+          clearTimeout(pageSaveTimerRef.current)
+        }
+        pageSaveTimerRef.current = setTimeout(() => {
+          lastSavedPageRef.current = newPage
+          saveCurrentPage(materialId, userId, newPage)
+        }, 1000) // 1 second debounce for page save
+      }
+
+      // Skip auto-explain if setting is disabled (but always allow initial open)
+      if (!autoExplainRef.current && !isInitialOpen) {
+        console.log('[useChatSession] Auto-explain disabled, skipping chat initiation for page', newPage)
+        return
+      }
+
       const now = Date.now()
       pageChangeHistoryRef.current.push({ page: newPage, timestamp: now })
       
@@ -524,7 +553,7 @@ export function useChatSession(
         await initiateChatForPage(newPage, requestId, isInitialOpen)
       }, 500)
     },
-    [pageCount, initiateChatForPage]
+    [pageCount, initiateChatForPage, materialId, userId]
   )
 
   // Handle send message
@@ -551,6 +580,7 @@ export function useChatSession(
       stopTypewriter()
 
       try {
+        // Pass current page to ensure agent knows which page user is viewing
         await sendMessage(
           materialId,
           message,
@@ -824,7 +854,8 @@ export function useChatSession(
                 return msg
               })
             })
-          }
+          },
+          currentPage  // Pass current page so agent knows which page user is viewing
         )
       } catch (error) {
         console.error('Error sending message:', error)
@@ -858,7 +889,7 @@ export function useChatSession(
         })
       }
     },
-    [materialId, userId, generateMessageId, startTypewriter, stopTypewriter, processQuizToolResponse]
+    [materialId, userId, currentPage, generateMessageId, startTypewriter, stopTypewriter, processQuizToolResponse]
   )
 
   // Handle quiz complete
@@ -911,45 +942,100 @@ export function useChatSession(
     }
   }, [userId, generateMessageId])
 
-  // Initialization effect
+  // Refs for stable function references in effects
+  const handlePageChangeRef = useRef(handlePageChange)
+  handlePageChangeRef.current = handlePageChange
+  const stopTypewriterRef = useRef(stopTypewriter)
+  stopTypewriterRef.current = stopTypewriter
+
+  // Initialization effect - runs when material/user changes
   const isInitializing = useRef(true)
+  
   useEffect(() => {
+    // Reset state for new initialization
+    isInitializing.current = true
+    console.log('[useChatSession] Starting initialization for material:', materialId)
+    
     let isMounted = true
     const initSession = async () => {
       try {
         const session = await getStudySession(materialId, userId)
+        console.log('[useChatSession] Loaded session:', { lastPage: session.lastPage, messageCount: session.messages?.length })
         if (!isMounted) return
 
-        const initialPage = session.lastPage && session.lastPage > 0 ? session.lastPage : 1
+        // Use URL initial page if provided, otherwise use session's lastPage
+        const sessionPage = session.lastPage && session.lastPage > 0 ? session.lastPage : 1
+        const initialPage = urlInitialPage && urlInitialPage > 0 && urlInitialPage <= pageCount 
+          ? urlInitialPage 
+          : sessionPage
+        
+        console.log('[useChatSession] Computed initialPage:', { sessionPage, urlInitialPage, pageCount, initialPage })
+        
         if (session.messages && session.messages.length > 0) {
           setMessages(session.messages)
         }
 
         setCurrentPage(initialPage)
+        // Mark this page as already saved so we don't re-save it immediately
+        lastSavedPageRef.current = initialPage
         isInitializing.current = false
-        await handlePageChange(initialPage, true, true)
+        await handlePageChangeRef.current(initialPage, true, true)
       } catch (error) {
         console.error('[useChatSession] Failed to load study session:', error)
         if (!isMounted) return
-        setCurrentPage(1)
+        // Use URL initial page if provided, otherwise default to 1
+        const fallbackPage = urlInitialPage && urlInitialPage > 0 && urlInitialPage <= pageCount 
+          ? urlInitialPage 
+          : 1
+        setCurrentPage(fallbackPage)
         isInitializing.current = false
-        await handlePageChange(1, true, true)
+        await handlePageChangeRef.current(fallbackPage, true, true)
       }
     }
     initSession()
     return () => {
       isMounted = false
-      stopTypewriter()
+      stopTypewriterRef.current()
       if (streamControllerRef.current) streamControllerRef.current.close()
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
+      if (pageSaveTimerRef.current) clearTimeout(pageSaveTimerRef.current)
     }
-  }, [materialId, userId, handlePageChange, stopTypewriter])
+  }, [materialId, userId, urlInitialPage, pageCount])
 
   // Page change effect
   useEffect(() => {
     if (isInitializing.current) return
-    if (currentPage > 0) handlePageChange(currentPage)
-  }, [currentPage, handlePageChange])
+    if (currentPage > 0) handlePageChangeRef.current(currentPage)
+  }, [currentPage])
+
+  // Save page on tab close/navigation away
+  const currentPageRef = useRef(currentPage)
+  currentPageRef.current = currentPage
+  
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      // Only save if we've finished initializing (don't save default page 1)
+      if (isInitializing.current) return
+      
+      // Use sendBeacon for reliable save on page unload
+      const data = JSON.stringify({
+        material_id: materialId,
+        user_id: userId,
+        page: currentPageRef.current,
+      })
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      navigator.sendBeacon(`${API_URL}/api/study/save-page`, new Blob([data], { type: 'application/json' }))
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      // Only save on unmount if we've finished initializing
+      if (!isInitializing.current) {
+        saveCurrentPage(materialId, userId, currentPageRef.current)
+      }
+    }
+  }, [materialId, userId])
 
   return {
     messages,

@@ -37,6 +37,16 @@ class SlideAnalysis(BaseModel):
         ...,
         description="Beschreibung visueller Elemente (Diagramme, Charts, Grafiken). Falls nur Text vorhanden, dann 'Kein Diagramm'"
     )
+    
+    is_chapter_heading: bool = Field(
+        default=False,
+        description="True wenn diese Folie ein Kapitel-/Abschnittstitel ist (großer Titel, wenig oder kein Fließtext)"
+    )
+    
+    chapter_title: Optional[str] = Field(
+        default=None,
+        description="Der Kapiteltitel, falls is_chapter_heading=True (z.B. 'Klassendiagramme', 'Sequence Diagrams')"
+    )
 
 
 class PageAnalysisResponse(BaseModel):
@@ -106,6 +116,7 @@ class ChatMessageRequest(BaseModel):
     material_id: str = Field(..., description="Course material ID (UUID)")
     message: str = Field(..., description="User message content")
     user_id: str = Field(..., description="User ID (UUID)")
+    page_number: Optional[int] = Field(None, description="Current page number (1-indexed). If provided, overrides state/metadata page.")
 
 
 class PageAnalysisQuery(BaseModel):
@@ -150,8 +161,13 @@ class FlashcardGenerationResult(BaseModel):
 class MaterialClassification(BaseModel):
     """Structured output for material classification."""
     
-    category: Literal['language_learning', 'math', 'business_administration', 'general'] = Field(
-        description="Classification category"
+    category: str = Field(
+        description=(
+            "Classification category (e.g., 'language_learning', 'math', "
+            "'business_administration', 'computer_science', 'general')"
+        ),
+        min_length=1,
+        max_length=64,
     )
     confidence: float = Field(
         ge=0.0, 
@@ -182,6 +198,8 @@ class FlashcardTaskStatusResponse(BaseModel):
     cards_generated: int
     error_message: Optional[str] = None
     filename: Optional[str] = None
+    anki_synced: bool = False  # Cards added to local Anki
+    ankiweb_synced: bool = False  # Cards synced to AnkiWeb
     created_at: float
     completed_at: Optional[float] = None
 
@@ -357,3 +375,61 @@ class QuizResponse(BaseModel):
     end_page: int
     quiz_data: QuizData
     created_at: str
+
+
+# Quick Chat Models
+
+class QuickChatInitiateRequest(BaseModel):
+    """Request model for initiating a quick chat session."""
+    
+    user_id: str = Field(..., description="User ID (UUID)")
+
+
+class QuickChatWarmupRequest(BaseModel):
+    """Request model for pre-warming the quick chat agent."""
+    
+    user_id: str = Field(..., description="User ID (UUID)")
+    thread_id: str = Field(..., description="Thread ID from initiate response")
+
+
+class QuickChatMessageRequest(BaseModel):
+    """Request model for sending a message in quick chat."""
+    
+    user_id: str = Field(..., description="User ID (UUID)")
+    message: str = Field(..., description="User message content")
+    thread_id: Optional[str] = Field(None, description="Thread ID from initiate (for pre-warmed agent)")
+    # Optional: for tutoring mode after navigation
+    material_id: Optional[str] = Field(None, description="Course material ID (UUID) if in tutoring mode")
+    page_number: Optional[int] = Field(None, description="Current page number if in tutoring mode")
+    course_id: Optional[str] = Field(None, description="Course ID (UUID) if in tutoring mode")
+
+
+class QuickChatSearchRequest(BaseModel):
+    """Request model for direct topic search."""
+    
+    user_id: str = Field(..., description="User ID (UUID)")
+    query: str = Field(..., description="Search query")
+    language: str = Field(default="auto", description="Language: 'de', 'en', or 'auto'")
+    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of results")
+
+
+class QuickChatSearchResult(BaseModel):
+    """Single search result from quick chat topic search."""
+    
+    course_id: str
+    course_title: str
+    course_color: Optional[str] = None
+    material_id: str
+    material_name: str
+    page_number: int
+    summary: str
+    key_terms: List[str]
+    rank: float
+
+
+class QuickChatSearchResponse(BaseModel):
+    """Response model for quick chat topic search."""
+    
+    found: bool
+    message: str
+    results: List[QuickChatSearchResult]

@@ -5,21 +5,27 @@ import { createClient } from '@/lib/supabase/client'
 import { UploadSection } from '@/components/courses/upload-section'
 import { CourseMaterialsList } from '@/components/courses/course-materials-list'
 import type { CourseMaterial } from '@/types'
+import { calculateProcessingProgress, type ProcessingProgressData } from '@/lib/utils/progress'
 
 interface CourseMaterialsContainerProps {
   courseId: string
   userId: string
+  courseName?: string
   initialMaterials: CourseMaterial[]
+  deduplicateFlashcards?: boolean
 }
 
 export function CourseMaterialsContainer({
   courseId,
   userId,
+  courseName,
   initialMaterials,
+  deduplicateFlashcards = false,
 }: CourseMaterialsContainerProps) {
   const [materials, setMaterials] = useState<CourseMaterial[]>(initialMaterials)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [pollingCount, setPollingCount] = useState(0) // Track count to trigger polling effect
+  const [materialProgress, setMaterialProgress] = useState<Record<string, { progress: number; stage: string; stageMessage: string }>>({})
   
   // Refs to track materials being polled without causing effect re-runs
   const materialsRef = useRef<CourseMaterial[]>(initialMaterials)
@@ -123,41 +129,85 @@ export function CourseMaterialsContainer({
       
       for (const { id, initialFilename } of pollingMaterials) {
         try {
-          const { data, error } = await supabase
+          // Query material with all progress-related fields
+          const { data: materialData, error: materialError } = await supabase
             .from('course_materials')
-            .select('file_name, processing_status')
+            .select('file_name, processing_status, page_count, summary, classification')
             .eq('id', id)
             .single()
           
-          if (error) {
-            console.error(`Error polling material ${id}:`, error)
+          if (materialError) {
+            // If material not found (deleted) or any error, stop polling it
+            // PGRST116 = "The result contains 0 rows" (row was deleted)
+            if (materialError.code === 'PGRST116' || !materialsRef.current.find(m => m.id === id)) {
+              pollingMaterialsRef.current.delete(id)
+              setPollingCount(pollingMaterialsRef.current.size)
+              setMaterialProgress(prev => {
+                const updated = { ...prev }
+                delete updated[id]
+                return updated
+              })
+            }
             continue
           }
           
-          if (data) {
+          if (materialData) {
             // Get current material from ref
             const currentMaterial = materialsRef.current.find(m => m.id === id)
             
+            // Query completed pages count
+            const { count: completedPages, error: pagesError } = await supabase
+              .from('page_analyses')
+              .select('*', { count: 'exact', head: true })
+              .eq('course_material_id', id)
+            
+            if (pagesError) {
+              console.error(`Error counting pages for material ${id}:`, pagesError)
+            }
+            
+            // Calculate progress
+            const progressData: ProcessingProgressData = {
+              status: materialData.processing_status as 'uploading' | 'processing' | 'completed' | 'error',
+              completedPages: completedPages || 0,
+              totalPages: materialData.page_count || 0,
+              hasSummary: !!materialData.summary,
+              hasClassification: !!materialData.classification,
+            }
+            
+            const progressResult = calculateProcessingProgress(progressData)
+            
+            // Update progress state
+            setMaterialProgress(prev => ({
+              ...prev,
+              [id]: progressResult,
+            }))
+            
             // Check if filename changed (compare with both initial and current)
-            const filenameChanged = data.file_name !== initialFilename && 
-                                   (!currentMaterial || data.file_name !== currentMaterial.file_name)
+            const filenameChanged = materialData.file_name !== initialFilename && 
+                                   (!currentMaterial || materialData.file_name !== currentMaterial.file_name)
             
             if (filenameChanged) {
               // Update the initial filename in the ref to prevent duplicate updates
               pollingMaterialsRef.current.set(id, {
                 id,
-                initialFilename: data.file_name
+                initialFilename: materialData.file_name
               })
               
               // Immediately refresh materials to get the updated filename
               refreshMaterials()
               
               // If processing is complete, remove from polling
-              if (data.processing_status !== 'processing' && data.processing_status !== 'uploading') {
+              if (materialData.processing_status !== 'processing' && materialData.processing_status !== 'uploading') {
                 pollingMaterialsRef.current.delete(id)
                 setPollingCount(pollingMaterialsRef.current.size)
+                // Clear progress when done
+                setMaterialProgress(prev => {
+                  const updated = { ...prev }
+                  delete updated[id]
+                  return updated
+                })
               }
-            } else if (data.processing_status !== 'processing' && data.processing_status !== 'uploading') {
+            } else if (materialData.processing_status !== 'processing' && materialData.processing_status !== 'uploading') {
               // Processing complete - check if status has changed
               const statusChanged = !currentMaterial || 
                 currentMaterial.processing_status === 'processing' || 
@@ -171,9 +221,25 @@ export function CourseMaterialsContainer({
               // Remove from polling
               pollingMaterialsRef.current.delete(id)
               setPollingCount(pollingMaterialsRef.current.size)
+              // Clear progress when done
+              setMaterialProgress(prev => {
+                const updated = { ...prev }
+                delete updated[id]
+                return updated
+              })
             }
           }
         } catch (error) {
+          // If material no longer in state, stop polling it
+          if (!materialsRef.current.find(m => m.id === id)) {
+            pollingMaterialsRef.current.delete(id)
+            setPollingCount(pollingMaterialsRef.current.size)
+            setMaterialProgress(prev => {
+              const updated = { ...prev }
+              delete updated[id]
+              return updated
+            })
+          }
           console.error(`Error polling material ${id}:`, error)
         }
       }
@@ -215,6 +281,7 @@ export function CourseMaterialsContainer({
         <UploadSection 
           courseId={courseId} 
           userId={userId}
+          courseName={courseName}
           onUploadSuccess={handleUploadSuccess}
         />
       </div>
@@ -230,6 +297,8 @@ export function CourseMaterialsContainer({
           courseId={courseId}
           userId={userId}
           onMaterialDeleted={refreshMaterials}
+          materialProgress={materialProgress}
+          deduplicateFlashcards={deduplicateFlashcards}
         />
       </div>
     </>

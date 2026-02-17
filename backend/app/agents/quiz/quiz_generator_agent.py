@@ -86,25 +86,35 @@ class QuizGeneratorAgent(BaseAgent):
         Build system prompt for quiz generation.
         Loads prompt from Langfuse if available, otherwise uses fallback.
         
+        IMPORTANT: The primary/active prompt is stored in Langfuse under the name
+        'quiz-generator/system-prompt-{language}'. Any changes to the agent's behavior
+        should be made in Langfuse first, and then mirrored here for fallback purposes.
+        
         Args:
-            language: Language code (e.g., "de", "en")
+            language: Language code (currently only "de" is supported in Langfuse)
             
         Returns:
             System prompt string
         """
-        # Try to load from Langfuse first
+        # Try to load from Langfuse first (PRIMARY source)
+        # Currently only German prompt exists in Langfuse, so always use "de"
+        prompt_language = "de"  # TODO: Add more languages to Langfuse when needed
         if self.langfuse_client:
             try:
-                prompt_name = f"quiz-generator/system-prompt-{language}"
+                prompt_name = f"quiz-generator/system-prompt-{prompt_language}"
                 langfuse_prompt = self.langfuse_client.get_prompt(
                     prompt_name,
                     label="production",
                     type="chat"
                 )
                 
+                # Compile the prompt to get the list of messages
+                # (even without variables, compile() is needed to get the message list)
+                compiled_prompt = langfuse_prompt.compile()
+                
                 # Extract system message content from compiled chat prompt
-                if langfuse_prompt and isinstance(langfuse_prompt, list) and len(langfuse_prompt) > 0:
-                    system_message = langfuse_prompt[0]
+                if compiled_prompt and isinstance(compiled_prompt, list) and len(compiled_prompt) > 0:
+                    system_message = compiled_prompt[0]
                     if isinstance(system_message, dict) and system_message.get("role") == "system":
                         logger.debug(f"✅ Using Langfuse prompt for {prompt_name}")
                         return system_message.get("content", "")
@@ -116,7 +126,7 @@ class QuizGeneratorAgent(BaseAgent):
             except Exception as e:
                 logger.warning(f"Failed to load Langfuse prompt for quiz-generator: {e}, using fallback")
         
-        # Fallback prompt if Langfuse is not available or fails
+        # FALLBACK PROMPT - Primary prompt is in Langfuse: quiz-generator/system-prompt-{language}
         return """Du bist ein Quiz-Generator für Vorlesungsmaterialien. Deine Aufgabe ist es, Verständnisfragen zu erstellen, die das Verständnis der Studenten prüfen, nicht das Auswendiglernen.
 
 WICHTIGE REGELN:
@@ -231,27 +241,15 @@ VERMEIDE:
         context_text = "\n".join(context_parts)
         
         # Create prompt for quiz generation
-        prompt = f"""Erstelle ein Quiz für das folgende Thema: {topic}
-
-Das Thema wurde auf den Seiten {start_page} bis {end_page} behandelt.
+        # TOKEN OPTIMIZATION: Removed redundant instructions already in system prompt (saves ~150 tokens/call)
+        # System prompt already contains: difficulty distribution, question requirements, format rules
+        prompt = f"""Thema: {topic}
+Seitenbereich: {start_page} bis {end_page}
 
 MATERIAL:
 {context_text}
 
-AUFGABE:
-Erstelle ein Quiz mit 3-5 Fragen (bei komplexen Themen können es auch mehr sein, max. 8), die das VERSTÄNDNIS prüfen.
-
-Schwierigkeitsverteilung:
-- 1-2 leichte Fragen (Grundverständnis)
-- 1 mittlere Frage (Anwendung)
-- Mindestens 1 schwere Frage (tiefes Verständnis, Analyse)
-
-Jede Frage muss:
-- Genau 4 Antwortmöglichkeiten haben (A, B, C, D)
-- Eine Erklärung der richtigen Antwort enthalten
-- Das Verständnis prüfen, nicht das Auswendiglernen
-
-Gib das Quiz im JSON-Format zurück (verwende das QuizData Schema)."""
+Erstelle jetzt das Quiz basierend auf dem obigen Material."""
         
         # Prepare LLM with structured output
         # Use descriptive run_name for Langfuse tracking (consistent with other agents)

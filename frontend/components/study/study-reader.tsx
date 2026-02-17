@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import { Panel, Group, Separator as PanelResizeHandle } from 'react-resizable-panels'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
@@ -9,6 +9,7 @@ import { ChatInterface } from './chat-interface'
 import { CongratulationsScreen } from './congratulations-screen'
 import { useChatSession } from '@/hooks/use-chat-session'
 import { toast } from 'sonner'
+import { createClient } from '@/lib/supabase/client'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -30,18 +31,24 @@ interface Snippet {
 
 interface StudyReaderProps {
   materialId: string
+  materialName?: string
   courseId: string
+  courseName?: string
   pdfUrl: string
   pageCount: number
   userId: string
+  initialPage?: number  // Optional initial page from URL query param (for deep linking from Quick Chat)
 }
 
 export function StudyReader({
   materialId,
+  materialName,
   courseId,
+  courseName,
   pdfUrl,
   pageCount,
   userId,
+  initialPage,
 }: StudyReaderProps) {
   const [showCongratulations, setShowCongratulations] = useState(false)
   const [showTools, setShowTools] = useState(() => {
@@ -51,7 +58,64 @@ export function StudyReader({
     }
     return false
   })
+  const [autoExplainOnPageChange, setAutoExplainOnPageChange] = useState(() => {
+    // Check localStorage first for immediate value
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('auto_explain_on_page_change')
+      if (saved !== null) {
+        return saved === 'true'
+      }
+    }
+    return true
+  })
   const chatPanelRef = useRef<HTMLDivElement | null>(null)
+
+  // Load user preference for auto-explain on page change from database
+  useEffect(() => {
+    const loadPreference = async () => {
+      const supabase = createClient()
+      try {
+        const { data: prefs } = await supabase
+          .from('user_preferences')
+          .select('auto_explain_on_page_change')
+          .eq('user_id', userId)
+          .single()
+        
+        if (prefs?.auto_explain_on_page_change !== undefined) {
+          setAutoExplainOnPageChange(prefs.auto_explain_on_page_change)
+          // Sync to localStorage
+          localStorage.setItem('auto_explain_on_page_change', String(prefs.auto_explain_on_page_change))
+        }
+      } catch (error) {
+        // Use default (true) if preference not found
+        console.log('[StudyReader] Using default auto-explain setting')
+      }
+    }
+    
+    loadPreference()
+  }, [userId])
+
+  // Listen for setting changes (when user changes setting in settings dialog)
+  useEffect(() => {
+    // Cross-tab changes via localStorage
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'auto_explain_on_page_change' && e.newValue !== null) {
+        setAutoExplainOnPageChange(e.newValue === 'true')
+      }
+    }
+    
+    // Same-tab changes via custom event
+    const handleCustomEvent = (e: CustomEvent<boolean>) => {
+      setAutoExplainOnPageChange(e.detail)
+    }
+    
+    window.addEventListener('storage', handleStorageChange)
+    window.addEventListener('autoExplainSettingChanged', handleCustomEvent as EventListener)
+    return () => {
+      window.removeEventListener('storage', handleStorageChange)
+      window.removeEventListener('autoExplainSettingChanged', handleCustomEvent as EventListener)
+    }
+  }, [])
 
   const {
     messages,
@@ -62,11 +126,16 @@ export function StudyReader({
     handleSendMessage,
     handlePageChange,
     handleQuizComplete
-  } = useChatSession(materialId, userId, pageCount)
+  } = useChatSession(materialId, userId, pageCount, initialPage, autoExplainOnPageChange)
 
-  // Track all snippets for the material, and current page's snippets
+  // Track all snippets for the material
   const [allSnippets, setAllSnippets] = useState<Snippet[]>([])
-  const [pageSnippets, setPageSnippets] = useState<Snippet[]>([])
+  
+  // OPTIMIZED: Derive pageSnippets with useMemo instead of useState + useEffect
+  const pageSnippets = useMemo(
+    () => allSnippets.filter(s => s.page_number === currentPage),
+    [allSnippets, currentPage]
+  )
 
   // Fetch all snippets for material
   const fetchSnippets = useCallback(async () => {
@@ -86,11 +155,7 @@ export function StudyReader({
     fetchSnippets()
   }, [fetchSnippets])
 
-  // Filter snippets for current page when page or snippets change
-  useEffect(() => {
-    const snippetsForPage = allSnippets.filter(s => s.page_number === currentPage)
-    setPageSnippets(snippetsForPage)
-  }, [currentPage, allSnippets])
+  // Note: pageSnippets is now derived with useMemo above, no useEffect needed
 
   const handleSaveSnippet = async (blob: Blob) => {
     // Check if we've reached the limit
@@ -166,7 +231,9 @@ export function StudyReader({
       {showCongratulations && (
         <CongratulationsScreen
           materialId={materialId}
+          materialName={materialName}
           courseId={courseId}
+          courseName={courseName}
           userId={userId}
           onClose={() => setShowCongratulations(false)}
         />

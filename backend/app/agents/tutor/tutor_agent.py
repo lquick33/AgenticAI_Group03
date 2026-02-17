@@ -38,6 +38,14 @@ class TutorState(State):
     material_id: Optional[str] = None
     user_id: Optional[str] = None
     course_material_summary: Optional[dict] = None
+    # Recency / session continuity hints (populated by API layer, derived from DB timestamps)
+    # These are intended to be used by the system prompt (Langfuse) to adjust verbosity:
+    # - If the last interaction was very recent, skip lengthy re-introductions.
+    conversation_has_history: Optional[bool] = None
+    last_message_at: Optional[str] = None  # ISO timestamp string (UTC)
+    last_assistant_message_at: Optional[str] = None  # ISO timestamp string (UTC)
+    seconds_since_last_message: Optional[int] = None
+    seconds_since_last_assistant_message: Optional[int] = None
 
 
 class StateAwareToolNode(ToolNode):
@@ -85,17 +93,12 @@ class StateAwareToolNode(ToolNode):
                     args = dict(getattr(tool_call, "args", {}) or {})
                 
                 # Inject state values for get_page_analysis tool
+                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
                 if tool_name == "get_page_analysis":
-                    # Always inject course_material_id from state if missing
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    
-                    # Inject user_id from state if missing
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
-                    
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                     # Only inject page_number if not explicitly provided by LLM
                     # (LLM might specify a different page number, like page 30)
                     if "page_number" not in args or args.get("page_number") is None:
@@ -103,31 +106,29 @@ class StateAwareToolNode(ToolNode):
                             args["page_number"] = input["current_page"]
                 
                 # Inject state values for get_course_material_summary tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "get_course_material_summary":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                 
                 # Inject state values for create_quiz tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "create_quiz":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                 
                 # Inject state values for get_page_image tool
+                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
                 elif tool_name == "get_page_image":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
+                    # Only inject page_number if not explicitly provided by LLM
                     if "page_number" not in args or args.get("page_number") is None:
                         if input.get("current_page"):
                             args["page_number"] = input["current_page"]
@@ -189,17 +190,12 @@ class StateAwareToolNode(ToolNode):
                     args = dict(getattr(tool_call, "args", {}) or {})
                 
                 # Inject state values for get_page_analysis tool
+                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
                 if tool_name == "get_page_analysis":
-                    # Always inject course_material_id from state if missing
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    
-                    # Inject user_id from state if missing
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
-                    
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                     # Only inject page_number if not explicitly provided by LLM
                     # (LLM might specify a different page number, like page 30)
                     if "page_number" not in args or args.get("page_number") is None:
@@ -207,31 +203,29 @@ class StateAwareToolNode(ToolNode):
                             args["page_number"] = input["current_page"]
                 
                 # Inject state values for get_course_material_summary tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "get_course_material_summary":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                 
                 # Inject state values for create_quiz tool
+                # ALWAYS override from state to prevent LLM hallucination
                 elif tool_name == "create_quiz":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
                 
                 # Inject state values for get_page_image tool
+                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
                 elif tool_name == "get_page_image":
-                    if "course_material_id" not in args or not args.get("course_material_id"):
-                        if input.get("material_id"):
-                            args["course_material_id"] = input["material_id"]
-                    if "user_id" not in args or not args.get("user_id"):
-                        if input.get("user_id"):
-                            args["user_id"] = input["user_id"]
+                    if input.get("material_id"):
+                        args["course_material_id"] = input["material_id"]
+                    if input.get("user_id"):
+                        args["user_id"] = input["user_id"]
+                    # Only inject page_number if not explicitly provided by LLM
                     if "page_number" not in args or args.get("page_number") is None:
                         if input.get("current_page"):
                             args["page_number"] = input["current_page"]
@@ -289,6 +283,12 @@ class TutorAgent(BaseAgent):
         # Store configuration
         self.language = language
         self.personality_config = personality_config or {}
+        
+        # TOKEN OPTIMIZATION: Cache for enhanced prompts and state tracking
+        # This avoids rebuilding identical prompts and reduces redundant context
+        self._cached_enhanced_prompt: Optional[str] = None
+        self._cached_state_hash: Optional[str] = None
+        self._last_material_id: Optional[str] = None  # Track material changes for conditional summary
         
         # Langfuse client for prompt management
         self.langfuse_client = get_langfuse_client()
@@ -438,6 +438,25 @@ class TutorAgent(BaseAgent):
             }.get(encouragement, "You regularly encourage the student and confirm progress.")
         
         return formality_text, humor_text, encouragement_text
+    
+    def _compute_state_hash(self, state: dict) -> str:
+        """
+        Compute a hash of state values relevant for prompt caching.
+        Used to detect when the enhanced prompt needs to be rebuilt.
+        
+        TOKEN OPTIMIZATION: If hash matches cached hash, we can reuse the cached prompt.
+        """
+        import hashlib
+        # Only hash the values that affect the enhanced prompt
+        material_id = state.get("material_id", "")
+        current_page = state.get("current_page", "")
+        user_id = state.get("user_id", "")
+        # Include a truncated summary hash (first 100 chars) to detect major changes
+        summary = state.get("course_material_summary", "")
+        summary_preview = str(summary)[:100] if summary else ""
+        
+        hash_input = f"{material_id}|{current_page}|{user_id}|{summary_preview}"
+        return hashlib.md5(hash_input.encode()).hexdigest()
     
     def _build_graph(self) -> None:
         """Build the LangGraph workflow for the tutor agent."""
@@ -649,25 +668,83 @@ class TutorAgent(BaseAgent):
             else:
                 context_parts.append(f"Current slide: Page {state['current_page']}")
         
-        if state.get("material_id"):
+        current_material_id = state.get("material_id")
+        if current_material_id:
             if self.language == "de":
-                context_parts.append(f"Material-ID: {state['material_id']}")
+                context_parts.append(f"Material-ID: {current_material_id}")
             else:
-                context_parts.append(f"Material ID: {state['material_id']}")
+                context_parts.append(f"Material ID: {current_material_id}")
+
+        # Recency / continuity signals (provided by API layer)
+        # Keep these short; the system prompt can decide how to use them.
+        if state.get("conversation_has_history") is not None:
+            if self.language == "de":
+                context_parts.append(
+                    f"Hat Chat-Verlauf: {bool(state.get('conversation_has_history'))}"
+                )
+            else:
+                context_parts.append(
+                    f"Has chat history: {bool(state.get('conversation_has_history'))}"
+                )
+
+        if state.get("seconds_since_last_message") is not None:
+            if self.language == "de":
+                context_parts.append(
+                    f"Zeit seit letzter Nachricht: {state.get('seconds_since_last_message')} Sekunden"
+                )
+            else:
+                context_parts.append(
+                    f"Time since last message: {state.get('seconds_since_last_message')} seconds"
+                )
+
+        if state.get("seconds_since_last_assistant_message") is not None:
+            if self.language == "de":
+                context_parts.append(
+                    f"Zeit seit letzter Tutor-Antwort: {state.get('seconds_since_last_assistant_message')} Sekunden"
+                )
+            else:
+                context_parts.append(
+                    f"Time since last tutor reply: {state.get('seconds_since_last_assistant_message')} seconds"
+                )
+
+        if state.get("last_message_at"):
+            if self.language == "de":
+                context_parts.append(f"Letzte Nachricht um (UTC): {state.get('last_message_at')}")
+            else:
+                context_parts.append(f"Last message at (UTC): {state.get('last_message_at')}")
+
+        if state.get("last_assistant_message_at"):
+            if self.language == "de":
+                context_parts.append(f"Letzte Tutor-Antwort um (UTC): {state.get('last_assistant_message_at')}")
+            else:
+                context_parts.append(f"Last tutor reply at (UTC): {state.get('last_assistant_message_at')}")
         
-        # Add course material summary to context if available
-        if state.get("course_material_summary"):
+        # TOKEN OPTIMIZATION: Only include summary on first call or when material changes
+        # This saves ~200-500 tokens on subsequent calls within the same material
+        material_changed = (self._last_material_id is None or 
+                           self._last_material_id != current_material_id)
+        
+        # Add course material summary to context if available AND material changed
+        # TOKEN OPTIMIZATION: Truncate to 500 chars and use compact JSON (saves ~200-1500 tokens/call)
+        if state.get("course_material_summary") and material_changed:
             summary = state["course_material_summary"]
-            # Format summary nicely
+            # Format summary compactly (no indent) and truncate to save tokens
             if isinstance(summary, dict):
-                summary_text = json.dumps(summary, ensure_ascii=False, indent=2)
+                summary_text = json.dumps(summary, ensure_ascii=False, separators=(',', ':'))[:500]
+                if len(json.dumps(summary, ensure_ascii=False, separators=(',', ':'))) > 500:
+                    summary_text += "..."
             else:
-                summary_text = str(summary)
+                summary_text = str(summary)[:500]
+                if len(str(summary)) > 500:
+                    summary_text += "..."
             
             if self.language == "de":
                 context_parts.append(f"\n\nVORLESUNGSÜBERSICHT:\n{summary_text}")
             else:
                 context_parts.append(f"\n\nCOURSE OVERVIEW:\n{summary_text}")
+        
+        # Update last material_id for next call
+        self._last_material_id = current_material_id
         
         context_str = "\n".join(context_parts) if context_parts else ""
         
@@ -723,49 +800,27 @@ class TutorAgent(BaseAgent):
                 if isinstance(msg, SystemMessage):
                     # Enhance existing system message with context
                     enhanced_content = f"{msg.content}\n\nCONTEXT:\n{context_str}"
+                    # TOKEN OPTIMIZATION: Only include current runtime values (~50 tokens)
+                    # Static tool/quiz instructions are already in Langfuse prompt (saves ~150 tokens/call)
                     if self.language == "de":
                         enhanced_content += (
-                            "\n\nWICHTIG: Wenn du Tools verwendest, werden folgende Argumente "
-                            "automatisch aus dem Kontext gefüllt:\n"
-                            f"- get_page_analysis: course_material_id, page_number, user_id\n"
-                            f"- get_course_material_summary: course_material_id, user_id\n"
-                            f"- create_quiz: course_material_id, user_id\n"
-                            f"- get_page_image: course_material_id, page_number, user_id\n"
-                            f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
-                            f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
-                        )
-                        # Add quiz-specific instructions
-                        enhanced_content += (
-                            "\n\nWICHTIG FÜR QUIZ-ERSTELLUNG:\n"
-                            "- Wenn du ein Quiz erstellen möchtest, sende NUR eine kurze Nachricht "
-                            "(z.B. 'Wir haben das Thema XY abgeschlossen, hier ist dein Quiz') "
-                            "und rufe dann das create_quiz Tool auf.\n"
-                            "- Sende KEINE lange Erklärung der aktuellen Folie, wenn du gleichzeitig ein Quiz erstellst.\n"
-                            "- Nach dem create_quiz Tool Call wird der Graph beendet - du sollst danach nicht mehr schreiben.\n"
-                            "- Das Quiz wird im Chat angezeigt und der Student kann es bearbeiten.\n"
-                            "- Erst nachdem der Student das Quiz abgeschlossen hat, kannst du Feedback geben."
+                            f"\n\nAktuelle Kontextwerte: "
+                            f"course_material_id={state.get('material_id', 'unbekannt')}, "
+                            f"page_number={state.get('current_page', 1)}, "
+                            f"user_id={state.get('user_id', 'unbekannt')}, "
+                            f"conversation_has_history={state.get('conversation_has_history')}, "
+                            f"seconds_since_last_message={state.get('seconds_since_last_message')}, "
+                            f"seconds_since_last_assistant_message={state.get('seconds_since_last_assistant_message')}"
                         )
                     else:
                         enhanced_content += (
-                            "\n\nIMPORTANT: When using tools, the following arguments "
-                            "are automatically filled from context:\n"
-                            f"- get_page_analysis: course_material_id, page_number, user_id\n"
-                            f"- get_course_material_summary: course_material_id, user_id\n"
-                            f"- create_quiz: course_material_id, user_id\n"
-                            f"- get_page_image: course_material_id, page_number, user_id\n"
-                            f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
-                            f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
-                        )
-                        # Add quiz-specific instructions
-                        enhanced_content += (
-                            "\n\nIMPORTANT FOR QUIZ CREATION:\n"
-                            "- If you want to create a quiz, send ONLY a short message "
-                            "(e.g., 'We have completed topic XY, here is your quiz') "
-                            "and then call the create_quiz tool.\n"
-                            "- Do NOT send a long explanation of the current slide if you are creating a quiz at the same time.\n"
-                            "- After the create_quiz tool call, the graph will end - you should not write anything after that.\n"
-                            "- The quiz will be displayed in the chat and the student can work on it.\n"
-                            "- Only after the student completes the quiz can you provide feedback."
+                            f"\n\nCurrent context values: "
+                            f"course_material_id={state.get('material_id', 'unknown')}, "
+                            f"page_number={state.get('current_page', 1)}, "
+                            f"user_id={state.get('user_id', 'unknown')}, "
+                            f"conversation_has_history={state.get('conversation_has_history')}, "
+                            f"seconds_since_last_message={state.get('seconds_since_last_message')}, "
+                            f"seconds_since_last_assistant_message={state.get('seconds_since_last_assistant_message')}"
                         )
                     messages_for_llm[i] = SystemMessage(content=enhanced_content)
                     system_message_found = True
@@ -774,49 +829,27 @@ class TutorAgent(BaseAgent):
             # If no system message found, add one with context
             if not system_message_found:
                 enhanced_content = f"{self.system_prompt}\n\nCONTEXT:\n{context_str}"
+                # TOKEN OPTIMIZATION: Only include current runtime values (~50 tokens)
+                # Static tool/quiz instructions are already in Langfuse prompt (saves ~150 tokens/call)
                 if self.language == "de":
                     enhanced_content += (
-                        "\n\nWICHTIG: Wenn du Tools verwendest, werden folgende Argumente "
-                        "automatisch aus dem Kontext gefüllt:\n"
-                        f"- get_page_analysis: course_material_id, page_number, user_id\n"
-                        f"- get_course_material_summary: course_material_id, user_id\n"
-                        f"- create_quiz: course_material_id, user_id\n"
-                        f"- get_page_image: course_material_id, page_number, user_id\n"
-                        f"Aktuelle Werte: course_material_id={state.get('material_id', 'unbekannt')}, "
-                        f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unbekannt')}"
-                    )
-                    # Add quiz-specific instructions
-                    enhanced_content += (
-                        "\n\nWICHTIG FÜR QUIZ-ERSTELLUNG:\n"
-                        "- Wenn du ein Quiz erstellen möchtest, sende NUR eine kurze Nachricht "
-                        "(z.B. 'Wir haben das Thema XY abgeschlossen, hier ist dein Quiz') "
-                        "und rufe dann das create_quiz Tool auf.\n"
-                        "- Sende KEINE lange Erklärung der aktuellen Folie, wenn du gleichzeitig ein Quiz erstellst.\n"
-                        "- Nach dem create_quiz Tool Call wird der Graph beendet - du sollst danach nicht mehr schreiben.\n"
-                        "- Das Quiz wird im Chat angezeigt und der Student kann es bearbeiten.\n"
-                        "- Erst nachdem der Student das Quiz abgeschlossen hat, kannst du Feedback geben."
+                        f"\n\nAktuelle Kontextwerte: "
+                        f"course_material_id={state.get('material_id', 'unbekannt')}, "
+                        f"page_number={state.get('current_page', 1)}, "
+                        f"user_id={state.get('user_id', 'unbekannt')}, "
+                        f"conversation_has_history={state.get('conversation_has_history')}, "
+                        f"seconds_since_last_message={state.get('seconds_since_last_message')}, "
+                        f"seconds_since_last_assistant_message={state.get('seconds_since_last_assistant_message')}"
                     )
                 else:
                     enhanced_content += (
-                        "\n\nIMPORTANT: When using tools, the following arguments "
-                        "are automatically filled from context:\n"
-                        f"- get_page_analysis: course_material_id, page_number, user_id\n"
-                        f"- get_course_material_summary: course_material_id, user_id\n"
-                        f"- create_quiz: course_material_id, user_id\n"
-                        f"- get_page_image: course_material_id, page_number, user_id\n"
-                        f"Current values: course_material_id={state.get('material_id', 'unknown')}, "
-                        f"page_number={state.get('current_page', 1)}, user_id={state.get('user_id', 'unknown')}"
-                    )
-                    # Add quiz-specific instructions
-                    enhanced_content += (
-                        "\n\nIMPORTANT FOR QUIZ CREATION:\n"
-                        "- If you want to create a quiz, send ONLY a short message "
-                        "(e.g., 'We have completed topic XY, here is your quiz') "
-                        "and then call the create_quiz tool.\n"
-                        "- Do NOT send a long explanation of the current slide if you are creating a quiz at the same time.\n"
-                        "- After the create_quiz tool call, the graph will end - you should not write anything after that.\n"
-                        "- The quiz will be displayed in the chat and the student can work on it.\n"
-                        "- Only after the student completes the quiz can you provide feedback."
+                        f"\n\nCurrent context values: "
+                        f"course_material_id={state.get('material_id', 'unknown')}, "
+                        f"page_number={state.get('current_page', 1)}, "
+                        f"user_id={state.get('user_id', 'unknown')}, "
+                        f"conversation_has_history={state.get('conversation_has_history')}, "
+                        f"seconds_since_last_message={state.get('seconds_since_last_message')}, "
+                        f"seconds_since_last_assistant_message={state.get('seconds_since_last_assistant_message')}"
                     )
                 messages_for_llm.insert(0, SystemMessage(content=enhanced_content))
         
@@ -838,6 +871,10 @@ class TutorAgent(BaseAgent):
                 "langfuse_session_id": state.get("material_id"),  # Use material_id as session
                 "material_id": state.get("material_id"),
                 "current_page": state.get("current_page"),
+                # Recency/continuity hints (useful for debugging prompt behavior in traces)
+                "conversation_has_history": state.get("conversation_has_history"),
+                "seconds_since_last_message": state.get("seconds_since_last_message"),
+                "seconds_since_last_assistant_message": state.get("seconds_since_last_assistant_message"),
                 "agent_name": self.name,
                 "language": self.language
             }

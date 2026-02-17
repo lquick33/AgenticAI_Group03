@@ -4,22 +4,28 @@ API Endpoints
 FastAPI route handlers for PDF upload and processing.
 """
 
+import asyncio
 import io
 import json
 import logging
 import sys
 import traceback
 import uuid
-from typing import Optional, AsyncGenerator
+import time
+from datetime import datetime, timezone
+from collections import defaultdict
+from typing import Optional, AsyncGenerator, Any
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Form, BackgroundTasks, Path, Body, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from pdf2image import convert_from_bytes, pdfinfo_from_bytes
 from PIL import Image
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
 from app.agents.tutor import TutorAgent
+from app.agents.quickchat import QuickChatAgent
 from app.services.analyzer import get_gemini_model
 
 from app.models.schemas import (
@@ -38,6 +44,12 @@ from app.models.schemas import (
     QuizSubmit,
     QuizResult,
     QuizResponse,
+    QuickChatInitiateRequest,
+    QuickChatWarmupRequest,
+    QuickChatMessageRequest,
+    QuickChatSearchRequest,
+    QuickChatSearchResponse,
+    QuickChatSearchResult,
 )
 from app.services.pdf_processor import process_pdf_background
 from app.services.snippet_service import (
@@ -54,12 +66,19 @@ from app.services.storage import (
     get_page_analysis,
     get_page_analysis_id,
     get_flashcards_for_material,
+    get_cached_flashcards_for_material,
     get_course_material_summary,
     update_course_material_filename,
     delete_course_material,
+    get_study_history,
+    sync_anki_study_history,
+    search_page_analyses,
+    get_user_courses_with_materials,
+    get_user_course_counts,
 )
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_apkg
+from app.services.anki import AnkiClient, AnkiConnectionError, AnkiError, DailyStudyStats
 from app.services.flashcard_task_service import get_flashcard_task_service
 from app.services.observability import get_langfuse_client
 from app.services.session_storage import (
@@ -81,6 +100,169 @@ import os
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _parse_supabase_created_at(value: Any) -> Optional[datetime]:
+    """
+    Parse Supabase `created_at` values (usually ISO strings) into UTC datetimes.
+    Returns None if parsing fails.
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        s = value.strip()
+        # Common Supabase format: "2026-02-17T12:34:56.789Z"
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        # Some drivers may return offsets without minutes/colon (e.g. "+00", "+0000").
+        # Normalize these to "+00:00" so datetime.fromisoformat can parse them.
+        if len(s) >= 3 and (s[-3] in ["+", "-"]) and s[-2:].isdigit():
+            # "+00" -> "+00:00"
+            s = s + ":00"
+        elif len(s) >= 5 and (s[-5] in ["+", "-"]) and s[-4:].isdigit() and s[-3] != ":":
+            # "+0000" -> "+00:00"
+            s = s[:-2] + ":" + s[-2:]
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            return None
+    else:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _to_utc_iso_z(dt: datetime) -> str:
+    """Return UTC ISO string with trailing 'Z' and no microseconds."""
+    dt_utc = dt.astimezone(timezone.utc).replace(microsecond=0)
+    return dt_utc.isoformat().replace("+00:00", "Z")
+
+
+def _build_recency_state_from_message_rows_desc(rows_desc: list[dict]) -> dict:
+    """
+    Build TutorAgent state fields for recency/continuity from message rows.
+    Expects rows in newest-first order and dicts containing: role, created_at.
+    """
+    now = datetime.now(timezone.utc)
+    last_dt: Optional[datetime] = None
+    last_assistant_dt: Optional[datetime] = None
+
+    for row in rows_desc or []:
+        if last_dt is None:
+            last_dt = _parse_supabase_created_at(row.get("created_at"))
+        if last_assistant_dt is None and row.get("role") == "assistant":
+            last_assistant_dt = _parse_supabase_created_at(row.get("created_at"))
+        if last_dt is not None and last_assistant_dt is not None:
+            break
+
+    state: dict = {
+        "conversation_has_history": bool(last_dt),
+        "last_message_at": _to_utc_iso_z(last_dt) if last_dt else None,
+        "last_assistant_message_at": _to_utc_iso_z(last_assistant_dt) if last_assistant_dt else None,
+        "seconds_since_last_message": None,
+        "seconds_since_last_assistant_message": None,
+    }
+
+    if last_dt:
+        state["seconds_since_last_message"] = max(0, int((now - last_dt).total_seconds()))
+    if last_assistant_dt:
+        state["seconds_since_last_assistant_message"] = max(0, int((now - last_assistant_dt).total_seconds()))
+
+    return state
+
+
+# =============================================================================
+# Rate Limiting for Login Endpoints
+# =============================================================================
+
+class RateLimiter:
+    """
+    Simple in-memory rate limiter for protecting sensitive endpoints.
+    
+    Limits requests per IP address within a time window.
+    Resets on server restart (acceptable for this use case).
+    """
+    
+    def __init__(self, max_requests: int = 5, window_seconds: int = 900):
+        """
+        Args:
+            max_requests: Maximum number of requests allowed in the window
+            window_seconds: Time window in seconds (default: 15 minutes)
+        """
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.requests: dict[str, list[float]] = defaultdict(list)
+    
+    def _cleanup_old_requests(self, key: str) -> None:
+        """Remove expired requests from tracking."""
+        current_time = time.time()
+        cutoff = current_time - self.window_seconds
+        self.requests[key] = [t for t in self.requests[key] if t > cutoff]
+    
+    def is_rate_limited(self, key: str) -> tuple[bool, int]:
+        """
+        Check if a key (IP address) is rate limited.
+        
+        Returns:
+            Tuple of (is_limited, remaining_requests)
+        """
+        self._cleanup_old_requests(key)
+        current_count = len(self.requests[key])
+        remaining = max(0, self.max_requests - current_count)
+        return current_count >= self.max_requests, remaining
+    
+    def record_request(self, key: str) -> None:
+        """Record a request for rate limiting."""
+        self._cleanup_old_requests(key)
+        self.requests[key].append(time.time())
+    
+    def get_retry_after(self, key: str) -> int:
+        """Get seconds until rate limit resets."""
+        if not self.requests[key]:
+            return 0
+        oldest = min(self.requests[key])
+        return max(0, int(self.window_seconds - (time.time() - oldest)))
+
+
+# Rate limiter for AnkiWeb login: 5 attempts per 15 minutes per IP
+ankiweb_login_limiter = RateLimiter(max_requests=5, window_seconds=900)
+
+
+# =============================================================================
+# AnkiWeb Status Cache
+# =============================================================================
+
+# Cache for AnkiWeb login status to avoid slow Docker/AnkiConnect checks
+# TTL: 30 seconds - long enough for UI responsiveness, short enough to catch changes
+_ankiweb_status_cache: dict = {
+    "data": None,
+    "timestamp": 0.0
+}
+ANKIWEB_STATUS_CACHE_TTL = 30  # seconds
+
+
+def _clear_ankiweb_status_cache() -> None:
+    """Clear the AnkiWeb status cache (call after login/logout)."""
+    _ankiweb_status_cache["data"] = None
+    _ankiweb_status_cache["timestamp"] = 0.0
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP from request, handling proxies."""
+    # Check for forwarded header (when behind reverse proxy)
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    # Check for real IP header
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip
+    # Fallback to direct client
+    return request.client.host if request.client else "unknown"
 
 
 def generate_message_id(prefix: str = "msg") -> str:
@@ -1121,6 +1303,61 @@ async def initiate_chat(
 
                 # Update state with current page information (according to AGENT_DEVELOPMENT_RULES.md)
                 # The agent should always know which page we are currently viewing
+                #
+                # Recency / continuity hints:
+                # We compute these from Supabase `messages.created_at` so the TutorAgent system prompt
+                # can decide whether to skip long re-introductions when the last interaction was very recent.
+                recency_state: dict = {}
+                try:
+                    if stored_messages:
+                        # stored_messages are oldest-first (see load_conversation_with_messages), convert to newest-first
+                        recency_state = _build_recency_state_from_message_rows_desc(list(reversed(stored_messages)))
+                    else:
+                        # Fallback: query only lightweight metadata (role + created_at)
+                        msg_meta_resp = (
+                            client.table("messages")
+                            .select("role, created_at")
+                            .eq("conversation_id", conversation_id)
+                            .order("created_at", desc=True)
+                            .limit(30)
+                            .execute()
+                        )
+                        recency_state = _build_recency_state_from_message_rows_desc(msg_meta_resp.data or [])
+                except Exception as recency_error:
+                    # Non-critical: do not break chat init if timestamp parsing/query fails
+                    logger.debug(f"Failed to compute message recency state: {recency_error}")
+                    recency_state = {}
+
+                # Ensure history flag is consistent with timestamp-derived recency_state.
+                # We keep the greeting logic (conversation_has_history) unchanged, but for the TutorAgent
+                # prompt we want a reliable "has history" signal. If we have a valid last_message_at (or
+                # last_assistant_message_at), we definitely have stored history even if earlier bootstrap
+                # logic didn't load messages (e.g. existing thread, non-initial open, etc.).
+                has_history_for_prompt = bool(
+                    conversation_has_history
+                    or recency_state.get("last_message_at")
+                    or recency_state.get("last_assistant_message_at")
+                )
+                recency_state["conversation_has_history"] = has_history_for_prompt
+
+                logger.debug(
+                    "Tutor recency_state (initiate): "
+                    f"conversation_has_history={recency_state.get('conversation_has_history')}, "
+                    f"seconds_since_last_message={recency_state.get('seconds_since_last_message')}, "
+                    f"seconds_since_last_assistant_message={recency_state.get('seconds_since_last_assistant_message')}, "
+                    f"last_message_at={recency_state.get('last_message_at')}, "
+                    f"last_assistant_message_at={recency_state.get('last_assistant_message_at')}"
+                )
+
+                # Variables available to Langfuse HumanMessage prompts (page open / greetings).
+                # You can reference these in Langfuse as {{seconds_since_last_message}}, etc.
+                recency_prompt_vars = {
+                    "conversation_has_history": recency_state.get("conversation_has_history"),
+                    "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                    "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
+                    "last_message_at": recency_state.get("last_message_at"),
+                    "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                }
                 
                 # Determine greeting type based on is_initial_open flag and conversation history
                 if request.is_initial_open:
@@ -1140,7 +1377,8 @@ async def initiate_chat(
                             initial_human_content = get_tutor_prompt(
                                 "tutor-agent/normal-greeting-after-welcome-back",
                                 page_number=request.page_number,
-                                summary=summary
+                                summary=summary,
+                                **recency_prompt_vars,
                             )
                         else:
                             # No recent Welcome Back message, send one now
@@ -1167,7 +1405,8 @@ async def initiate_chat(
                                 "tutor-agent/welcome-back",
                                 completed_pages=completed_pages,
                                 total_pages=total_pages_safe,
-                                topics_instructions=topics_instructions
+                                topics_instructions=topics_instructions,
+                                **recency_prompt_vars,
                             )
                     else:
                         # First visit for this material (no previous chat history)
@@ -1176,7 +1415,8 @@ async def initiate_chat(
                             "tutor-agent/first-visit",
                             page_number=request.page_number,
                             total_pages=total_pages_safe,
-                            summary=summary
+                            summary=summary,
+                            **recency_prompt_vars,
                         )
 
                     # Fix incomplete tool call pairs in base_messages before adding new messages
@@ -1194,6 +1434,12 @@ async def initiate_chat(
                         "material_id": request.material_id,
                         "user_id": request.user_id,
                         "course_material_summary": course_summary,
+                        # Recency / continuity hints for the TutorAgent prompt
+                        "conversation_has_history": recency_state.get("conversation_has_history"),
+                        "last_message_at": recency_state.get("last_message_at"),
+                        "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                        "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                        "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                     }
                 else:
                     # This is just a page change within an ongoing session
@@ -1218,6 +1464,12 @@ async def initiate_chat(
                                 "material_id": request.material_id,
                                 "user_id": request.user_id,
                                 "course_material_summary": course_summary,
+                                # Recency / continuity hints for the TutorAgent prompt
+                                "conversation_has_history": recency_state.get("conversation_has_history"),
+                                "last_message_at": recency_state.get("last_message_at"),
+                                "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                                "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                                "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                             }
                             
                             # Update state silently without generating a response
@@ -1258,7 +1510,8 @@ async def initiate_chat(
                                     content=get_tutor_prompt(
                                         "tutor-agent/page-change-new-thread",
                                         page_number=request.page_number,
-                                        summary=summary
+                                        summary=summary,
+                                        **recency_prompt_vars,
                                     )
                                 ),
                             ],
@@ -1266,6 +1519,12 @@ async def initiate_chat(
                             "material_id": request.material_id,
                             "user_id": request.user_id,
                             "course_material_summary": course_summary,
+                            # Recency / continuity hints for the TutorAgent prompt
+                            "conversation_has_history": recency_state.get("conversation_has_history"),
+                            "last_message_at": recency_state.get("last_message_at"),
+                            "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                            "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                            "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                         }
                     else:
                         # Existing thread in this backend process: load existing messages from snapshot
@@ -1289,6 +1548,12 @@ async def initiate_chat(
                                 "material_id": request.material_id,
                                 "user_id": request.user_id,
                                 "course_material_summary": snapshot.values.get("course_material_summary") or course_summary,
+                                # Recency / continuity hints for the TutorAgent prompt
+                                "conversation_has_history": recency_state.get("conversation_has_history"),
+                                "last_message_at": recency_state.get("last_message_at"),
+                                "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                                "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                                "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                             }
                             
                             # Update state silently without generating a response
@@ -1327,7 +1592,8 @@ async def initiate_chat(
                             content=get_tutor_prompt(
                                 "tutor-agent/page-change-existing-thread",
                                 page_number=request.page_number,
-                                summary=summary
+                                summary=summary,
+                                **recency_prompt_vars,
                             )
                         )
 
@@ -1360,6 +1626,12 @@ async def initiate_chat(
                             "material_id": request.material_id,
                             "user_id": request.user_id,
                             "course_material_summary": existing_summary,
+                            # Recency / continuity hints for the TutorAgent prompt
+                            "conversation_has_history": recency_state.get("conversation_has_history"),
+                            "last_message_at": recency_state.get("last_message_at"),
+                            "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                            "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                            "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                         }
                 
                 # Prepare buffer for assistant response text for persistence
@@ -1805,13 +2077,24 @@ async def send_chat_message(
                 material_id = request.material_id
                 user_id = request.user_id
                 
-                if snapshot and snapshot.values:
-                    # Preserve current_page from existing state if available
+                # Priority for current_page:
+                # 1. Request page_number (explicit from frontend - most up-to-date)
+                # 2. LangGraph state (from previous agent invocations)
+                # 3. Conversation metadata (fallback from database)
+                if request.page_number is not None:
+                    current_page = request.page_number
+                    logger.info(f"Using page_number from request: {current_page}")
+                elif snapshot and snapshot.values:
                     current_page = snapshot.values.get("current_page")
-                # If LangGraph state is empty (e.g., after restart), fall back to conversation metadata
+                    if current_page:
+                        logger.info(f"Using current_page from LangGraph state: {current_page}")
+                
+                # If still None, fall back to conversation metadata
                 if current_page is None:
                     metadata = conversation.get("metadata") or {}
                     current_page = metadata.get("last_page_number")
+                    if current_page:
+                        logger.info(f"Using last_page_number from conversation metadata: {current_page}")
                 
                 # Ensure course_material_summary is in state (for old conversations)
                 course_summary = None
@@ -1828,11 +2111,62 @@ async def send_chat_message(
                     except Exception:
                         pass  # Non-critical
                 
+                # If we have a current page, fetch its summary to provide context
+                page_context = ""
+                if current_page is not None:
+                    try:
+                        page_analysis = get_page_analysis(
+                            course_material_id=course_material_id,
+                            page_number=current_page,
+                            user_id=request.user_id
+                        )
+                        if page_analysis:
+                            summary = page_analysis.get("summary") or page_analysis.get("content", "")
+                            if summary:
+                                page_context = f"\n\n[Kontext: Der Student ist auf Seite {current_page}. Inhalt dieser Seite: {summary[:500]}{'...' if len(summary) > 500 else ''}]"
+                                logger.info(f"Added page context for page {current_page}")
+                    except Exception as e:
+                        logger.warning(f"Could not fetch page analysis for context: {e}")
+                
                 # Add user message to existing thread and preserve state
+                # Include page context in the message so agent knows what page user is viewing
+                message_with_context = request.message + page_context if page_context else request.message
+
+                # Recency / continuity hints (non-critical): compute from DB timestamps BEFORE adding this new message.
+                recency_state: dict = {}
+                try:
+                    msg_meta_resp = (
+                        client.table("messages")
+                        .select("role, created_at")
+                        .eq("conversation_id", conversation_id)
+                        .order("created_at", desc=True)
+                        .limit(30)
+                        .execute()
+                    )
+                    recency_state = _build_recency_state_from_message_rows_desc(msg_meta_resp.data or [])
+                except Exception as recency_error:
+                    logger.debug(f"Failed to compute message recency state: {recency_error}")
+                    recency_state = {}
+
+                logger.debug(
+                    "Tutor recency_state (message): "
+                    f"conversation_has_history={recency_state.get('conversation_has_history')}, "
+                    f"seconds_since_last_message={recency_state.get('seconds_since_last_message')}, "
+                    f"seconds_since_last_assistant_message={recency_state.get('seconds_since_last_assistant_message')}, "
+                    f"last_message_at={recency_state.get('last_message_at')}, "
+                    f"last_assistant_message_at={recency_state.get('last_assistant_message_at')}"
+                )
+
                 initial_state = {
-                    "messages": [HumanMessage(content=request.message)],
+                    "messages": [HumanMessage(content=message_with_context)],
                     "material_id": material_id,
-                    "user_id": user_id
+                    "user_id": user_id,
+                    # Recency / continuity hints for the TutorAgent prompt
+                    "conversation_has_history": recency_state.get("conversation_has_history"),
+                    "last_message_at": recency_state.get("last_message_at"),
+                    "last_assistant_message_at": recency_state.get("last_assistant_message_at"),
+                    "seconds_since_last_message": recency_state.get("seconds_since_last_message"),
+                    "seconds_since_last_assistant_message": recency_state.get("seconds_since_last_assistant_message"),
                 }
                 
                 # Only add current_page if it exists in previous state or metadata
@@ -2177,6 +2511,528 @@ async def send_chat_message(
         )
 
 
+# ============================================================================
+# Quick Chat Endpoints
+# ============================================================================
+
+# Separate checkpointer for quick chat sessions
+_quickchat_checkpointer = MemorySaver()
+
+# Pre-warmed agents storage (thread_id -> agent)
+# Used to speed up first message response by warming agent while user types
+_prewarmed_quickchat_agents: dict[str, QuickChatAgent] = {}
+
+# Pending navigation storage (thread_id -> {nav_info, timestamp})
+# Used to persist pending navigation across messages (not stored in agent state which can be overwritten)
+_pending_navigations: dict[str, dict] = {}
+
+def _cleanup_stale_pending_navigations(max_age_seconds: int = 300, max_entries: int = 100) -> None:
+    """Clean up old pending navigations to prevent memory leaks."""
+    now = time.time()
+    
+    # Remove entries older than max_age_seconds
+    stale_keys = [
+        k for k, v in _pending_navigations.items()
+        if now - v.get("_timestamp", 0) > max_age_seconds
+    ]
+    for key in stale_keys:
+        _pending_navigations.pop(key, None)
+    
+    # If still too many, remove oldest
+    if len(_pending_navigations) > max_entries:
+        sorted_items = sorted(
+            _pending_navigations.items(),
+            key=lambda x: x[1].get("_timestamp", 0)
+        )
+        for key, _ in sorted_items[:-max_entries]:
+            _pending_navigations.pop(key, None)
+
+
+@router.post("/quickchat/initiate")
+async def initiate_quickchat(
+    request: QuickChatInitiateRequest = Body(...)
+) -> dict:
+    """
+    Initiate a quick chat session.
+    
+    Returns instant JSON response with greeting and thread_id.
+    No DB calls - designed for minimal latency.
+    
+    Args:
+        request: QuickChatInitiateRequest with user_id
+        
+    Returns:
+        JSON with greeting, thread_id, and mode
+    """
+    # Create thread ID immediately (no DB call needed)
+    thread_id = f"quickchat-{request.user_id}-{uuid.uuid4()}"
+    
+    # Static greeting - no DB lookup
+    greeting = (
+        "Hallo! Ich bin dein Lernassistent. "
+        "Frag mich einfach nach einem Thema, und ich zeige dir, "
+        "wo es in deinen Vorlesungen behandelt wird!"
+    )
+    
+    return {
+        "greeting": greeting,
+        "thread_id": thread_id,
+        "mode": "discovery"
+    }
+
+
+@router.post("/quickchat/warmup")
+async def warmup_quickchat(
+    request: QuickChatWarmupRequest = Body(...)
+) -> dict:
+    """
+    Pre-warm the quick chat agent for faster first response.
+    
+    Called by frontend after receiving thread_id from initiate,
+    while user is typing their first message. This creates the agent
+    in the background so it's ready when the user sends their message.
+    
+    Args:
+        request: QuickChatWarmupRequest with user_id and thread_id
+        
+    Returns:
+        Status indicating warmup success
+    """
+    try:
+        # Check if already warmed
+        if request.thread_id in _prewarmed_quickchat_agents:
+            return {"status": "already_warmed", "thread_id": request.thread_id}
+        
+        # Create agent in background thread to not block
+        def create_agent():
+            llm = get_gemini_model()
+            # Use the same LLM for keyword extraction (lightweight task)
+            return QuickChatAgent(
+                llm=llm,
+                checkpointer=_quickchat_checkpointer,
+                keyword_extraction_llm=llm
+            )
+        
+        agent = await asyncio.to_thread(create_agent)
+        _prewarmed_quickchat_agents[request.thread_id] = agent
+        
+        # Clean up old agents (keep max 100)
+        if len(_prewarmed_quickchat_agents) > 100:
+            oldest_keys = list(_prewarmed_quickchat_agents.keys())[:-100]
+            for key in oldest_keys:
+                _prewarmed_quickchat_agents.pop(key, None)
+        
+        logger.debug(f"Pre-warmed agent for thread {request.thread_id}")
+        return {"status": "warmed", "thread_id": request.thread_id}
+        
+    except Exception as e:
+        logger.warning(f"Failed to pre-warm agent: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@router.post("/quickchat/message")
+async def send_quickchat_message(
+    request: QuickChatMessageRequest = Body(...)
+) -> StreamingResponse:
+    """
+    Send a message in a quick chat session.
+    
+    Handles both discovery mode (searching for topics) and tutoring mode
+    (after navigation to a specific page).
+    
+    Args:
+        request: QuickChatMessageRequest with user_id, message, and optional context
+        
+    Returns:
+        StreamingResponse with SSE events
+    """
+    try:
+        # Validate user
+        if not validate_user_exists(request.user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Use thread_id from request or generate one
+        thread_id = request.thread_id or f"quickchat-{request.user_id}"
+        
+        # Check for pre-warmed agent first (faster startup)
+        agent = _prewarmed_quickchat_agents.pop(thread_id, None)
+        if agent is None:
+            # No pre-warmed agent, create new one
+            llm = get_gemini_model()
+            # Use the same LLM for keyword extraction (lightweight task)
+            agent = QuickChatAgent(
+                llm=llm,
+                checkpointer=_quickchat_checkpointer,
+                keyword_extraction_llm=llm
+            )
+        else:
+            logger.debug(f"Using pre-warmed agent for thread {thread_id}")
+        
+        # Determine mode based on whether material_id is provided
+        mode = "tutoring" if request.material_id else "discovery"
+        
+        async def event_generator() -> AsyncGenerator[str, None]:
+            try:
+                config = {"configurable": {"thread_id": thread_id, "user_id": request.user_id}}
+                
+                # Check for pending navigation confirmation
+                # Use separate dictionary instead of agent state (which can be overwritten)
+                pending_nav = _pending_navigations.get(thread_id)
+                
+                # Check if user is confirming pending navigation
+                if pending_nav and mode == "tutoring":
+                    confirmation_words = ["ja", "yes", "ok", "bitte", "gerne", "mach das", "navigiere", "öffne", "zeig", "switch", "wechsel"]
+                    message_lower = request.message.lower().strip()
+                    is_confirmation = any(word in message_lower for word in confirmation_words) and len(message_lower) < 50
+                    
+                    if is_confirmation:
+                        # User confirmed - emit open_material event
+                        open_data = {
+                            "type": "open_material",
+                            "course_id": pending_nav.get("course_id"),
+                            "course_title": pending_nav.get("course_title"),
+                            "material_id": pending_nav.get("material_id"),
+                            "material_name": pending_nav.get("material_name"),
+                            "page_number": pending_nav.get("page_number")
+                        }
+                        yield f"data: {json.dumps(open_data)}\n\n"
+                        
+                        # Clear pending navigation from dictionary
+                        _pending_navigations.pop(thread_id, None)
+                        
+                        # Send confirmation message
+                        confirm_msg = {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": f"Alles klar! Ich öffne jetzt {pending_nav.get('material_name', 'das Material')} auf Seite {pending_nav.get('page_number', 1)}."
+                        }
+                        yield f"data: {json.dumps(confirm_msg)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                
+                # Build initial state
+                initial_state = {
+                    "messages": [HumanMessage(content=request.message)],
+                    "mode": mode,
+                    "user_id": request.user_id,
+                }
+                
+                # Add tutoring context if available
+                if request.material_id:
+                    initial_state["material_id"] = request.material_id
+                    initial_state["current_page"] = request.page_number
+                    initial_state["course_id"] = request.course_id
+                
+                # Stream agent response
+                assistant_response_chunks = []
+                last_sent_content = ""
+                
+                async for event in agent.graph.astream(initial_state, config=config, stream_mode="updates"):
+                    for node_name, node_output in event.items():
+                        if node_name == "agent":
+                            messages = node_output.get("messages", [])
+                            for msg in messages:
+                                if isinstance(msg, AIMessage):
+                                    # Handle tool calls
+                                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                                        for tool_call in msg.tool_calls:
+                                            tool_name = tool_call.get("name", "") if isinstance(tool_call, dict) else getattr(tool_call, "name", "")
+                                            tool_data = {
+                                                "type": "tool_call",
+                                                "tool": tool_name
+                                            }
+                                            yield f"data: {json.dumps(tool_data)}\n\n"
+                                    
+                                    # Handle text content
+                                    content_text = ""
+                                    if hasattr(msg, 'content'):
+                                        if isinstance(msg.content, str):
+                                            content_text = msg.content
+                                        elif isinstance(msg.content, list):
+                                            for part in msg.content:
+                                                if isinstance(part, str):
+                                                    content_text += part
+                                                elif isinstance(part, dict) and part.get("type") == "text":
+                                                    content_text += part.get("text", "")
+                                    
+                                    # Send incremental delta
+                                    if content_text and content_text != last_sent_content:
+                                        if last_sent_content and content_text.startswith(last_sent_content):
+                                            delta = content_text[len(last_sent_content):]
+                                            if delta:
+                                                delta_data = {
+                                                    "type": "delta",
+                                                    "role": "assistant",
+                                                    "delta": delta,
+                                                    "content": content_text
+                                                }
+                                                yield f"data: {json.dumps(delta_data)}\n\n"
+                                                last_sent_content = content_text
+                                        else:
+                                            # Send full message
+                                            msg_data = {
+                                                "type": "message",
+                                                "role": "assistant",
+                                                "content": content_text
+                                            }
+                                            yield f"data: {json.dumps(msg_data)}\n\n"
+                                            last_sent_content = content_text
+                                        
+                                        assistant_response_chunks.append(content_text)
+                        
+                        elif node_name == "tools":
+                            # Handle tool results - check for navigation requests
+                            messages = node_output.get("messages", [])
+                            for msg in messages:
+                                if isinstance(msg, ToolMessage):
+                                    try:
+                                        tool_result = json.loads(msg.content)
+                                        # Check if search found results
+                                        if tool_result.get("found") and tool_result.get("results"):
+                                            results = tool_result.get("results", [])[:5]  # Top 5 results
+                                            
+                                            # Transform nested results to flat structure for frontend
+                                            flat_results = []
+                                            for r in results:
+                                                flat_results.append({
+                                                    "course_id": r.get("course", {}).get("id"),
+                                                    "course_title": r.get("course", {}).get("title"),
+                                                    "course_color": r.get("course", {}).get("color"),
+                                                    "material_id": r.get("material", {}).get("id"),
+                                                    "material_name": r.get("material", {}).get("name"),
+                                                    "page_number": r.get("page_number"),
+                                                    "summary": r.get("summary"),
+                                                    "key_terms": r.get("key_terms", []),
+                                                    "relevance_score": r.get("relevance_score", 0),
+                                                })
+                                            
+                                            # Send search results for frontend to display
+                                            # Use the first result (already reordered by search tool to have best intro page first)
+                                            # The search tool now applies pick_best_intro_page logic before returning results
+                                            first_result = results[0] if results else None
+                                            
+                                            # Discovery mode: Auto-open the material immediately (no confirmation needed)
+                                            if mode == "discovery" and first_result:
+                                                open_data = {
+                                                    "type": "open_material",
+                                                    "course_id": first_result.get("course", {}).get("id"),
+                                                    "course_title": first_result.get("course", {}).get("title"),
+                                                    "material_id": first_result.get("material", {}).get("id"),
+                                                    "material_name": first_result.get("material", {}).get("name"),
+                                                    "page_number": first_result.get("page_number")
+                                                }
+                                                yield f"data: {json.dumps(open_data)}\n\n"
+                                            
+                                            # Tutoring mode (PDF already open): Store pending navigation for user confirmation
+                                            # Agent will ask "Should I switch to [material] page [X]?" and user confirms via chat
+                                            elif mode == "tutoring" and first_result:
+                                                pending_nav = {
+                                                    "course_id": first_result.get("course", {}).get("id"),
+                                                    "course_title": first_result.get("course", {}).get("title"),
+                                                    "material_id": first_result.get("material", {}).get("id"),
+                                                    "material_name": first_result.get("material", {}).get("name"),
+                                                    "page_number": first_result.get("page_number")
+                                                }
+                                                
+                                                # Store in dictionary for next message to check
+                                                # Using dictionary instead of agent state which can be overwritten
+                                                pending_nav["_timestamp"] = time.time()
+                                                _pending_navigations[thread_id] = pending_nav
+                                                _cleanup_stale_pending_navigations()
+                                                
+                                                # Emit pending_navigation event for frontend
+                                                pending_data = {
+                                                    "type": "pending_navigation",
+                                                    **pending_nav
+                                                }
+                                                yield f"data: {json.dumps(pending_data)}\n\n"
+                                    except json.JSONDecodeError:
+                                        pass
+                
+                # Send end marker
+                yield "data: [DONE]\n\n"
+                
+            except Exception as e:
+                logger.error(f"Error in quickchat message stream: {str(e)}", exc_info=True)
+                error_data = {"error": str(e)}
+                yield f"data: {json.dumps(error_data)}\n\n"
+        
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending quick chat message: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send message: {str(e)}"
+        )
+
+
+@router.get("/quickchat/search", response_model=QuickChatSearchResponse)
+async def search_quickchat_topics(
+    user_id: str = Query(..., description="User ID (UUID)"),
+    query: str = Query(..., description="Search query"),
+    language: str = Query("auto", description="Language: 'de', 'en', or 'auto'"),
+    limit: int = Query(10, ge=1, le=50, description="Maximum number of results")
+) -> QuickChatSearchResponse:
+    """
+    Direct topic search endpoint for quick chat.
+    
+    Searches across all user's courses and materials without going through
+    the agent. Useful for autocomplete or quick search functionality.
+    
+    Args:
+        user_id: User ID
+        query: Search query string
+        language: Language for search
+        limit: Maximum results
+        
+    Returns:
+        QuickChatSearchResponse with search results
+    """
+    try:
+        # Validate user
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first."
+            )
+        
+        # Perform search
+        results = search_page_analyses(
+            user_id=user_id,
+            query=query,
+            language=language,
+            limit=limit
+        )
+        
+        if not results:
+            return QuickChatSearchResponse(
+                found=False,
+                message=f"Keine Ergebnisse für '{query}' gefunden.",
+                results=[]
+            )
+        
+        # Convert to response model
+        search_results = []
+        for r in results:
+            search_results.append(QuickChatSearchResult(
+                course_id=r.get("course_id", ""),
+                course_title=r.get("course_title", ""),
+                course_color=r.get("course_color"),
+                material_id=r.get("material_id", ""),
+                material_name=r.get("material_name", ""),
+                page_number=r.get("page_number", 0),
+                summary=r.get("summary", ""),
+                key_terms=r.get("key_terms", []),
+                rank=float(r.get("rank", 0))
+            ))
+        
+        return QuickChatSearchResponse(
+            found=True,
+            message=f"{len(search_results)} Ergebnis(se) für '{query}' gefunden.",
+            results=search_results
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching topics: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to search topics: {str(e)}"
+        )
+
+
+@router.get("/quickchat/material/{material_id}")
+async def get_quickchat_material_info(
+    material_id: str = Path(..., description="Course material ID (UUID)")
+) -> dict:
+    """
+    Get material info for inline viewing in quick chat.
+    
+    Returns PDF URL (signed) and page count for the material.
+    
+    Args:
+        material_id: Course material ID
+        
+    Returns:
+        Material info including signed PDF URL
+    """
+    try:
+        client = get_supabase_client()
+        
+        # Get material info
+        material_response = (
+            client.table("course_materials")
+            .select("id, file_name, file_path, page_count, processing_status")
+            .eq("id", material_id)
+            .single()
+            .execute()
+        )
+        
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Material not found"
+            )
+        
+        material = material_response.data
+        
+        if material.get("processing_status") != "completed":
+            raise HTTPException(
+                status_code=400,
+                detail="Material is still processing"
+            )
+        
+        # Create signed URL for PDF (1 hour expiry)
+        file_path = material.get("file_path")
+        if not file_path:
+            raise HTTPException(
+                status_code=400,
+                detail="Material has no file path"
+            )
+        
+        signed_url_response = client.storage.from_("course_materials").create_signed_url(
+            file_path, 
+            3600  # 1 hour expiry
+        )
+        
+        if not signed_url_response or not signed_url_response.get("signedURL"):
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create signed URL for PDF"
+            )
+        
+        return {
+            "material_id": material.get("id"),
+            "file_name": material.get("file_name"),
+            "pdf_url": signed_url_response.get("signedURL"),
+            "page_count": material.get("page_count", 0)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting material info: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get material info: {str(e)}"
+        )
+
+
 @router.get("/study/session", status_code=200)
 async def get_study_session(
     material_id: str = Query(..., description="Course material ID (UUID)"),
@@ -2260,10 +3116,82 @@ async def get_study_session(
         )
 
 
+class SavePageRequest(BaseModel):
+    """Request body for saving current page."""
+    material_id: str = Field(..., description="Course material ID (UUID)")
+    user_id: str = Field(..., description="User ID (UUID)")
+    page: int = Field(..., description="Current page number", ge=1)
+
+
+@router.post("/study/save-page", status_code=200)
+async def save_page(request: SavePageRequest) -> dict:
+    """
+    Save the current page number for a study session.
+    
+    This lightweight endpoint allows the frontend to persist the user's
+    current page without triggering a full chat initiation.
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(request.user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found.",
+            )
+
+        client = get_supabase_client()
+
+        # Validate that course material belongs to user
+        material_response = (
+            client.table("course_materials")
+            .select("id, course_id")
+            .eq("id", request.material_id)
+            .eq("user_id", request.user_id)
+            .single()
+            .execute()
+        )
+
+        if not material_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Course material not found or access denied",
+            )
+
+        course_material_id = material_response.data["id"]
+        course_id = material_response.data.get("course_id")
+
+        # Get or create the study conversation
+        conversation = get_or_create_study_conversation(
+            user_id=request.user_id,
+            course_material_id=course_material_id,
+            course_id=course_id,
+            initial_page=request.page,
+        )
+
+        logger.info(f"[save_page] Found/created conversation {conversation['id']} for material {course_material_id}, saving page {request.page}")
+
+        # Update the page number
+        update_conversation_progress(conversation["id"], request.page)
+        
+        logger.info(f"[save_page] Successfully saved page {request.page} for conversation {conversation['id']}")
+
+        return {"success": True, "page": request.page, "conversation_id": conversation["id"]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving page: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save page: {str(e)}",
+        )
+
+
 @router.post("/flashcards/generate", response_model=FlashcardTaskResponse, status_code=202)
 async def generate_flashcards(
     course_material_id: str = Query(..., description="Course material ID (UUID)"),
-    user_id: str = Query(..., description="User ID (UUID)")
+    user_id: str = Query(..., description="User ID (UUID)"),
+    deduplicate_course: bool = Query(False, description="Enable course-wide deduplication via Anki")
 ) -> FlashcardTaskResponse:
     """
     Start flashcard generation as a background task.
@@ -2277,6 +3205,7 @@ async def generate_flashcards(
     Args:
         course_material_id: Course material ID (UUID)
         user_id: User ID (UUID)
+        deduplicate_course: Enable course-wide deduplication (compares against existing Anki cards)
         
     Returns:
         FlashcardTaskResponse with task_id and status
@@ -2330,7 +3259,7 @@ async def generate_flashcards(
         # Get course material and validate ownership
         material_response = (
             client.table("course_materials")
-            .select("id, course_id, user_id")
+            .select("id, course_id, user_id, file_name")
             .eq("id", course_material_id)
             .eq("user_id", user_id)
             .single()
@@ -2346,12 +3275,38 @@ async def generate_flashcards(
         material = material_response.data
         course_id = material["course_id"]
         
+        # Build deck names for Anki integration
+        parent_deck_name = None
+        target_deck_name = None
+        
+        if deduplicate_course or True:  # Always build deck names for Anki integration
+            # Get course title
+            course_response = (
+                client.table("courses")
+                .select("title")
+                .eq("id", course_id)
+                .single()
+                .execute()
+            )
+            
+            if course_response.data:
+                from pathlib import Path
+                course_title = course_response.data.get("title", "Course")
+                file_name = material.get("file_name", "Lecture")
+                lecture_name = Path(file_name).stem  # Remove extension
+                
+                parent_deck_name = course_title
+                target_deck_name = f"{course_title}::{lecture_name}"
+        
         # Create background task
         task_service = get_flashcard_task_service()
         task_id = await task_service.create_task(
             course_material_id=course_material_id,
             user_id=user_id,
             course_id=course_id,
+            deduplicate_course=deduplicate_course,
+            parent_deck_name=parent_deck_name,
+            target_deck_name=target_deck_name,
         )
         
         logger.info(f"Created flashcard generation task {task_id} for material {course_material_id}")
@@ -2426,6 +3381,123 @@ async def generate_flashcards(
             status_code=500,
             detail=f"Failed to start flashcard generation: {str(e)}",
         )
+
+
+@router.post("/flashcards/sync", status_code=200)
+async def sync_flashcards_from_anki(
+    course_id: str = Query(..., description="Course ID (UUID)"),
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> dict:
+    """
+    Sync flashcard cache from Anki.
+    
+    Pulls any manual edits/additions from Anki into the local cache.
+    Useful for debugging or forcing a cache refresh.
+    
+    Args:
+        course_id: Course ID to sync
+        user_id: User ID (UUID)
+        
+    Returns:
+        Sync statistics (inserted, updated, deleted, unchanged)
+    """
+    from app.services.storage import sync_cache_from_anki
+    
+    # Validate user
+    if not validate_user_exists(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get course title to build deck name
+    client = get_supabase_client()
+    course_response = (
+        client.table("courses")
+        .select("title")
+        .eq("id", course_id)
+        .eq("user_id", user_id)
+        .single()
+        .execute()
+    )
+    
+    if not course_response.data:
+        raise HTTPException(status_code=404, detail="Course not found or access denied")
+    
+    course_title = course_response.data["title"]
+    
+    try:
+        stats = sync_cache_from_anki(course_title, user_id, course_id)
+        return {
+            "status": "success",
+            "course_title": course_title,
+            "sync_stats": stats
+        }
+    except Exception as e:
+        logger.error(f"Sync failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+
+@router.post("/flashcards/retry-ankiweb-sync", status_code=200)
+async def retry_ankiweb_sync(
+    user_id: str = Query(..., description="User ID (UUID)")
+) -> dict:
+    """
+    Retry syncing unsynced flashcards to AnkiWeb.
+    
+    Call this when AnkiWeb connection is restored to sync any cards
+    that were added to local Anki but failed to sync to AnkiWeb.
+    
+    Args:
+        user_id: User ID (UUID)
+        
+    Returns:
+        Dict with sync status and count of synced cards
+    """
+    from app.services.storage import get_unsynced_flashcard_count, mark_flashcards_as_synced
+    from app.services.anki.client import AnkiClient
+    
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Please sign up first.",
+            )
+        
+        # Check how many cards need syncing
+        unsynced_count = get_unsynced_flashcard_count(user_id)
+        
+        if unsynced_count == 0:
+            return {
+                "status": "success",
+                "message": "No unsynced cards found",
+                "synced_count": 0
+            }
+        
+        # Try to sync to AnkiWeb
+        try:
+            anki = AnkiClient()
+            anki.sync()
+            
+            # Mark all cards as synced
+            synced_count = mark_flashcards_as_synced(user_id)
+            
+            return {
+                "status": "success",
+                "message": f"Successfully synced {synced_count} cards to AnkiWeb",
+                "synced_count": synced_count
+            }
+        except Exception as e:
+            logger.warning(f"AnkiWeb sync failed: {e}")
+            return {
+                "status": "failed",
+                "message": f"AnkiWeb sync failed: {str(e)}",
+                "unsynced_count": unsynced_count
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Retry sync failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Retry sync failed: {str(e)}")
 
 
 @router.get("/flashcards/status/{task_id}", response_model=FlashcardTaskStatusResponse, status_code=200)
@@ -2716,11 +3788,11 @@ async def get_flashcards(
                 detail="User not found. Please sign up first.",
             )
         
-        # Validate that course material belongs to user
+        # Validate that course material belongs to user and get file info
         client = get_supabase_client()
         material_response = (
             client.table("course_materials")
-            .select("id, user_id")
+            .select("id, user_id, file_name, course_id")
             .eq("id", course_material_id)
             .eq("user_id", user_id)
             .single()
@@ -2733,8 +3805,43 @@ async def get_flashcards(
                 detail="Course material not found or access denied",
             )
         
-        # Get flashcards from database
-        flashcards = get_flashcards_for_material(course_material_id, user_id)
+        material = material_response.data
+        course_id = material.get("course_id")
+        file_name = material.get("file_name", "material")
+        
+        # Get course title to construct deck_name
+        course_response = (
+            client.table("courses")
+            .select("title")
+            .eq("id", course_id)
+            .single()
+            .execute()
+        )
+        
+        course_title = course_response.data.get("title", "course") if course_response.data else "course"
+        
+        # Construct deck name (matches format used during generation)
+        # Use Path().stem to match the format used during generation (removes all extensions)
+        from pathlib import Path
+        lecture_name = Path(file_name).stem
+        deck_name = f"{course_title}::{lecture_name}"
+        
+        # Get flashcards from flashcard_cache table (new Anki-aligned storage)
+        flashcards = get_cached_flashcards_for_material(deck_name, user_id)
+        
+        # Fallback: If no flashcards found by deck_name, try searching by course_id
+        # This handles cases where deck_name might not match exactly (e.g., if target_deck_name was None)
+        if not flashcards:
+            from app.services.storage import get_cached_flashcards_for_course
+            all_course_flashcards = get_cached_flashcards_for_course(course_id, user_id)
+            
+            # Filter by matching lecture name in deck_name
+            # Look for flashcards where deck_name ends with "::{lecture_name}" or contains the lecture name
+            flashcards = [
+                card for card in all_course_flashcards
+                if card.get("deck_name", "").endswith(f"::{lecture_name}") or 
+                   lecture_name.lower() in card.get("deck_name", "").lower()
+            ]
         
         return {
             "flashcards": flashcards,
@@ -2813,8 +3920,28 @@ async def download_flashcards_from_db(
         course_title = course_response.data.get("title", "course") if course_response.data else "course"
         file_name = material.get("file_name", "material")
         
-        # Get flashcards from database
-        flashcards = get_flashcards_for_material(course_material_id, user_id)
+        # Construct deck name (matches format used during generation)
+        # Use Path().stem to match the format used during generation (removes all extensions)
+        from pathlib import Path
+        lecture_name = Path(file_name).stem
+        deck_name = f"{course_title}::{lecture_name}"
+        
+        # Get flashcards from flashcard_cache table (new Anki-aligned storage)
+        flashcards = get_cached_flashcards_for_material(deck_name, user_id)
+        
+        # Fallback: If no flashcards found by deck_name, try searching by course_id
+        # This handles cases where deck_name might not match exactly (e.g., if target_deck_name was None)
+        if not flashcards:
+            from app.services.storage import get_cached_flashcards_for_course
+            all_course_flashcards = get_cached_flashcards_for_course(course_id, user_id)
+            
+            # Filter by matching lecture name in deck_name
+            # Look for flashcards where deck_name ends with "::{lecture_name}" or contains the lecture name
+            flashcards = [
+                card for card in all_course_flashcards
+                if card.get("deck_name", "").endswith(f"::{lecture_name}") or 
+                   lecture_name.lower() in card.get("deck_name", "").lower()
+            ]
         
         if not flashcards:
             raise HTTPException(
@@ -2828,17 +3955,19 @@ async def download_flashcards_from_db(
             cards_for_apkg.append({
                 "front": card.get("front", ""),
                 "back": card.get("back", ""),
-                "tags": []  # Tags are not stored separately in DB, but that's okay
+                "tags": card.get("tags", [])  # Tags are now available from flashcard_cache
             })
         
         # Build .apkg with embedded images
         import re
-        safe_course_title = re.sub(r'[^\w\s-]', '', course_title).strip()[:50]
-        safe_file_name = re.sub(r'[^\w\s-]', '', file_name.replace('.pdf', '')).strip()[:50]
+        lecture_name = file_name.replace('.pdf', '')
         
-        deck_name = f"{course_title}::{file_name.replace('.pdf', '')}"
+        # Use deck_name format for filename, replacing :: with - for filesystem compatibility
+        # Only remove characters that are invalid in filenames: / \ : * ? " < > |
+        safe_deck_name = re.sub(r'[/\\:*?"<>|]', '', f"{course_title} - {lecture_name}").strip()[:100]
+        
         apkg_bytes = build_anki_apkg(cards_for_apkg, deck_name=deck_name)
-        filename = f"flashcards_{safe_course_title}_{safe_file_name}.apkg"
+        filename = f"{safe_deck_name}.apkg"
         
         # Return APKG file
         return StreamingResponse(
@@ -3431,4 +4560,487 @@ async def remove_snippet(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to delete snippet: {str(e)}"
+        )
+
+
+# =============================================================================
+# Anki Study History
+# =============================================================================
+
+@router.get("/anki/study-history")
+async def get_anki_study_history(
+    user_id: str = Query(..., description="User ID"),
+    days: int = Query(90, description="Number of days of history to retrieve", ge=1, le=365),
+    cache_only: bool = Query(False, description="If true, only return cached data (fast)"),
+):
+    """
+    Get Anki study history for a user.
+    
+    Returns comprehensive daily study statistics including:
+    - Cards reviewed per day
+    - Time spent studying
+    - Button press breakdown (Again/Hard/Good/Easy)
+    - Card type breakdown (New/Review/Relearn)
+    
+    Use cache_only=true for instant response with cached data.
+    Use cache_only=false (default) to fetch fresh data from Anki and sync to database.
+    """
+    try:
+        # Validate user exists
+        if not validate_user_exists(user_id):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found"
+            )
+        
+        # Helper to format cached data
+        def format_cached_data(cached_data):
+            return {
+                "status": "success",
+                "source": "cache",
+                "days_requested": days,
+                "data": [
+                    {
+                        # Ensure JSON-serializable date string (YYYY-MM-DD)
+                        "date": str(record["study_date"]),
+                        "cards_reviewed": record["cards_reviewed"],
+                        "time_spent_seconds": record["time_spent_seconds"],
+                        "again_count": record["again_count"],
+                        "hard_count": record["hard_count"],
+                        "good_count": record["good_count"],
+                        "easy_count": record["easy_count"],
+                        "new_cards": record["new_cards"],
+                        "review_cards": record["review_cards"],
+                        "relearn_cards": record["relearn_cards"],
+                        "avg_time_per_card_ms": record["avg_time_per_card_ms"],
+                    }
+                    for record in cached_data
+                ]
+            }
+        
+        # If cache_only, return cached data immediately (fast path)
+        if cache_only:
+            cached_data = get_study_history(user_id, days=days)
+            return format_cached_data(cached_data)
+        
+        # Otherwise, try to get fresh data from Anki
+        anki_available = False
+        fresh_data = []
+        
+        try:
+            client = AnkiClient()
+            # Support both Docker (default) and native AnkiConnect (macOS) setups.
+            # Some users study in native Anki while the Docker container is stopped.
+            anki_running = (
+                client.is_running(require_docker=True) or
+                client.is_running(require_docker=False)
+            )
+            if anki_running:
+                fresh_data = client.get_detailed_study_history(days=days)
+                anki_available = True
+                
+                # Sync to database for future offline access
+                if fresh_data:
+                    sync_result = sync_anki_study_history(user_id, fresh_data)
+                    logger.info(f"Synced {sync_result['synced']} study history records for user {user_id}")
+        except AnkiConnectionError as e:
+            logger.warning(f"Anki not available: {e}")
+        except Exception as e:
+            logger.error(f"Error fetching from Anki: {e}")
+        
+        # If we got fresh data from Anki, convert and return it
+        if anki_available and fresh_data:
+            return {
+                "status": "success",
+                "source": "anki",
+                "days_requested": days,
+                "data": [
+                    {
+                        "date": stats.date,
+                        "cards_reviewed": stats.cards_reviewed,
+                        "time_spent_seconds": stats.time_spent_seconds,
+                        "again_count": stats.again_count,
+                        "hard_count": stats.hard_count,
+                        "good_count": stats.good_count,
+                        "easy_count": stats.easy_count,
+                        "new_cards": stats.new_cards,
+                        "review_cards": stats.review_cards,
+                        "relearn_cards": stats.relearn_cards,
+                        "avg_time_per_card_ms": stats.avg_time_per_card_ms,
+                    }
+                    for stats in fresh_data
+                ]
+            }
+        
+        # Fall back to cached data from database
+        cached_data = get_study_history(user_id, days=days)
+        return format_cached_data(cached_data)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting study history: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get study history: {str(e)}"
+        )
+
+
+# =============================================================================
+# Anki Sync Management
+# =============================================================================
+
+@router.get("/anki/sync-status")
+async def get_anki_sync_status():
+    """
+    Check the current sync status with AnkiWeb.
+    
+    Returns:
+    - status: "ok" | "full_sync_required" | "not_logged_in" | "not_connected" | "error"
+    - message: Human-readable status message
+    - can_sync: Whether normal sync is possible
+    - action_required: What action the user needs to take (if any)
+    """
+    try:
+        client = AnkiClient()
+        
+        # First check if Anki is running
+        anki_running = (
+            client.is_running(require_docker=True) or
+            client.is_running(require_docker=False)
+        )
+        if not anki_running:
+            return {
+                "status": "not_connected",
+                "message": "Anki is not running. Please start the Docker container.",
+                "can_sync": False,
+                "action_required": "start_anki"
+            }
+        
+        # Check sync status
+        sync_status = client.get_sync_status()
+        
+        # Add action_required based on status
+        action_required = None
+        if sync_status["status"] == "full_sync_required":
+            action_required = "resolve_conflict"
+        elif sync_status["status"] == "not_logged_in":
+            action_required = "login_ankiweb"
+        
+        return {
+            **sync_status,
+            "action_required": action_required
+        }
+        
+    except Exception as e:
+        logger.error(f"Error checking sync status: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check sync status: {str(e)}"
+        )
+
+
+@router.post("/anki/sync")
+async def trigger_anki_sync():
+    """
+    Trigger a normal sync with AnkiWeb.
+    
+    This will fail if a full sync is required (conflict).
+    Use GET /anki/sync-status first to check, and POST /anki/force-sync
+    to resolve conflicts.
+    """
+    try:
+        client = AnkiClient()
+        
+        if not client.is_running():
+            raise HTTPException(
+                status_code=503,
+                detail="Anki is not running. Please start the Docker container."
+            )
+        
+        # Attempt sync
+        client.sync()
+        
+        return {
+            "status": "success",
+            "message": "Sync completed successfully"
+        }
+        
+    except AnkiError as e:
+        error_msg = str(e)
+        if "Sync status 2" in error_msg:
+            raise HTTPException(
+                status_code=409,  # Conflict
+                detail="Full sync required. Use POST /anki/force-sync with mode='upload' or 'download' to resolve."
+            )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Sync failed: {error_msg}"
+        )
+    except AnkiConnectionError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot connect to Anki: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error during sync: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Sync failed: {str(e)}"
+        )
+
+
+class ForceSyncRequest(BaseModel):
+    mode: str = Field(
+        ...,
+        description="Sync direction: 'upload' (local→server) or 'download' (server→local)"
+    )
+
+
+@router.post("/anki/force-sync")
+async def force_anki_sync(request: ForceSyncRequest):
+    """
+    Force a full sync in a specific direction to resolve conflicts.
+    
+    Args:
+        mode: 
+            - "upload": Overwrite AnkiWeb with local Docker Anki data
+            - "download": Overwrite local Docker Anki with AnkiWeb data
+    
+    ⚠️  WARNING: This is destructive! One side's data will be lost.
+    
+    - Use "upload" if you want to KEEP the generated flashcards from this app
+    - Use "download" if you want to KEEP changes from your phone/other devices
+    """
+    try:
+        if request.mode not in ("upload", "download"):
+            raise HTTPException(
+                status_code=400,
+                detail="Mode must be 'upload' or 'download'"
+            )
+        
+        client = AnkiClient()
+        
+        if not client.is_running():
+            raise HTTPException(
+                status_code=503,
+                detail="Anki is not running. Please start the Docker container."
+            )
+        
+        # Attempt force sync
+        result = client.force_sync(request.mode)
+        
+        if result["success"]:
+            return {
+                "status": "success",
+                "message": result["message"]
+            }
+        else:
+            # Check if the custom addon is not installed
+            if "not available" in result["message"].lower():
+                raise HTTPException(
+                    status_code=501,  # Not Implemented
+                    detail=(
+                        "Force sync not available via API. The Docker container needs "
+                        "to be restarted to load the custom addon. "
+                        "Alternatively, resolve the conflict manually via VNC at localhost:5900"
+                    )
+                )
+            raise HTTPException(
+                status_code=500,
+                detail=result["message"]
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during force sync: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Force sync failed: {str(e)}"
+        )
+
+
+class AnkiWebLoginRequest(BaseModel):
+    email: str = Field(..., description="AnkiWeb account email")
+    password: str = Field(..., description="AnkiWeb account password")
+
+
+@router.post("/anki/login")
+async def login_ankiweb(login_request: AnkiWebLoginRequest, request: Request):
+    """
+    Login to AnkiWeb with email and password.
+    
+    This authenticates with AnkiWeb and stores the credentials
+    so future syncs work automatically. The password is NOT stored,
+    only the authentication token (hkey).
+    
+    Rate limited to 5 attempts per 15 minutes per IP address.
+    """
+    # Check rate limit
+    client_ip = get_client_ip(request)
+    is_limited, remaining = ankiweb_login_limiter.is_rate_limited(client_ip)
+    
+    if is_limited:
+        retry_after = ankiweb_login_limiter.get_retry_after(client_ip)
+        logger.warning(f"Rate limit exceeded for AnkiWeb login from IP: {client_ip}")
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many login attempts. Please try again in {retry_after // 60} minutes.",
+            headers={"Retry-After": str(retry_after)}
+        )
+    
+    # Record this attempt (before checking success/failure)
+    ankiweb_login_limiter.record_request(client_ip)
+    
+    try:
+        client = AnkiClient()
+        
+        if not client.is_running():
+            raise HTTPException(
+                status_code=503,
+                detail="Anki is not running. Please start the Docker container."
+            )
+        
+        # Call the loginAnkiWeb action from our custom addon
+        result = client._request("loginAnkiWeb", {
+            "email": login_request.email,
+            "password": login_request.password
+        })
+        
+        if "error" in result:
+            raise HTTPException(
+                status_code=401,
+                detail=result["error"]
+            )
+        
+        # Clear status cache so next check reflects the new login
+        _clear_ankiweb_status_cache()
+        
+        return {
+            "status": "success",
+            "message": result.get("message", "Logged in to AnkiWeb"),
+            "username": result.get("username", login_request.email)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error during AnkiWeb login: {error_msg}", exc_info=True)
+        
+        # Check for "unsupported action" which means addon needs to be reloaded
+        if "unsupported action" in error_msg.lower():
+            raise HTTPException(
+                status_code=501,
+                detail="AnkiWeb login not available. Please restart the Anki Docker container to load the updated addon."
+            )
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Login failed: {error_msg}"
+        )
+
+
+@router.get("/anki/login-status")
+async def get_ankiweb_login_status():
+    """
+    Get the current AnkiWeb login status.
+    
+    Returns cached result if available (30s TTL) to avoid slow Docker/AnkiConnect checks.
+    
+    Returns:
+    - status: "logged_in" | "not_logged_in" | "not_connected"
+    - username: The logged in email (if logged in)
+    """
+    # Check cache first
+    cache_age = time.time() - _ankiweb_status_cache["timestamp"]
+    if _ankiweb_status_cache["data"] is not None and cache_age < ANKIWEB_STATUS_CACHE_TTL:
+        return _ankiweb_status_cache["data"]
+    
+    try:
+        client = AnkiClient()
+        
+        if not client.is_running():
+            result = {
+                "status": "not_connected",
+                "username": None,
+                "message": "Anki is not running"
+            }
+            # Cache not_connected for shorter time (5s) to allow quick retry
+            _ankiweb_status_cache["data"] = result
+            _ankiweb_status_cache["timestamp"] = time.time() - ANKIWEB_STATUS_CACHE_TTL + 5
+            return result
+        
+        # Call the getAnkiWebUsername action from our custom addon
+        api_result = client._request("getAnkiWebUsername", {})
+        
+        if "error" in api_result:
+            result = {
+                "status": "error",
+                "username": None,
+                "message": api_result["error"]
+            }
+            # Don't cache errors
+            return result
+        
+        result = {
+            "status": api_result.get("status", "not_logged_in"),
+            "username": api_result.get("username"),
+            "message": "Connected to AnkiWeb" if api_result.get("status") == "logged_in" else "Not logged in to AnkiWeb"
+        }
+        
+        # Cache the successful result
+        _ankiweb_status_cache["data"] = result
+        _ankiweb_status_cache["timestamp"] = time.time()
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error checking AnkiWeb login status: {str(e)}", exc_info=True)
+        # Don't cache errors
+        return {
+            "status": "error",
+            "username": None,
+            "message": f"Error checking status: {str(e)}"
+        }
+
+
+@router.post("/anki/logout")
+async def logout_ankiweb():
+    """
+    Logout from AnkiWeb by clearing stored credentials.
+    """
+    try:
+        client = AnkiClient()
+        
+        if not client.is_running():
+            raise HTTPException(
+                status_code=503,
+                detail="Anki is not running. Please start the Docker container."
+            )
+        
+        # Call the logoutAnkiWeb action from our custom addon
+        result = client._request("logoutAnkiWeb", {})
+        
+        if "error" in result:
+            raise HTTPException(
+                status_code=500,
+                detail=result["error"]
+            )
+        
+        # Clear status cache so next check reflects the logout
+        _clear_ankiweb_status_cache()
+        
+        return {
+            "status": "success",
+            "message": result.get("message", "Logged out from AnkiWeb")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during AnkiWeb logout: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Logout failed: {str(e)}"
         )
