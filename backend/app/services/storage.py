@@ -63,7 +63,8 @@ def retry_on_resource_unavailable(
                         "Resource temporarily unavailable" in error_str or
                         f"[Errno {errno.EAGAIN}]" in error_str or
                         f"[Errno {errno.EWOULDBLOCK}]" in error_str or
-                        "[Errno 35]" in error_str  # macOS-specific
+                        "[Errno 35]" in error_str or  # macOS-specific
+                        "[WinError 10035]" in error_str  # Windows-specific socket error
                     )
                     
                     if is_resource_unavailable and attempt < max_retries:
@@ -769,6 +770,7 @@ def get_page_analysis_id(
         raise Exception(f"Failed to get page analysis ID: {str(e)}")
 
 
+@retry_on_resource_unavailable(max_retries=3, base_delay=0.1, max_delay=2.0)
 def get_all_page_analyses_for_material(
     course_material_id: str,
     user_id: str

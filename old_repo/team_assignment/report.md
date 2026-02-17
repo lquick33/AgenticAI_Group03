@@ -1647,7 +1647,8 @@ if user_feedback == "helpful":
 
 **Current State:**
 - Agent reasoning is partially transparent: Tool calls are logged and can be viewed in Langfuse
-- Users see tool results indirectly through agent explanations and can also toggle to see them directly
+- Users see tool results indirectly through agent explanations
+- Internal tool selection logic (which tool to call) is not fully transparent to end users
 
 **Transparency Features:**
 - Langfuse tracing shows all LLM calls, tool invocations, and state transitions
@@ -1888,9 +1889,6 @@ If we had another month, we would prioritize:
 ### Detailed Contribution Analysis: Louis Braukmann
 
 
-
-Chronological Contribution Timeline
-
 ##### Phase 1: Architectural Foundation & Vision-First Ingestion (Jan 10)
 Louis initiated the project by defining the core architecture and development standards, moving away from traditional RAG to a multimodal approach.
 
@@ -1971,7 +1969,7 @@ Louis refactored the chat interface (`useChatSession.ts`) to handle complex stre
     *   `backend/app/services/pdf_processor.py`
     *   `frontend/hooks/use-chat-session.ts`
     *   `frontend/components/study/study-reader.tsx`
-*   **Technologies Introduced**: LangGraph, Supabase SSR, Langfuse, Genanki, KaTeX, Framer Motion (for typewriter effects).
+*   **Technologies Introduced**: LangGraph, Supabase SSR, Pydantic, Langfuse, Genanki, KaTeX, Framer Motion (for typewriter effects).
 
 **Collaboration:**
 - Both team members worked closely on integrating agents, debugging tool-calling issues, and refining the overall architecture.

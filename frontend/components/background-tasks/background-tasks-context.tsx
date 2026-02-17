@@ -277,6 +277,20 @@ export function BackgroundTasksProvider({ children }: BackgroundTasksProviderPro
       }
     } catch (error) {
       console.error('Error polling flashcard status:', error)
+      
+      // Handle 404 (Task not found) - likely due to backend restart
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      if (errorMessage.includes('404') || errorMessage.includes('Task not found') || errorMessage.includes('HTTP 404')) {
+        return {
+          status: 'failed' as TaskStatus,
+          progress: task.progress,
+          stageMessage: 'Prozess nicht gefunden (Server Neustart?)',
+          cardsGenerated: 0,
+          totalPages: 0,
+          completedPages: 0,
+        }
+      }
+      
       return null
     }
   }, [userId])
