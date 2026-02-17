@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from 'react'
+import { useRef, useState, type RefObject } from 'react'
 import { useRouter } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels'
@@ -8,7 +8,7 @@ import { useQuickChatSession, ViewingMaterial } from '@/hooks/use-quickchat-sess
 import { ChatMessage } from '@/components/study/chat-message'
 import { Loader } from '@/components/ui/loader'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { 
   Search, 
   Send, 
@@ -39,6 +39,21 @@ interface QuickChatContentProps {
 export function QuickChatContent({ userId }: QuickChatContentProps) {
   const router = useRouter()
   const [inputValue, setInputValue] = useState('')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  
+  const autosizeTextarea = () => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    // cap to ~6 lines to avoid taking over the screen
+    el.style.height = `${Math.min(el.scrollHeight, 6 * 24)}px`
+  }
+  
+  const handleInputChange = (value: string) => {
+    setInputValue(value)
+    // Resize after React commits the new value
+    requestAnimationFrame(autosizeTextarea)
+  }
   
   // Initialize quick chat session
   // Navigation is handled automatically by the agent through chat confirmation
@@ -56,6 +71,9 @@ export function QuickChatContent({ userId }: QuickChatContentProps) {
     if (inputValue.trim() && !isStreaming) {
       sendMessage(inputValue)
       setInputValue('')
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto'
+      }
     }
   }
   
@@ -80,11 +98,12 @@ export function QuickChatContent({ userId }: QuickChatContentProps) {
         isLoading={isLoading}
         isStreaming={isStreaming}
         inputValue={inputValue}
-        setInputValue={setInputValue}
+        onInputChange={handleInputChange}
         handleSubmit={handleSubmit}
         handleKeyDown={handleKeyDown}
         setCurrentPage={setCurrentPage}
         onClose={handleClose}
+        textareaRef={textareaRef}
       />
     )
   }
@@ -96,9 +115,10 @@ export function QuickChatContent({ userId }: QuickChatContentProps) {
       isLoading={isLoading}
       isStreaming={isStreaming}
       inputValue={inputValue}
-      setInputValue={setInputValue}
+      onInputChange={handleInputChange}
       handleSubmit={handleSubmit}
       handleKeyDown={handleKeyDown}
+      textareaRef={textareaRef}
     />
   )
 }
@@ -109,9 +129,10 @@ interface DiscoveryModeContentProps {
   isLoading: boolean
   isStreaming: boolean
   inputValue: string
-  setInputValue: (value: string) => void
+  onInputChange: (value: string) => void
   handleSubmit: (e: React.FormEvent) => void
   handleKeyDown: (e: React.KeyboardEvent) => void
+  textareaRef: RefObject<HTMLTextAreaElement | null>
 }
 
 function DiscoveryModeContent({
@@ -119,9 +140,10 @@ function DiscoveryModeContent({
   isLoading,
   isStreaming,
   inputValue,
-  setInputValue,
+  onInputChange,
   handleSubmit,
   handleKeyDown,
+  textareaRef,
 }: DiscoveryModeContentProps) {
   return (
     <div className="flex flex-col h-full bg-[#f6f4f1]">
@@ -153,13 +175,14 @@ function DiscoveryModeContent({
         <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
           <div className="flex gap-3">
             <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
+              <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
+              <Textarea
+                ref={textareaRef}
                 value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
+                onChange={(e) => onInputChange(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Nach einem Thema suchen oder eine Frage stellen..."
-                className="pl-10 pr-4"
+                className="pl-10 pr-4 min-h-10 h-10 resize-none overflow-y-auto"
                 disabled={isStreaming}
               />
             </div>
@@ -187,11 +210,12 @@ interface ViewingModeContentProps {
   isLoading: boolean
   isStreaming: boolean
   inputValue: string
-  setInputValue: (value: string) => void
+  onInputChange: (value: string) => void
   handleSubmit: (e: React.FormEvent) => void
   handleKeyDown: (e: React.KeyboardEvent) => void
   setCurrentPage: (page: number) => void
   onClose: () => void
+  textareaRef: RefObject<HTMLTextAreaElement | null>
 }
 
 function ViewingModeContent({
@@ -200,11 +224,12 @@ function ViewingModeContent({
   isLoading,
   isStreaming,
   inputValue,
-  setInputValue,
+  onInputChange,
   handleSubmit,
   handleKeyDown,
   setCurrentPage,
   onClose,
+  textareaRef,
 }: ViewingModeContentProps) {
   const handlePreviousPage = () => {
     if (viewingMaterial.currentPage > 1) {
@@ -305,12 +330,14 @@ function ViewingModeContent({
             <div className="border-t bg-white px-4 py-3 flex-shrink-0">
               <form onSubmit={handleSubmit}>
                 <div className="flex gap-2">
-                  <Input
+                  <Textarea
+                    ref={textareaRef}
                     value={inputValue}
-                    onChange={(e) => setInputValue(e.target.value)}
+                    onChange={(e) => onInputChange(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder="Frage zu dieser Seite stellen..."
                     disabled={isStreaming}
+                    className="min-h-10 h-10 resize-none overflow-y-auto"
                   />
                   <Button type="submit" disabled={!inputValue.trim() || isStreaming}>
                     {isStreaming ? (

@@ -129,6 +129,13 @@
   /* Display math spacing */
   .katex-display {
     margin: 1em 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .katex-display > .katex {
+    max-width: 100%;
   }
   
   /* Gemini-inspired markdown container styles */
@@ -142,6 +149,15 @@
     -webkit-margin-end: 24px;
     -moz-margin-end: 24px;
     margin-inline-end: 24px;
+  }
+
+  /* Prevent long tokens (SQL, etc.) from forcing horizontal scroll */
+  .markdown-gemini pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .markdown-gemini code {
+    overflow-wrap: anywhere;
   }
   
   .markdown-gemini p {
