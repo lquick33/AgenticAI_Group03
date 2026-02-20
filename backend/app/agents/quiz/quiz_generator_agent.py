@@ -15,7 +15,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from app.agents.base import BaseAgent
 from app.models.schemas import QuizData, QuizQuestion
-from app.services.storage import get_page_analyses_for_range
+from app.core.adapters import get_page_analysis as _get_page_analysis
 from app.services.observability import create_callback_handler, get_langfuse_client
 from app.services.analyzer import get_gemini_model
 from app.core.config import settings
@@ -476,7 +476,7 @@ Erstelle jetzt das Quiz basierend auf dem obigen Material."""
         """
         # Get page analyses for range
         logger.info(f"🟡 Fetching page analyses for range {start_page}-{end_page} (material: {course_material_id}, user: {user_id})")
-        page_analyses = get_page_analyses_for_range(
+        page_analyses = _get_page_analysis().get_for_range(
             course_material_id=course_material_id,
             user_id=user_id,
             start_page=start_page,

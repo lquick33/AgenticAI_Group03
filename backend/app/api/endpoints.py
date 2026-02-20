@@ -56,25 +56,64 @@ from app.services.snippet_service import (
     get_snippets_for_material,
     delete_snippet
 )
-from app.services.storage import (
-    upload_pdf_to_storage,
-    create_course_material,
-    validate_user_exists,
-    get_course,
-    get_supabase_client,
-    get_page_analysis,
-    get_page_analysis_id,
-    get_flashcards_for_material,
-    get_cached_flashcards_for_material,
-    get_course_material_summary,
-    update_course_material_filename,
-    delete_course_material,
-    get_study_history,
-    sync_anki_study_history,
-    search_page_analyses,
-    get_user_courses_with_materials,
-    get_user_course_counts,
+from app.adapters.supabase.client import get_supabase_client
+from app.core.adapters import (
+    get_file_storage as _fs,
+    get_material as _mat,
+    get_course as _crs,
+    get_page_analysis as _pa,
+    get_flashcard as _fc,
 )
+
+# Convenience wrappers — preserve existing call-site names throughout endpoints
+def upload_pdf_to_storage(file_bytes, filename, user_id, bucket_name="course_materials"):
+    return _fs().upload(file_bytes, filename, user_id, bucket_name)
+
+def create_course_material(course_id, filename, file_path, user_id, total_pages=None, original_filename=None):
+    return _mat().create(course_id, filename, file_path, user_id, total_pages, original_filename)
+
+def validate_user_exists(user_id):
+    return _crs().validate_user_exists(user_id)
+
+def get_course(user_id, course_id):
+    return _crs().get(user_id, course_id)
+
+def get_page_analysis(course_material_id, page_number, user_id):
+    return _pa().get(course_material_id, page_number, user_id)
+
+def get_page_analysis_id(course_material_id, page_number, user_id):
+    return _pa().get_id(course_material_id, page_number, user_id)
+
+def get_flashcards_for_material(course_material_id, user_id):
+    return _fc().get_for_material(course_material_id, user_id)
+
+def get_cached_flashcards_for_material(deck_name, user_id):
+    return _fc().get_cached_for_material(deck_name, user_id)
+
+def get_course_material_summary(course_material_id, user_id):
+    return _mat().get_summary(course_material_id, user_id)
+
+def update_course_material_filename(material_id, filename):
+    return _mat().update_filename(material_id, filename)
+
+def delete_course_material(material_id, user_id):
+    return _mat().delete(material_id, user_id)
+
+def get_study_history(user_id, days=30):
+    return _fc().get_study_history(user_id, days)
+
+def sync_anki_study_history(user_id, fresh_data):
+    return _fc().sync_anki_study_history(user_id, fresh_data)
+
+def search_page_analyses(user_id, query, language="auto", limit=10):
+    return _pa().search(user_id=user_id, query=query, language=language, limit=limit)
+
+def get_user_courses_with_materials(user_id):
+    return _crs().get_all_with_materials(user_id)
+
+def get_user_course_counts(user_id):
+    return _crs().get_counts(user_id)
+
 from app.agents.flashcards import FlashcardGeneratorAgent
 from app.services.flashcard_service import build_anki_apkg
 from app.services.anki import AnkiClient, AnkiConnectionError, AnkiError, DailyStudyStats

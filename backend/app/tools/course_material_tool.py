@@ -7,7 +7,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.services.storage import get_course_material_summary
+from app.core.adapters import get_material as _get_material
 
 
 class GetCourseMaterialSummaryInput(BaseModel):
@@ -51,7 +51,7 @@ class GetCourseMaterialSummaryTool:
             JSON string with course material summary data
         """
         try:
-            result = get_course_material_summary(
+            result = _get_material().get_summary(
                 course_material_id=course_material_id,
                 user_id=user_id
             )

@@ -15,13 +15,8 @@ from langchain_core.tools import StructuredTool
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
-from app.services.storage import (
-    search_page_analyses,
-    search_page_analyses_multi,
-    search_page_analyses_hybrid,
-    check_embeddings_available,
-    get_page_analyses_for_range,
-)
+from app.core.adapters import get_page_analysis as _get_page_analysis
+
 from app.services.embedding_service import (
     generate_embedding,
     check_embedding_availability,
@@ -783,7 +778,7 @@ class SearchTopicTool:
             results = None
             used_hybrid = False
             
-            if check_embedding_availability() and check_embeddings_available(user_id):
+            if check_embedding_availability() and _get_page_analysis().has_embeddings(user_id):
                 try:
                     # Generate query embedding for vector search
                     # Use the first keyword (usually the main topic) for embedding
@@ -791,7 +786,7 @@ class SearchTopicTool:
                     query_embedding = generate_embedding(primary_query)
                     
                     if query_embedding:
-                        results = search_page_analyses_hybrid(
+                        results = _get_page_analysis().search_hybrid(
                             user_id=user_id,
                             query=primary_query,
                             query_embedding=query_embedding,
@@ -808,7 +803,7 @@ class SearchTopicTool:
             # Step 3: Fallback to keyword search if hybrid didn't work or isn't available
             if results is None:
                 if len(keywords) > 1:
-                    results = search_page_analyses_multi(
+                    results = _get_page_analysis().search_multi(
                         user_id=user_id,
                         queries=keywords,
                         language=language,
@@ -817,7 +812,7 @@ class SearchTopicTool:
                     logger.info(f"Used multi-keyword search for '{query}', found {len(results)} results")
                 else:
                     # Single keyword, use original function
-                    results = search_page_analyses(
+                    results = _get_page_analysis().search(
                         user_id=user_id,
                         query=keywords[0] if keywords else query,
                         language=language,

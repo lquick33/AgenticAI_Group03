@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from google import genai
 from app.core.config import settings
-from app.services.storage import get_supabase_client
+from app.adapters.supabase.client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ import time
 import logging
 from typing import List, Optional
 
-from app.services.storage import get_supabase_client
+from app.adapters.supabase.client import get_supabase_client
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)

@@ -247,8 +247,8 @@ class FlashcardTaskService:
             agent = FlashcardGeneratorAgent(checkpointer=checkpointer)
             
             # Get page count for progress tracking
-            from app.services.storage import get_all_page_analyses_for_material
-            page_analyses = get_all_page_analyses_for_material(
+            from app.core.adapters import get_page_analysis
+            page_analyses = get_page_analysis().get_all_for_material(
                 task.course_material_id,
                 task.user_id
             )
@@ -316,12 +316,13 @@ class FlashcardTaskService:
             # No additional save needed here
             
             # Generate filename first (needed for deck name)
-            from app.services.storage import get_supabase_client, get_all_page_analyses_for_material
+            from app.core.adapters import get_page_analysis
+            from app.adapters.supabase.client import get_supabase_client
             client = get_supabase_client()
             
             # Fetch ALL flashcards from DB for this material (not just newly generated ones)
             # This ensures the .apkg includes all cards, even from previous runs
-            page_analyses = get_all_page_analyses_for_material(task.course_material_id, task.user_id)
+            page_analyses = get_page_analysis().get_all_for_material(task.course_material_id, task.user_id)
             page_analysis_ids = [pa.get("id") for pa in page_analyses if pa.get("id")]
             
             if page_analysis_ids:

@@ -10,7 +10,7 @@ from typing import List, Dict, Any
 
 from langchain_core.messages import HumanMessage
 
-from app.services.storage import get_all_page_analyses_for_material
+from app.core.adapters import get_page_analysis as _get_page_analysis
 from app.services.analyzer import get_gemini_model
 from app.services.observability import get_langfuse_client, create_callback_handler
 from app.models.schemas import MaterialClassification
@@ -46,7 +46,7 @@ async def classify_material(
     logger.info(f"Classifying material {material_id}")
     
     # Get all page analyses
-    page_analyses = get_all_page_analyses_for_material(
+    page_analyses = _get_page_analysis().get_all_for_material(
         course_material_id=material_id,
         user_id=user_id
     )

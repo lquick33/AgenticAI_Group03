@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 
 from ..services.anki import KnowledgeService, AnkiConnectionError
-from ..services import storage
+from app.core.adapters import get_course as _get_course
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ Use this tool to:
             Dictionary with course and per-lecture mastery scores
         """
         # Get course with materials
-        course = storage.get_course_with_materials(user_id, course_id)
+        course = _get_course().get_with_materials(user_id, course_id)
         
         if not course:
             return {

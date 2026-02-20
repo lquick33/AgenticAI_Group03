@@ -13,16 +13,7 @@ from PIL import Image
 
 from app.core.config import settings
 from app.services.analyzer import analyze_pdf_page, generate_material_summary, generate_material_filename, detect_naming_pattern, image_bytes_to_base64
-from app.services.storage import (
-    update_processing_status,
-    save_page_analysis,
-    get_all_page_analyses_for_material,
-    update_course_material_summary,
-    update_course_material_filename,
-    get_page_analysis,
-    get_course_materials_for_naming,
-    get_course_material_filename,
-)
+from app.core.adapters import get_material, get_page_analysis
 from app.services.embedding_service import (
     generate_embeddings_for_material_async,
     check_embedding_availability,
@@ -126,7 +117,7 @@ async def process_single_page(
             )
             
             # Save to database
-            save_page_analysis(
+            get_page_analysis().save(
                 course_material_id=material_id,
                 page_number=page_number,
                 analysis=analysis,
@@ -167,7 +158,7 @@ async def process_pdf_background(
     try:
         # Set status to processing
         logger.info(f"Starting background processing for material {material_id}")
-        update_processing_status(material_id, "processing")
+        get_material().update_status(material_id, "processing")
         
         # Convert PDF to images
         logger.info(f"Converting PDF to images for material {material_id}")
@@ -182,13 +173,13 @@ async def process_pdf_background(
         except Exception as e:
             error_msg = f"Failed to convert PDF to images: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            update_processing_status(material_id, "error", error_msg)
+            get_material().update_status(material_id, "error", error_msg)
             return
         
         if page_count == 0:
             error_msg = "PDF contains no pages"
             logger.error(error_msg)
-            update_processing_status(material_id, "error", error_msg)
+            get_material().update_status(material_id, "error", error_msg)
             return
         
         # Create semaphore to limit concurrent requests (rate limit protection)
@@ -233,7 +224,7 @@ async def process_pdf_background(
                             logger.info(f"Page 1 analyzed, generating filename immediately for material {material_id}")
                             
                             # Get page 1 analysis
-                            page_one_analysis = get_page_analysis(
+                            page_one_analysis = get_page_analysis().get(
                                 course_material_id=material_id,
                                 page_number=1,
                                 user_id=user_id
@@ -243,7 +234,7 @@ async def process_pdf_background(
                                 page_one_summary = page_one_analysis.get("summary")
                                 
                                 # Get existing materials to detect pattern
-                                existing_materials = get_course_materials_for_naming(
+                                existing_materials = get_material().get_for_naming(
                                     course_id=course_id,
                                     user_id=user_id,
                                     exclude_material_id=material_id
@@ -264,7 +255,7 @@ async def process_pdf_background(
                                 )
                                 
                                 # Update filename immediately
-                                update_course_material_filename(material_id, new_filename)
+                                get_material().update_filename(material_id, new_filename)
                                 logger.info(f"Immediate filename generation: Updated material {material_id} to: {new_filename}")
                             else:
                                 logger.warning(f"Page 1 analysis missing summary for material {material_id}, will retry at end")
@@ -302,7 +293,7 @@ async def process_pdf_background(
                     f"Generating global material summary for material {material_id} "
                     f"based on {pages_analyzed} analyzed pages"
                 )
-                page_data = get_all_page_analyses_for_material(
+                page_data = get_page_analysis().get_all_for_material(
                     course_material_id=material_id,
                     user_id=user_id,
                 )
@@ -313,7 +304,7 @@ async def process_pdf_background(
                         material_id=material_id,
                         user_id=user_id
                     )
-                    update_course_material_summary(material_id, summary_json)
+                    get_material().update_summary(material_id, summary_json)
                     logger.info(f"Successfully stored global summary for material {material_id}")
                 else:
                     logger.warning(
@@ -333,7 +324,7 @@ async def process_pdf_background(
                     f"Classifying material {material_id} based on {pages_analyzed} analyzed pages"
                 )
                 from app.services.classifier import classify_material
-                from app.services.storage import update_material_classification
+                # update_material_classification now via adapter registry
                 
                 classification_result = await classify_material(
                     material_id=material_id,
@@ -342,7 +333,7 @@ async def process_pdf_background(
                 )
                 
                 # Store classification in database
-                update_material_classification(
+                get_material().update_classification(
                     material_id=material_id,
                     classification=classification_result["category"],
                     confidence=classification_result["confidence"],
@@ -362,7 +353,7 @@ async def process_pdf_background(
                 # Material will be classified later when flashcards are generated (fallback)
 
         # Update final status in course_materials
-        update_processing_status(material_id, status, error_message)
+        get_material().update_status(material_id, status, error_message)
         logger.info(f"Background processing completed for material {material_id}: {status}")
         
         # Generate and update filename based on page 1 summary if processing completed successfully
@@ -370,7 +361,7 @@ async def process_pdf_background(
         if status == "completed" and pages_analyzed > 0 and not filename_generated:
             try:
                 # Check if filename was already generated (doesn't match original upload filename pattern)
-                current_filename = get_course_material_filename(material_id, user_id)
+                current_filename = get_material().get_filename(material_id, user_id)
                 # If filename looks like it was already generated (doesn't contain .pdf or looks professional), skip
                 if current_filename and not current_filename.endswith('.pdf') and not current_filename.startswith('uploaded'):
                     logger.info(f"Filename already generated for material {material_id}: {current_filename}, skipping fallback")
@@ -380,7 +371,7 @@ async def process_pdf_background(
                         f"based on page 1 summary (fallback)"
                     )
                     # Get page 1 analysis
-                    page_one_analysis = get_page_analysis(
+                    page_one_analysis = get_page_analysis().get(
                         course_material_id=material_id,
                         page_number=1,
                         user_id=user_id
@@ -390,7 +381,7 @@ async def process_pdf_background(
                         page_one_summary = page_one_analysis.get("summary")
                         
                         # Get existing materials to detect pattern
-                        existing_materials = get_course_materials_for_naming(
+                        existing_materials = get_material().get_for_naming(
                             course_id=course_id,
                             user_id=user_id,
                             exclude_material_id=material_id
@@ -410,7 +401,7 @@ async def process_pdf_background(
                             existing_pattern=naming_pattern
                         )
                         # Update filename in database
-                        update_course_material_filename(material_id, new_filename)
+                        get_material().update_filename(material_id, new_filename)
                         logger.info(f"Successfully updated filename for material {material_id} to: {new_filename}")
                     else:
                         logger.warning(
@@ -449,7 +440,7 @@ async def process_pdf_background(
         error_msg = f"Unexpected error during background processing: {str(e)}"
         logger.error(error_msg, exc_info=True)
         try:
-            update_processing_status(material_id, "error", error_msg)
+            get_material().update_status(material_id, "error", error_msg)
         except Exception as update_error:
             logger.error(f"Failed to update error status: {str(update_error)}", exc_info=True)
 

@@ -7,7 +7,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.services.storage import get_page_analysis
+from app.core.adapters import get_page_analysis as _get_page_analysis
 
 
 class GetPageAnalysisInput(BaseModel):
@@ -51,7 +51,7 @@ class GetPageAnalysisTool:
             JSON string with page analysis data
         """
         try:
-            result = get_page_analysis(
+            result = _get_page_analysis().get(
                 course_material_id=course_material_id,
                 page_number=page_number,
                 user_id=user_id

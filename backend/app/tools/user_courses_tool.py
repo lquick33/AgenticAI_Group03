@@ -9,7 +9,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.services.storage import get_user_courses_with_materials
+from app.core.adapters import get_course as _get_course
 
 
 class GetUserCoursesInput(BaseModel):
@@ -46,7 +46,7 @@ class GetUserCoursesTool:
             JSON string with courses and materials
         """
         try:
-            courses = get_user_courses_with_materials(user_id=user_id)
+            courses = _get_course().get_all_with_materials(user_id=user_id)
             
             if not courses:
                 return json.dumps({

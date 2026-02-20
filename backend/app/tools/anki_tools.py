@@ -20,7 +20,7 @@ from ..services.anki import (
     build_deck_name,
 )
 from ..services.anki.client import print_first_run_instructions
-from ..services import storage
+from app.core.adapters import get_course as _get_course, get_knowledge as _get_knowledge
 
 
 # Global client instance
@@ -417,7 +417,7 @@ def get_knowledge_levels(save_snapshot: bool = False, user_id: Optional[str] = N
         try:
             deck_knowledge = client.get_all_decks_knowledge()
             for deck_name, dk in deck_knowledge.items():
-                storage.save_knowledge_snapshot(
+                _get_knowledge().save_knowledge_snapshot(
                     user_id=user_id,
                     deck_name=deck_name,
                     total_cards=dk.total_cards,
@@ -494,7 +494,7 @@ def get_course_knowledge_levels(
         }
     """
     # Get course with materials from database
-    course = storage.get_course_with_materials(user_id, course_id)
+    course = _get_course().get_with_materials(user_id, course_id)
     
     if not course:
         return {
@@ -551,7 +551,7 @@ def get_course_knowledge_levels(
         try:
             for lecture in result.lectures:
                 if lecture.total_cards > 0:
-                    storage.save_knowledge_snapshot(
+                    _get_knowledge().save_knowledge_snapshot(
                         user_id=user_id,
                         deck_name=lecture.deck_name,
                         total_cards=lecture.total_cards,
@@ -569,7 +569,7 @@ def get_course_knowledge_levels(
                     )
                     
                     # Also save deck mapping
-                    storage.save_deck_mapping(
+                    _get_knowledge().save_deck_mapping(
                         user_id=user_id,
                         course_id=course_id,
                         deck_name=lecture.deck_name,
@@ -610,7 +610,7 @@ def create_course_flashcard(
         Dictionary with note_id, deck name, and sync status
     """
     # Get course and material info
-    course = storage.get_course_with_materials(user_id, course_id)
+    course = _get_course().get_with_materials(user_id, course_id)
     
     if not course:
         return {"status": "error", "error": "Course not found"}
@@ -640,7 +640,7 @@ def create_course_flashcard(
     if result.get("status") == "success":
         try:
             # Save deck mapping
-            storage.save_deck_mapping(
+            _get_knowledge().save_deck_mapping(
                 user_id=user_id,
                 course_id=course_id,
                 deck_name=deck_name,
@@ -650,7 +650,7 @@ def create_course_flashcard(
             # Save card mapping if we have a note_id
             note_id = result.get("note_id")
             if note_id:
-                storage.save_anki_card_mapping(
+                _get_knowledge().save_anki_card_mapping(
                     user_id=user_id,
                     anki_note_id=note_id,
                     deck_name=deck_name,
@@ -689,7 +689,7 @@ def create_course_flashcards_batch(
         Dictionary with created note IDs, deck name, and any errors
     """
     # Get course and material info
-    course = storage.get_course_with_materials(user_id, course_id)
+    course = _get_course().get_with_materials(user_id, course_id)
     
     if not course:
         return {"status": "error", "error": "Course not found"}
@@ -717,7 +717,7 @@ def create_course_flashcards_batch(
     if result.get("status") == "success":
         try:
             # Save deck mapping
-            storage.save_deck_mapping(
+            _get_knowledge().save_deck_mapping(
                 user_id=user_id,
                 course_id=course_id,
                 deck_name=deck_name,
@@ -728,7 +728,7 @@ def create_course_flashcards_batch(
             note_ids = result.get("note_ids", [])
             for note_id in note_ids:
                 if note_id:
-                    storage.save_anki_card_mapping(
+                    _get_knowledge().save_anki_card_mapping(
                         user_id=user_id,
                         anki_note_id=note_id,
                         deck_name=deck_name,

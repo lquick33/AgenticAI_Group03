@@ -6,7 +6,7 @@ import json
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from app.services.storage import get_supabase_client, download_file_from_storage
+from app.core.adapters import get_file_storage as _get_file_storage
 from app.services.pdf_processor import extract_page_image
 
 
@@ -86,7 +86,7 @@ class GetPageImageTool:
                 })
             
             # 2. Download PDF file
-            pdf_bytes = download_file_from_storage(file_path)
+            pdf_bytes = _get_file_storage().download(file_path)
             
             # 3. Extract page image
             image_data = extract_page_image(pdf_bytes, page_number)

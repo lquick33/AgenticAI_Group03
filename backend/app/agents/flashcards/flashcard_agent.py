@@ -27,16 +27,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.agents.base import BaseAgent
 from app.models.schemas import PageSkipDecision, FlashcardGenerationResult, MaterialClassification
-from app.services.storage import (
-    get_all_page_analyses_for_material,
-    get_messages_for_page,
-    get_messages_for_pages_batch,
-    get_material_classification,
-    update_material_classification,
-    cache_flashcards,
-    get_cached_flashcards_for_course,
-    sync_cache_from_anki,
-)
+from app.core.adapters import get_page_analysis, get_message, get_material, get_flashcard
 from app.services.snippet_service import get_snippets_for_material, get_snippet_public_url
 from app.services.analyzer import get_gemini_model
 from app.services.observability import create_callback_handler, get_langfuse_client
@@ -389,7 +380,7 @@ class FlashcardGeneratorAgent(BaseAgent):
         logger.info(f"Initializing flashcard generation for material {state['course_material_id']}")
         
         # Load page analyses
-        page_analyses = get_all_page_analyses_for_material(
+        page_analyses = get_page_analysis().get_all_for_material(
             state["course_material_id"],
             state["user_id"]
         )
@@ -419,7 +410,7 @@ class FlashcardGeneratorAgent(BaseAgent):
         messages_by_page = {}
         if page_ids:
             try:
-                messages_by_page = get_messages_for_pages_batch(page_ids, state["user_id"])
+                messages_by_page = get_message().get_for_pages_batch(page_ids, state["user_id"])
                 total_messages = sum(len(msgs) for msgs in messages_by_page.values())
                 logger.info(f"Prefetched {total_messages} messages for {len(messages_by_page)} pages (batch query)")
             except Exception as e:
@@ -478,7 +469,7 @@ class FlashcardGeneratorAgent(BaseAgent):
         classification_reasoning = None
         
         # Check if classification exists in DB (cached from upload)
-        cached = get_material_classification(material_id, user_id)
+        cached = get_material().get_classification(material_id, user_id)
         
         if cached and not cached.get("classification_override", False):
             # Use cached classification (from upload)
@@ -493,7 +484,7 @@ class FlashcardGeneratorAgent(BaseAgent):
                 classification_result = self._generate_classification(state)
                 
                 # Store in database for future use
-                update_material_classification(
+                get_material().update_classification(
                     material_id=material_id,
                     classification=classification_result["category"],
                     confidence=classification_result["confidence"],
@@ -1283,7 +1274,7 @@ Respond with a JSON object matching this structure:
                 logger.info(f"Generated {len(note_ids)} temporary note IDs for database storage (Anki unavailable)")
             
             try:
-                cache_flashcards(
+                get_flashcard().cache(
                     all_cards,
                     note_ids,
                     user_id,
@@ -1326,7 +1317,7 @@ Respond with a JSON object matching this structure:
             
             # Step 1: Sync Anki → Cache (capture any manual edits/additions)
             try:
-                sync_stats = sync_cache_from_anki(parent_deck, user_id, course_id)
+                sync_stats = get_flashcard().sync_cache_from_anki(parent_deck, user_id, course_id)
                 if sync_stats.get("inserted") or sync_stats.get("updated"):
                     logger.info(
                         f"Synced Anki → Cache: +{sync_stats.get('inserted', 0)} new, "
@@ -1344,7 +1335,7 @@ Respond with a JSON object matching this structure:
         
         # Fallback to cache if Anki unavailable
         try:
-            cached_cards = get_cached_flashcards_for_course(course_id, user_id)
+            cached_cards = get_flashcard().get_cached_for_course(course_id, user_id)
             return [c["front"] for c in cached_cards]
         except Exception as e:
             logger.warning(f"Failed to get cached fronts: {e}")
@@ -2145,7 +2136,7 @@ You must respond with a valid JSON object matching this structure:
                 thread_id = f"flashcard-task-{task_id}"
         
         # Recursion limit: 10 * page count so large PDFs don't hit default 25
-        page_analyses_pre = get_all_page_analyses_for_material(course_material_id, user_id)
+        page_analyses_pre = get_page_analysis().get_all_for_material(course_material_id, user_id)
         total_pages_pre = len(page_analyses_pre) if page_analyses_pre else 0
         recursion_limit = 10 * max(1, total_pages_pre)
         config = {"configurable": {"thread_id": thread_id}, "recursion_limit": recursion_limit}

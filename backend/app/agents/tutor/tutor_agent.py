@@ -24,6 +24,7 @@ from app.tools.quiz_tool import CreateQuizTool
 from app.tools.page_image_tool import GetPageImageTool
 from app.services.observability import create_callback_handler, get_langfuse_client
 from app.core.config import settings
+from app.agents.shared import StateAwareToolNode, fix_incomplete_tool_calls, compute_state_hash
 
 logger = logging.getLogger(__name__)
 
@@ -40,211 +41,7 @@ class TutorState(State):
     course_material_summary: Optional[dict] = None
 
 
-class StateAwareToolNode(ToolNode):
-    """
-    ToolNode that automatically injects state values into tool calls.
-    
-    This prevents the LLM from hallucinating IDs and ensures the correct
-    values (material_id, current_page, user_id) are always used when
-    calling tools.
-    """
-    
-    def invoke(self, input: TutorState, config: Optional[Any] = None) -> TutorState:
-        """
-        Execute tools with automatic state injection.
-        
-        This overrides the invoke method to inject state values before
-        tool execution, ensuring required parameters are always present.
-        
-        Args:
-            input: Current agent state
-            config: Optional configuration
-            
-        Returns:
-            Updated state with tool results
-        """
-        messages = input.get("messages", [])
-        if not messages:
-            return input
-        
-        last_message = messages[-1]
-        
-        # Check if last message has tool calls
-        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-            # Create a modified copy of tool calls with injected state values
-            modified_tool_calls = []
-            for tool_call in last_message.tool_calls:
-                # Get tool call information
-                if isinstance(tool_call, dict):
-                    tool_name = tool_call.get("name", "")
-                    tool_id = tool_call.get("id", "")
-                    args = dict(tool_call.get("args", {}) or {})
-                else:
-                    tool_name = getattr(tool_call, "name", "")
-                    tool_id = getattr(tool_call, "id", "")
-                    args = dict(getattr(tool_call, "args", {}) or {})
-                
-                # Inject state values for get_page_analysis tool
-                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
-                if tool_name == "get_page_analysis":
-                    if input.get("material_id"):
-                        args["course_material_id"] = input["material_id"]
-                    if input.get("user_id"):
-                        args["user_id"] = input["user_id"]
-                    # Only inject page_number if not explicitly provided by LLM
-                    # (LLM might specify a different page number, like page 30)
-                    if "page_number" not in args or args.get("page_number") is None:
-                        if input.get("current_page"):
-                            args["page_number"] = input["current_page"]
-                
-                # Inject state values for get_course_material_summary tool
-                # ALWAYS override from state to prevent LLM hallucination
-                elif tool_name == "get_course_material_summary":
-                    if input.get("material_id"):
-                        args["course_material_id"] = input["material_id"]
-                    if input.get("user_id"):
-                        args["user_id"] = input["user_id"]
-                
-                # Inject state values for create_quiz tool
-                # ALWAYS override from state to prevent LLM hallucination
-                elif tool_name == "create_quiz":
-                    if input.get("material_id"):
-                        args["course_material_id"] = input["material_id"]
-                    if input.get("user_id"):
-                        args["user_id"] = input["user_id"]
-                
-                # Inject state values for get_page_image tool
-                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
-                elif tool_name == "get_page_image":
-                    if input.get("material_id"):
-                        args["course_material_id"] = input["material_id"]
-                    if input.get("user_id"):
-                        args["user_id"] = input["user_id"]
-                    # Only inject page_number if not explicitly provided by LLM
-                    if "page_number" not in args or args.get("page_number") is None:
-                        if input.get("current_page"):
-                            args["page_number"] = input["current_page"]
-                
-                # Create modified tool call
-                modified_tool_calls.append({
-                    "id": tool_id,
-                    "name": tool_name,
-                    "args": args
-                })
-            
-            # Create a new message with modified tool calls
-            from langchain_core.messages import AIMessage
-            modified_message = AIMessage(
-                content=last_message.content if hasattr(last_message, "content") else "",
-                tool_calls=modified_tool_calls
-            )
-            
-            # Replace the last message in the state
-            modified_messages = messages[:-1] + [modified_message]
-            modified_state = {**input, "messages": modified_messages}
-            
-            # Call parent implementation with modified state
-            return super().invoke(modified_state, config)
-        
-        # No tool calls, call parent implementation as-is
-        return super().invoke(input, config)
-    
-    async def ainvoke(self, input: TutorState, config: Optional[Any] = None) -> TutorState:
-        """
-        Execute tools asynchronously with automatic state injection.
-        
-        Args:
-            input: Current agent state
-            config: Optional configuration
-            
-        Returns:
-            Updated state with tool results
-        """
-        messages = input.get("messages", [])
-        if not messages:
-            return input
-        
-        last_message = messages[-1]
-        
-        # Check if last message has tool calls
-        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-            # Create a modified copy of tool calls with injected state values
-            modified_tool_calls = []
-            for tool_call in last_message.tool_calls:
-                # Get tool call information
-                if isinstance(tool_call, dict):
-                    tool_name = tool_call.get("name", "")
-                    tool_id = tool_call.get("id", "")
-                    args = dict(tool_call.get("args", {}) or {})
-                else:
-                    tool_name = getattr(tool_call, "name", "")
-                    tool_id = getattr(tool_call, "id", "")
-                    args = dict(getattr(tool_call, "args", {}) or {})
-                
-                # Inject state values for get_page_analysis tool
-                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
-                if tool_name == "get_page_analysis":
-                    if input.get("material_id"):
-                        args["course_material_id"] = input["material_id"]
-                    if input.get("user_id"):
-                        args["user_id"] = input["user_id"]
-                    # Only inject page_number if not explicitly provided by LLM
-                    # (LLM might specify a different page number, like page 30)
-                    if "page_number" not in args or args.get("page_number") is None:
-                        if input.get("current_page"):
-                            args["page_number"] = input["current_page"]
-                
-                # Inject state values for get_course_material_summary tool
-                # ALWAYS override from state to prevent LLM hallucination
-                elif tool_name == "get_course_material_summary":
-                    if input.get("material_id"):
-                        args["course_material_id"] = input["material_id"]
-                    if input.get("user_id"):
-                        args["user_id"] = input["user_id"]
-                
-                # Inject state values for create_quiz tool
-                # ALWAYS override from state to prevent LLM hallucination
-                elif tool_name == "create_quiz":
-                    if input.get("material_id"):
-                        args["course_material_id"] = input["material_id"]
-                    if input.get("user_id"):
-                        args["user_id"] = input["user_id"]
-                
-                # Inject state values for get_page_image tool
-                # ALWAYS override course_material_id and user_id from state to prevent LLM hallucination
-                elif tool_name == "get_page_image":
-                    if input.get("material_id"):
-                        args["course_material_id"] = input["material_id"]
-                    if input.get("user_id"):
-                        args["user_id"] = input["user_id"]
-                    # Only inject page_number if not explicitly provided by LLM
-                    if "page_number" not in args or args.get("page_number") is None:
-                        if input.get("current_page"):
-                            args["page_number"] = input["current_page"]
-                
-                # Create modified tool call
-                modified_tool_calls.append({
-                    "id": tool_id,
-                    "name": tool_name,
-                    "args": args
-                })
-            
-            # Create a new message with modified tool calls
-            from langchain_core.messages import AIMessage
-            modified_message = AIMessage(
-                content=last_message.content if hasattr(last_message, "content") else "",
-                tool_calls=modified_tool_calls
-            )
-            
-            # Replace the last message in the state
-            modified_messages = messages[:-1] + [modified_message]
-            modified_state = {**input, "messages": modified_messages}
-            
-            # Call parent implementation with modified state
-            return await super().ainvoke(modified_state, config)
-        
-        # No tool calls, call parent implementation as-is
-        return await super().ainvoke(input, config)
+# StateAwareToolNode is now imported from app.agents.shared
 
 
 class TutorAgent(BaseAgent):
@@ -432,23 +229,13 @@ class TutorAgent(BaseAgent):
         return formality_text, humor_text, encouragement_text
     
     def _compute_state_hash(self, state: dict) -> str:
-        """
-        Compute a hash of state values relevant for prompt caching.
-        Used to detect when the enhanced prompt needs to be rebuilt.
-        
-        TOKEN OPTIMIZATION: If hash matches cached hash, we can reuse the cached prompt.
-        """
-        import hashlib
-        # Only hash the values that affect the enhanced prompt
-        material_id = state.get("material_id", "")
-        current_page = state.get("current_page", "")
-        user_id = state.get("user_id", "")
-        # Include a truncated summary hash (first 100 chars) to detect major changes
-        summary = state.get("course_material_summary", "")
-        summary_preview = str(summary)[:100] if summary else ""
-        
-        hash_input = f"{material_id}|{current_page}|{user_id}|{summary_preview}"
-        return hashlib.md5(hash_input.encode()).hexdigest()
+        """Delegate to shared prompt cache utility."""
+        return compute_state_hash(
+            material_id=state.get("material_id"),
+            current_page=state.get("current_page"),
+            user_id=state.get("user_id"),
+            summary=state.get("course_material_summary"),
+        )
     
     def _build_graph(self) -> None:
         """Build the LangGraph workflow for the tutor agent."""
@@ -478,117 +265,8 @@ class TutorAgent(BaseAgent):
         self.compile_graph(workflow)
     
     def _fix_incomplete_tool_calls(self, messages: list) -> list:
-        """
-        Validate and fix message ordering to comply with Gemini API requirements.
-        Gemini API requires strict ordering:
-        - User message (HumanMessage)
-        - Assistant with tool_calls (AIMessage with tool_calls) - MUST come immediately after HumanMessage or ToolMessage
-        - Tool responses (ToolMessage) - MUST come immediately after AIMessage with tool_calls
-        - (Optional) Assistant final response (AIMessage without tool_calls)
-        - User message (HumanMessage)
-        
-        This function:
-        1. Removes any AIMessage with tool_calls that doesn't have corresponding ToolMessages
-        2. Ensures ToolMessages come immediately after their AIMessage
-        3. Removes orphaned ToolMessages (without preceding AIMessage)
-        4. Ensures AIMessage with tool_calls only comes after HumanMessage or ToolMessage
-        
-        Args:
-            messages: List of messages to check
-            
-        Returns:
-            Fixed list of messages that comply with Gemini API requirements
-        """
-        if not messages:
-            return messages
-        
-        fixed_messages = []
-        i = 0
-        
-        while i < len(messages):
-            msg = messages[i]
-            
-            # Skip SystemMessage - it doesn't affect the turn order
-            if isinstance(msg, SystemMessage):
-                fixed_messages.append(msg)
-                i += 1
-                continue
-            
-            # Check if this is an AIMessage with tool_calls
-            if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
-                # CRITICAL: Gemini requires AIMessage with tool_calls to come immediately after
-                # HumanMessage or ToolMessage. Check the previous non-SystemMessage.
-                prev_msg_index = len(fixed_messages) - 1
-                while prev_msg_index >= 0 and isinstance(fixed_messages[prev_msg_index], SystemMessage):
-                    prev_msg_index -= 1
-                
-                # Check if previous message is valid (HumanMessage or ToolMessage)
-                is_valid_previous = False
-                if prev_msg_index >= 0:
-                    prev_msg = fixed_messages[prev_msg_index]
-                    if isinstance(prev_msg, HumanMessage) or isinstance(prev_msg, ToolMessage):
-                        is_valid_previous = True
-                elif i > 0:
-                    # Check original messages list if fixed_messages is empty or only has SystemMessages
-                    for k in range(i - 1, -1, -1):
-                        if not isinstance(messages[k], SystemMessage):
-                            if isinstance(messages[k], HumanMessage) or isinstance(messages[k], ToolMessage):
-                                is_valid_previous = True
-                            break
-                
-                if not is_valid_previous:
-                    # Invalid: AIMessage with tool_calls not after HumanMessage or ToolMessage
-                    logger.warning(
-                        f"Invalid message order at index {i}: AIMessage with tool_calls must come immediately "
-                        f"after HumanMessage or ToolMessage. Removing to prevent API error."
-                    )
-                    i += 1
-                    continue
-                
-                # Collect all tool call IDs from this AIMessage
-                tool_call_ids = set()
-                for tool_call in msg.tool_calls:
-                    tool_call_id = tool_call.get("id") if isinstance(tool_call, dict) else getattr(tool_call, "id", None)
-                    if tool_call_id:
-                        tool_call_ids.add(tool_call_id)
-                
-                # Look ahead to find corresponding ToolMessages
-                # They should come immediately after the AIMessage
-                found_tool_messages = []
-                j = i + 1
-                while j < len(messages) and isinstance(messages[j], ToolMessage):
-                    tool_msg = messages[j]
-                    tool_call_id = getattr(tool_msg, "tool_call_id", None)
-                    if tool_call_id in tool_call_ids:
-                        found_tool_messages.append(tool_msg)
-                    j += 1
-                
-                # Check if all tool calls have corresponding ToolMessages
-                found_tool_call_ids = {getattr(tm, "tool_call_id", None) for tm in found_tool_messages}
-                
-                if found_tool_call_ids == tool_call_ids and len(found_tool_messages) == len(tool_call_ids):
-                    # All tool calls have responses - keep the AIMessage and ToolMessages
-                    fixed_messages.append(msg)
-                    fixed_messages.extend(found_tool_messages)
-                    i = j  # Skip past the ToolMessages
-                else:
-                    # Incomplete tool call pair - remove the AIMessage
-                    logger.warning(
-                        f"Incomplete tool call pair detected at index {i}: AIMessage has {len(tool_call_ids)} tool_calls, "
-                        f"but only {len(found_tool_messages)} ToolMessages found. Removing incomplete AIMessage to prevent API error."
-                    )
-                    i += 1  # Skip the incomplete AIMessage
-            elif isinstance(msg, ToolMessage):
-                # Orphaned ToolMessage (no preceding AIMessage with tool_calls)
-                # Remove it to prevent API errors
-                logger.warning(f"Orphaned ToolMessage detected at index {i}, removing to prevent API error.")
-                i += 1
-            else:
-                # Regular message (HumanMessage, AIMessage without tool_calls)
-                fixed_messages.append(msg)
-                i += 1
-        
-        return fixed_messages
+        """Delegate to shared message utility."""
+        return fix_incomplete_tool_calls(messages)
     
     def call_model(self, state: TutorState) -> TutorState:
         """

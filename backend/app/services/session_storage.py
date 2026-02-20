@@ -9,7 +9,7 @@ This module provides helper functions to manage:
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services.storage import get_supabase_client
+from app.adapters.supabase.client import get_supabase_client
 
 
 SESSION_TYPE_STUDY = "study"

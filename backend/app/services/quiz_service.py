@@ -9,7 +9,7 @@ import logging
 from typing import Optional, Dict, List
 from datetime import datetime
 
-from app.services.storage import get_supabase_client
+from app.adapters.supabase.client import get_supabase_client
 from app.models.schemas import QuizData, QuizResult, QuestionResult
 
 logger = logging.getLogger(__name__)
