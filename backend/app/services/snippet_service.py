@@ -38,25 +38,6 @@ def create_snippet(
     """
     client = get_supabase_client()
     
-    # Get current snippet count for this page to determine order_index
-    try:
-        existing = client.table("slide_snippets").select("order_index").eq(
-            "course_material_id", course_material_id
-        ).eq(
-            "page_number", page_number
-        ).eq(
-            "user_id", user_id
-        ).order("order_index", desc=True).limit(1).execute()
-        
-        if existing.data and len(existing.data) > 0:
-            # Next order_index is max + 1
-            next_order_index = (existing.data[0].get("order_index") or 0) + 1
-        else:
-            next_order_index = 0
-    except Exception as e:
-        logger.warning(f"Failed to check for existing snippets: {e}")
-        next_order_index = 0
-    
     # 1. Upload to Storage
     # Use course_materials bucket with clear path structure
     # Path: {user_id}/snippets/{course_material_id}/{filename}
@@ -76,25 +57,24 @@ def create_snippet(
         logger.error(f"Storage upload failed: {str(e)}")
         raise Exception(f"Failed to upload snippet image: {str(e)}")
         
-    # 2. Insert into DB (not upsert - we allow multiple snippets per page now)
+    # 2. Insert into DB using atomic RPC to avoid race conditions
     try:
-        data = {
-            "course_material_id": course_material_id,
-            "user_id": user_id,
-            "page_number": page_number,
-            "image_path": storage_path,
-            "order_index": next_order_index
+        rpc_params = {
+            "p_course_material_id": course_material_id,
+            "p_user_id": user_id,
+            "p_page_number": page_number,
+            "p_image_path": storage_path
         }
         
-        # Insert new snippet record
-        response = client.table("slide_snippets").insert(data).execute()
+        # Atomic insert using Supabase RPC
+        response = client.rpc("insert_slide_snippet", rpc_params).execute()
         
         if response.data and len(response.data) > 0:
-            snippet_count = next_order_index + 1
-            logger.info(f"✅ Created snippet {snippet_count} for page {page_number}")
-            return response.data[0]
+            snippet_data = response.data[0]
+            logger.info(f"✅ Created snippet for page {page_number} with order_index {snippet_data.get('order_index')}")
+            return snippet_data
         else:
-            logger.error(f"DB insert returned no data. Response: {response}")
+            logger.error(f"DB RPC insert returned no data. Response: {response}")
             raise Exception("Failed to save snippet record (no data returned)")
             
     except Exception as e:

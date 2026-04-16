@@ -1,0 +1,1783 @@
+{
+  "dataset_name": "tutor-v2-gold-evals",
+  "schema_version": "1.0.0",
+  "description": "Versioniertes Gold-Dataset fuer Tutor Legacy/V2 Vergleiche mit eingefrorenen Tool- und Kontext-Fixtures.",
+  "cases": [
+    {
+      "id": "current-page-explain-01",
+      "category": "current_page_explain",
+      "history": [],
+      "user_message": "Erklaer mir bitte die aktuelle Seite.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 5
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Gradientenabstieg im Kontext des Trainings.",
+          "key_terms": [
+            "Gradientenabstieg",
+            "Machine Learning"
+          ],
+          "diagram_description": "Visualisierung zu Gradientenabstieg."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll auf Seite 5 und Gradientenabstieg grounded bleiben."
+      }
+    },
+    {
+      "id": "current-page-explain-02",
+      "category": "current_page_explain",
+      "history": [],
+      "user_message": "Was ist der Kernpunkt dieser Folie?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 6
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Lernrate im Kontext des Trainings.",
+          "key_terms": [
+            "Lernrate",
+            "Machine Learning"
+          ],
+          "diagram_description": "Visualisierung zu Lernrate."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll auf Seite 6 und Lernrate grounded bleiben."
+      }
+    },
+    {
+      "id": "current-page-explain-03",
+      "category": "current_page_explain",
+      "history": [],
+      "user_message": "Fass die Seite fuer mich kurz zusammen.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 7
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Kostenfunktion im Kontext des Trainings.",
+          "key_terms": [
+            "Kostenfunktion",
+            "Machine Learning"
+          ],
+          "diagram_description": "Visualisierung zu Kostenfunktion."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll auf Seite 7 und Kostenfunktion grounded bleiben."
+      }
+    },
+    {
+      "id": "current-page-explain-04",
+      "category": "current_page_explain",
+      "history": [],
+      "user_message": "Was lerne ich auf dieser Seite?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 8
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Regularisierung im Kontext des Trainings.",
+          "key_terms": [
+            "Regularisierung",
+            "Machine Learning"
+          ],
+          "diagram_description": "Visualisierung zu Regularisierung."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll auf Seite 8 und Regularisierung grounded bleiben."
+      }
+    },
+    {
+      "id": "current-page-explain-05",
+      "category": "current_page_explain",
+      "history": [],
+      "user_message": "Erklaer mir die aktuelle Folie einfach.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 9
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Neuron im Kontext des Trainings.",
+          "key_terms": [
+            "Neuron",
+            "Machine Learning"
+          ],
+          "diagram_description": "Visualisierung zu Neuron."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll auf Seite 9 und Neuron grounded bleiben."
+      }
+    },
+    {
+      "id": "current-page-explain-06",
+      "category": "current_page_explain",
+      "history": [],
+      "user_message": "Was ist auf der Seite wichtig?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 10
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Aktivierungsfunktion im Kontext des Trainings.",
+          "key_terms": [
+            "Aktivierungsfunktion",
+            "Machine Learning"
+          ],
+          "diagram_description": "Visualisierung zu Aktivierungsfunktion."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll auf Seite 10 und Aktivierungsfunktion grounded bleiben."
+      }
+    },
+    {
+      "id": "current-page-explain-07",
+      "category": "current_page_explain",
+      "history": [],
+      "user_message": "Erklaere mir diese Seite bitte studentengerecht.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 11
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Backpropagation im Kontext des Trainings.",
+          "key_terms": [
+            "Backpropagation",
+            "Machine Learning"
+          ],
+          "diagram_description": "Visualisierung zu Backpropagation."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll auf Seite 11 und Backpropagation grounded bleiben."
+      }
+    },
+    {
+      "id": "current-page-explain-08",
+      "category": "current_page_explain",
+      "history": [],
+      "user_message": "Welche Hauptidee steckt auf der Folie?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 12
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Overfitting im Kontext des Trainings.",
+          "key_terms": [
+            "Overfitting",
+            "Machine Learning"
+          ],
+          "diagram_description": "Visualisierung zu Overfitting."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll auf Seite 12 und Overfitting grounded bleiben."
+      }
+    },
+    {
+      "id": "current-page-explain-09",
+      "category": "current_page_explain",
+      "history": [],
+      "user_message": "Kannst du mir den Inhalt dieser Seite erklaeren?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 13
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Validierungsmenge im Kontext des Trainings.",
+          "key_terms": [
+            "Validierungsmenge",
+            "Machine Learning"
+          ],
+          "diagram_description": "Visualisierung zu Validierungsmenge."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll auf Seite 13 und Validierungsmenge grounded bleiben."
+      }
+    },
+    {
+      "id": "current-page-explain-10",
+      "category": "current_page_explain",
+      "history": [],
+      "user_message": "Was behandelt die aktuelle Seite?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 14
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Konfusionsmatrix im Kontext des Trainings.",
+          "key_terms": [
+            "Konfusionsmatrix",
+            "Machine Learning"
+          ],
+          "diagram_description": "Visualisierung zu Konfusionsmatrix."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll auf Seite 14 und Konfusionsmatrix grounded bleiben."
+      }
+    },
+    {
+      "id": "follow-up-01",
+      "category": "follow_up",
+      "history": [
+        {
+          "role": "user",
+          "content": "Erklaer mir bitte Gradientenabstieg."
+        },
+        {
+          "role": "assistant",
+          "content": "Gradientenabstieg wurde bereits auf der aktuellen Seite eingefuehrt."
+        }
+      ],
+      "user_message": "Warum ist das fuer das Training wichtig?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 15
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite vertieft Gradientenabstieg mit einem praktischen Beispiel.",
+          "key_terms": [
+            "Gradientenabstieg",
+            "Praxis"
+          ],
+          "diagram_description": "Illustration fuer Gradientenabstieg."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "answer_followup",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll an den bisherigen Verlauf anschliessen."
+      }
+    },
+    {
+      "id": "follow-up-02",
+      "category": "follow_up",
+      "history": [
+        {
+          "role": "user",
+          "content": "Erklaer mir bitte Lernrate."
+        },
+        {
+          "role": "assistant",
+          "content": "Lernrate wurde bereits auf der aktuellen Seite eingefuehrt."
+        }
+      ],
+      "user_message": "Was passiert, wenn sie zu gross ist?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 16
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite vertieft Lernrate mit einem praktischen Beispiel.",
+          "key_terms": [
+            "Lernrate",
+            "Praxis"
+          ],
+          "diagram_description": "Illustration fuer Lernrate."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "answer_followup",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll an den bisherigen Verlauf anschliessen."
+      }
+    },
+    {
+      "id": "follow-up-03",
+      "category": "follow_up",
+      "history": [
+        {
+          "role": "user",
+          "content": "Erklaer mir bitte Regularisierung."
+        },
+        {
+          "role": "assistant",
+          "content": "Regularisierung wurde bereits auf der aktuellen Seite eingefuehrt."
+        }
+      ],
+      "user_message": "Wann wuerde ich das einsetzen?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 17
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite vertieft Regularisierung mit einem praktischen Beispiel.",
+          "key_terms": [
+            "Regularisierung",
+            "Praxis"
+          ],
+          "diagram_description": "Illustration fuer Regularisierung."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "answer_followup",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll an den bisherigen Verlauf anschliessen."
+      }
+    },
+    {
+      "id": "follow-up-04",
+      "category": "follow_up",
+      "history": [
+        {
+          "role": "user",
+          "content": "Erklaer mir bitte Neuron."
+        },
+        {
+          "role": "assistant",
+          "content": "Neuron wurde bereits auf der aktuellen Seite eingefuehrt."
+        }
+      ],
+      "user_message": "Wie haengt das mit dem vorherigen Beispiel zusammen?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 18
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite vertieft Neuron mit einem praktischen Beispiel.",
+          "key_terms": [
+            "Neuron",
+            "Praxis"
+          ],
+          "diagram_description": "Illustration fuer Neuron."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "answer_followup",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll an den bisherigen Verlauf anschliessen."
+      }
+    },
+    {
+      "id": "follow-up-05",
+      "category": "follow_up",
+      "history": [
+        {
+          "role": "user",
+          "content": "Erklaer mir bitte Backpropagation."
+        },
+        {
+          "role": "assistant",
+          "content": "Backpropagation wurde bereits auf der aktuellen Seite eingefuehrt."
+        }
+      ],
+      "user_message": "Warum braucht man dazu Ableitungen?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 19
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite vertieft Backpropagation mit einem praktischen Beispiel.",
+          "key_terms": [
+            "Backpropagation",
+            "Praxis"
+          ],
+          "diagram_description": "Illustration fuer Backpropagation."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "answer_followup",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll an den bisherigen Verlauf anschliessen."
+      }
+    },
+    {
+      "id": "follow-up-06",
+      "category": "follow_up",
+      "history": [
+        {
+          "role": "user",
+          "content": "Erklaer mir bitte Overfitting."
+        },
+        {
+          "role": "assistant",
+          "content": "Overfitting wurde bereits auf der aktuellen Seite eingefuehrt."
+        }
+      ],
+      "user_message": "Wie erkenne ich das in der Praxis?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 20
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite vertieft Overfitting mit einem praktischen Beispiel.",
+          "key_terms": [
+            "Overfitting",
+            "Praxis"
+          ],
+          "diagram_description": "Illustration fuer Overfitting."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "answer_followup",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll an den bisherigen Verlauf anschliessen."
+      }
+    },
+    {
+      "id": "follow-up-07",
+      "category": "follow_up",
+      "history": [
+        {
+          "role": "user",
+          "content": "Erklaer mir bitte Dropout."
+        },
+        {
+          "role": "assistant",
+          "content": "Dropout wurde bereits auf der aktuellen Seite eingefuehrt."
+        }
+      ],
+      "user_message": "Was ist daran der eigentliche Vorteil?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 21
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite vertieft Dropout mit einem praktischen Beispiel.",
+          "key_terms": [
+            "Dropout",
+            "Praxis"
+          ],
+          "diagram_description": "Illustration fuer Dropout."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "answer_followup",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll an den bisherigen Verlauf anschliessen."
+      }
+    },
+    {
+      "id": "follow-up-08",
+      "category": "follow_up",
+      "history": [
+        {
+          "role": "user",
+          "content": "Erklaer mir bitte Konfusionsmatrix."
+        },
+        {
+          "role": "assistant",
+          "content": "Konfusionsmatrix wurde bereits auf der aktuellen Seite eingefuehrt."
+        }
+      ],
+      "user_message": "Wie lese ich daraus Fehlerarten ab?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 22
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite vertieft Konfusionsmatrix mit einem praktischen Beispiel.",
+          "key_terms": [
+            "Konfusionsmatrix",
+            "Praxis"
+          ],
+          "diagram_description": "Illustration fuer Konfusionsmatrix."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "answer_followup",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll an den bisherigen Verlauf anschliessen."
+      }
+    },
+    {
+      "id": "visual-question-01",
+      "category": "visual_question",
+      "history": [],
+      "user_message": "Was zeigt das Diagramm auf der Folie?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 23
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Verlustkurve und verweist auf eine Abbildung.",
+          "key_terms": [
+            "Verlustkurve",
+            "Visualisierung"
+          ],
+          "diagram_description": "Abbildung zu Verlustkurve."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "page_image": {
+          "status": "success",
+          "image_data": "data:image/png;base64,AAA",
+          "page_number": 23,
+          "message": "Visual snapshot for page 23"
+        }
+      },
+      "expected": {
+        "intent": "needs_visual",
+        "tool_names": [
+          "get_page_analysis",
+          "get_page_image"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll sowohl Seitenanalyse als auch Bildbezug nutzen."
+      }
+    },
+    {
+      "id": "visual-question-02",
+      "category": "visual_question",
+      "history": [],
+      "user_message": "Wie sieht die Grafik auf dieser Seite aus?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 24
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Netzwerkarchitektur und verweist auf eine Abbildung.",
+          "key_terms": [
+            "Netzwerkarchitektur",
+            "Visualisierung"
+          ],
+          "diagram_description": "Abbildung zu Netzwerkarchitektur."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "page_image": {
+          "status": "success",
+          "image_data": "data:image/png;base64,AAA",
+          "page_number": 24,
+          "message": "Visual snapshot for page 24"
+        }
+      },
+      "expected": {
+        "intent": "needs_visual",
+        "tool_names": [
+          "get_page_analysis",
+          "get_page_image"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll sowohl Seitenanalyse als auch Bildbezug nutzen."
+      }
+    },
+    {
+      "id": "visual-question-03",
+      "category": "visual_question",
+      "history": [],
+      "user_message": "Erklaer mir die Abbildung auf der Seite.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 25
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Entscheidungsgrenze und verweist auf eine Abbildung.",
+          "key_terms": [
+            "Entscheidungsgrenze",
+            "Visualisierung"
+          ],
+          "diagram_description": "Abbildung zu Entscheidungsgrenze."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "page_image": {
+          "status": "success",
+          "image_data": "data:image/png;base64,AAA",
+          "page_number": 25,
+          "message": "Visual snapshot for page 25"
+        }
+      },
+      "expected": {
+        "intent": "needs_visual",
+        "tool_names": [
+          "get_page_analysis",
+          "get_page_image"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll sowohl Seitenanalyse als auch Bildbezug nutzen."
+      }
+    },
+    {
+      "id": "visual-question-04",
+      "category": "visual_question",
+      "history": [],
+      "user_message": "Was erkennt man an der Grafik hier?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 26
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Trainingsverlauf und verweist auf eine Abbildung.",
+          "key_terms": [
+            "Trainingsverlauf",
+            "Visualisierung"
+          ],
+          "diagram_description": "Abbildung zu Trainingsverlauf."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "page_image": {
+          "status": "success",
+          "image_data": "data:image/png;base64,AAA",
+          "page_number": 26,
+          "message": "Visual snapshot for page 26"
+        }
+      },
+      "expected": {
+        "intent": "needs_visual",
+        "tool_names": [
+          "get_page_analysis",
+          "get_page_image"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll sowohl Seitenanalyse als auch Bildbezug nutzen."
+      }
+    },
+    {
+      "id": "visual-question-05",
+      "category": "visual_question",
+      "history": [],
+      "user_message": "Wie ist die Tabelle auf der Folie aufgebaut?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 27
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert Konfusionsmatrix und verweist auf eine Abbildung.",
+          "key_terms": [
+            "Konfusionsmatrix",
+            "Visualisierung"
+          ],
+          "diagram_description": "Abbildung zu Konfusionsmatrix."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "page_image": {
+          "status": "success",
+          "image_data": "data:image/png;base64,AAA",
+          "page_number": 27,
+          "message": "Visual snapshot for page 27"
+        }
+      },
+      "expected": {
+        "intent": "needs_visual",
+        "tool_names": [
+          "get_page_analysis",
+          "get_page_image"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll sowohl Seitenanalyse als auch Bildbezug nutzen."
+      }
+    },
+    {
+      "id": "visual-question-06",
+      "category": "visual_question",
+      "history": [],
+      "user_message": "Was sieht man visuell auf dieser Seite?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 28
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite erklaert ROC-Kurve und verweist auf eine Abbildung.",
+          "key_terms": [
+            "ROC-Kurve",
+            "Visualisierung"
+          ],
+          "diagram_description": "Abbildung zu ROC-Kurve."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "page_image": {
+          "status": "success",
+          "image_data": "data:image/png;base64,AAA",
+          "page_number": 28,
+          "message": "Visual snapshot for page 28"
+        }
+      },
+      "expected": {
+        "intent": "needs_visual",
+        "tool_names": [
+          "get_page_analysis",
+          "get_page_image"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Antwort soll sowohl Seitenanalyse als auch Bildbezug nutzen."
+      }
+    },
+    {
+      "id": "quiz-request-01",
+      "category": "quiz_request",
+      "history": [],
+      "user_message": "Mach bitte ein Quiz zur aktuellen Seite.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 29
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite behandelt Gradientenabstieg.",
+          "key_terms": [
+            "Gradientenabstieg"
+          ],
+          "diagram_description": "Kein zentrales Diagramm fuer Gradientenabstieg."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "quiz_result": {
+          "quiz_id": "quiz-29",
+          "topic": "Gradientenabstieg",
+          "question_count": 3,
+          "start_page": 29,
+          "end_page": 29
+        }
+      },
+      "expected": {
+        "intent": "create_quiz",
+        "tool_names": [
+          "create_quiz"
+        ],
+        "completion_mode": "quiz",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Quiz-Pfad soll ohne zusaetzliche Tutor-Antwort enden."
+      }
+    },
+    {
+      "id": "quiz-request-02",
+      "category": "quiz_request",
+      "history": [],
+      "user_message": "Erstelle ein Quiz fuer diese Folie.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 30
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite behandelt Lernrate.",
+          "key_terms": [
+            "Lernrate"
+          ],
+          "diagram_description": "Kein zentrales Diagramm fuer Lernrate."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "quiz_result": {
+          "quiz_id": "quiz-30",
+          "topic": "Lernrate",
+          "question_count": 3,
+          "start_page": 30,
+          "end_page": 30
+        }
+      },
+      "expected": {
+        "intent": "create_quiz",
+        "tool_names": [
+          "create_quiz"
+        ],
+        "completion_mode": "quiz",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Quiz-Pfad soll ohne zusaetzliche Tutor-Antwort enden."
+      }
+    },
+    {
+      "id": "quiz-request-03",
+      "category": "quiz_request",
+      "history": [],
+      "user_message": "Teste mich kurz zu dieser Seite.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 31
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite behandelt Regularisierung.",
+          "key_terms": [
+            "Regularisierung"
+          ],
+          "diagram_description": "Kein zentrales Diagramm fuer Regularisierung."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "quiz_result": {
+          "quiz_id": "quiz-31",
+          "topic": "Regularisierung",
+          "question_count": 3,
+          "start_page": 31,
+          "end_page": 31
+        }
+      },
+      "expected": {
+        "intent": "create_quiz",
+        "tool_names": [
+          "create_quiz"
+        ],
+        "completion_mode": "quiz",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Quiz-Pfad soll ohne zusaetzliche Tutor-Antwort enden."
+      }
+    },
+    {
+      "id": "quiz-request-04",
+      "category": "quiz_request",
+      "history": [],
+      "user_message": "Mach mir eine kleine Abfrage zur aktuellen Seite.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 32
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite behandelt Neuron.",
+          "key_terms": [
+            "Neuron"
+          ],
+          "diagram_description": "Kein zentrales Diagramm fuer Neuron."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "quiz_result": {
+          "quiz_id": "quiz-32",
+          "topic": "Neuron",
+          "question_count": 3,
+          "start_page": 32,
+          "end_page": 32
+        }
+      },
+      "expected": {
+        "intent": "create_quiz",
+        "tool_names": [
+          "create_quiz"
+        ],
+        "completion_mode": "quiz",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Quiz-Pfad soll ohne zusaetzliche Tutor-Antwort enden."
+      }
+    },
+    {
+      "id": "quiz-request-05",
+      "category": "quiz_request",
+      "history": [],
+      "user_message": "Ich moechte ein Quiz zu dieser Folie.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 33
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite behandelt Backpropagation.",
+          "key_terms": [
+            "Backpropagation"
+          ],
+          "diagram_description": "Kein zentrales Diagramm fuer Backpropagation."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "quiz_result": {
+          "quiz_id": "quiz-33",
+          "topic": "Backpropagation",
+          "question_count": 3,
+          "start_page": 33,
+          "end_page": 33
+        }
+      },
+      "expected": {
+        "intent": "create_quiz",
+        "tool_names": [
+          "create_quiz"
+        ],
+        "completion_mode": "quiz",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Quiz-Pfad soll ohne zusaetzliche Tutor-Antwort enden."
+      }
+    },
+    {
+      "id": "quiz-request-06",
+      "category": "quiz_request",
+      "history": [],
+      "user_message": "Kannst du ein Quiz fuer diese Seite erstellen?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 34
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Die Seite behandelt Overfitting.",
+          "key_terms": [
+            "Overfitting"
+          ],
+          "diagram_description": "Kein zentrales Diagramm fuer Overfitting."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "quiz_result": {
+          "quiz_id": "quiz-34",
+          "topic": "Overfitting",
+          "question_count": 3,
+          "start_page": 34,
+          "end_page": 34
+        }
+      },
+      "expected": {
+        "intent": "create_quiz",
+        "tool_names": [
+          "create_quiz"
+        ],
+        "completion_mode": "quiz",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Quiz-Pfad soll ohne zusaetzliche Tutor-Antwort enden."
+      }
+    },
+    {
+      "id": "missing-context-01",
+      "category": "missing_context",
+      "history": [],
+      "user_message": "Erklaer mir das bitte.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001"
+      },
+      "fixtures": {
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "clarify_missing_context",
+        "tool_names": [],
+        "completion_mode": "clarify",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll nach Seite oder genauerem Kontext fragen."
+      }
+    },
+    {
+      "id": "missing-context-02",
+      "category": "missing_context",
+      "history": [],
+      "user_message": "Kannst du mir dazu helfen?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001"
+      },
+      "fixtures": {
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "clarify_missing_context",
+        "tool_names": [],
+        "completion_mode": "clarify",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll nach Seite oder genauerem Kontext fragen."
+      }
+    },
+    {
+      "id": "missing-context-03",
+      "category": "missing_context",
+      "history": [],
+      "user_message": "Was ist hier gemeint?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001"
+      },
+      "fixtures": {
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "clarify_missing_context",
+        "tool_names": [],
+        "completion_mode": "clarify",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll nach Seite oder genauerem Kontext fragen."
+      }
+    },
+    {
+      "id": "missing-context-04",
+      "category": "missing_context",
+      "history": [],
+      "user_message": "Worum geht es dabei?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001"
+      },
+      "fixtures": {
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "clarify_missing_context",
+        "tool_names": [],
+        "completion_mode": "clarify",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll nach Seite oder genauerem Kontext fragen."
+      }
+    },
+    {
+      "id": "missing-context-05",
+      "category": "missing_context",
+      "history": [],
+      "user_message": "Ich verstehe das nicht, erklaer es bitte.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001"
+      },
+      "fixtures": {
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "clarify_missing_context",
+        "tool_names": [],
+        "completion_mode": "clarify",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll nach Seite oder genauerem Kontext fragen."
+      }
+    },
+    {
+      "id": "missing-context-06",
+      "category": "missing_context",
+      "history": [],
+      "user_message": "Was soll ich dazu wissen?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001"
+      },
+      "fixtures": {
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        }
+      },
+      "expected": {
+        "intent": "clarify_missing_context",
+        "tool_names": [],
+        "completion_mode": "clarify",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll nach Seite oder genauerem Kontext fragen."
+      }
+    },
+    {
+      "id": "tool-error-01",
+      "category": "tool_error",
+      "history": [],
+      "user_message": "Erklaer mir bitte nochmal die aktuelle Seite.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 35
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Fallback-Zusammenfassung fuer Gradientenabstieg.",
+          "key_terms": [
+            "Gradientenabstieg"
+          ],
+          "diagram_description": "Keine verlaessliche Diagramm-Info fuer Gradientenabstieg."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "tool_errors": {
+          "get_page_analysis": "Simulierter Tool-Fehler fuer Gradientenabstieg."
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll trotz Tool-Fehler kontrolliert antworten oder sauber begrenzen."
+      }
+    },
+    {
+      "id": "tool-error-02",
+      "category": "tool_error",
+      "history": [],
+      "user_message": "Was ist die Kernaussage dieser Folie?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 36
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Fallback-Zusammenfassung fuer Lernrate.",
+          "key_terms": [
+            "Lernrate"
+          ],
+          "diagram_description": "Keine verlaessliche Diagramm-Info fuer Lernrate."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "tool_errors": {
+          "get_page_analysis": "Simulierter Tool-Fehler fuer Lernrate."
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll trotz Tool-Fehler kontrolliert antworten oder sauber begrenzen."
+      }
+    },
+    {
+      "id": "tool-error-03",
+      "category": "tool_error",
+      "history": [],
+      "user_message": "Kannst du mir die aktuelle Seite erklaeren?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 37
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Fallback-Zusammenfassung fuer Regularisierung.",
+          "key_terms": [
+            "Regularisierung"
+          ],
+          "diagram_description": "Keine verlaessliche Diagramm-Info fuer Regularisierung."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "tool_errors": {
+          "get_page_analysis": "Simulierter Tool-Fehler fuer Regularisierung."
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll trotz Tool-Fehler kontrolliert antworten oder sauber begrenzen."
+      }
+    },
+    {
+      "id": "tool-error-04",
+      "category": "tool_error",
+      "history": [],
+      "user_message": "Fass die Seite bitte zusammen.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 38
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Fallback-Zusammenfassung fuer Neuron.",
+          "key_terms": [
+            "Neuron"
+          ],
+          "diagram_description": "Keine verlaessliche Diagramm-Info fuer Neuron."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "tool_errors": {
+          "get_page_analysis": "Simulierter Tool-Fehler fuer Neuron."
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll trotz Tool-Fehler kontrolliert antworten oder sauber begrenzen."
+      }
+    },
+    {
+      "id": "tool-error-05",
+      "category": "tool_error",
+      "history": [],
+      "user_message": "Was wird auf der Seite beschrieben?",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 39
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Fallback-Zusammenfassung fuer Backpropagation.",
+          "key_terms": [
+            "Backpropagation"
+          ],
+          "diagram_description": "Keine verlaessliche Diagramm-Info fuer Backpropagation."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "tool_errors": {
+          "get_page_analysis": "Simulierter Tool-Fehler fuer Backpropagation."
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll trotz Tool-Fehler kontrolliert antworten oder sauber begrenzen."
+      }
+    },
+    {
+      "id": "tool-error-06",
+      "category": "tool_error",
+      "history": [],
+      "user_message": "Bitte erklaere mir diese Seite noch einmal.",
+      "runtime_context": {
+        "material_id": "mat-001",
+        "user_id": "user-001",
+        "current_page": 40
+      },
+      "fixtures": {
+        "page_analysis": {
+          "summary": "Fallback-Zusammenfassung fuer Overfitting.",
+          "key_terms": [
+            "Overfitting"
+          ],
+          "diagram_description": "Keine verlaessliche Diagramm-Info fuer Overfitting."
+        },
+        "material_summary": {
+          "summary": "Vorlesung zu Machine Learning Grundlagen mit Optimierung, neuronalen Netzen und Modellbewertung.",
+          "topics": [
+            "Optimierung",
+            "Neuronale Netze",
+            "Evaluation",
+            "Regularisierung"
+          ]
+        },
+        "tool_errors": {
+          "get_page_analysis": "Simulierter Tool-Fehler fuer Overfitting."
+        }
+      },
+      "expected": {
+        "intent": "explain_current_page",
+        "tool_names": [
+          "get_page_analysis"
+        ],
+        "completion_mode": "answer",
+        "required_phrases": [],
+        "forbidden_claims": [],
+        "judge_notes": "Agent soll trotz Tool-Fehler kontrolliert antworten oder sauber begrenzen."
+      }
+    }
+  ]
+}

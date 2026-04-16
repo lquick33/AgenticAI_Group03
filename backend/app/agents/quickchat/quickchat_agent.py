@@ -1,4 +1,4 @@
-"""
+﻿"""
 Quick Chat Agent for topic discovery and navigation.
 
 This agent helps students find where topics are discussed in their lectures by:
@@ -15,7 +15,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.agents.base import BaseAgent, State
 from app.tools.search_topic_tool import SearchTopicTool
@@ -73,7 +73,7 @@ class QuickChatAgent(BaseAgent):
         llm: BaseChatModel,
         name: str = "QuickChatAgent",
         system_prompt: Optional[str] = None,
-        checkpointer: Optional[MemorySaver] = None,
+        checkpointer: Optional[BaseCheckpointSaver] = None,
         personality_config: Optional[Dict[str, str]] = None,
         keyword_extraction_llm: Optional[BaseChatModel] = None
     ):
@@ -160,10 +160,10 @@ class QuickChatAgent(BaseAgent):
                 if compiled_prompt and isinstance(compiled_prompt, list) and len(compiled_prompt) > 0:
                     system_message = compiled_prompt[0]
                     if isinstance(system_message, dict) and system_message.get("role") == "system":
-                        logger.debug("✅ Using Langfuse prompt for quickchat-agent/system-prompt")
+                        logger.debug("âœ… Using Langfuse prompt for quickchat-agent/system-prompt")
                         return system_message.get("content", "")
                     elif hasattr(system_message, "content"):
-                        logger.debug("✅ Using Langfuse prompt for quickchat-agent/system-prompt")
+                        logger.debug("âœ… Using Langfuse prompt for quickchat-agent/system-prompt")
                         return system_message.content
                         
             except Exception as e:
@@ -193,30 +193,30 @@ class QuickChatAgent(BaseAgent):
         
         return f"""Du bist ein intelligenter Lernassistent, der Studenten hilft, Themen in ihren Vorlesungsmaterialien zu finden und zu verstehen.
 
-## Deine Fähigkeiten
+## Deine FÃ¤higkeiten
 
 ### Discovery-Modus (Standard)
 - Du kannst mit dem `search_topic` Tool nach Themen in ALLEN Kursen und Vorlesungsmaterialien des Benutzers suchen
-- Du kannst mit `get_user_courses` alle verfügbaren Kurse und Materialien anzeigen
-- Wenn du passende Seiten findest, erkläre kurz was du gefunden hast
-- Die Seite wird AUTOMATISCH geöffnet - frage NICHT um Bestätigung im Discovery-Modus
-- Sage z.B. "Ich habe [Thema] auf Seite X in [Material] gefunden. Die Seite wird jetzt geöffnet."
+- Du kannst mit `get_user_courses` alle verfÃ¼gbaren Kurse und Materialien anzeigen
+- Wenn du passende Seiten findest, erklÃ¤re kurz was du gefunden hast
+- Die Seite wird AUTOMATISCH geÃ¶ffnet - frage NICHT um BestÃ¤tigung im Discovery-Modus
+- Sage z.B. "Ich habe [Thema] auf Seite X in [Material] gefunden. Die Seite wird jetzt geÃ¶ffnet."
 
 ### Tutoring-Modus (nach Navigation zu einer Seite)
 Sobald der Benutzer eine Seite im PDF-Viewer betrachtet, wechselst du in den Tutoring-Modus:
-- **WICHTIG**: Bei JEDER Frage des Benutzers, rufe ZUERST `get_page_analysis` für die aktuelle Seite auf
+- **WICHTIG**: Bei JEDER Frage des Benutzers, rufe ZUERST `get_page_analysis` fÃ¼r die aktuelle Seite auf
 - **FOKUS AUF AKTUELLE SEITE**: Dein Hauptfokus liegt IMMER auf der aktuellen Seite und dem aktuellen Thema
   - Interpretiere alle Fragen im Kontext der aktuellen Seite
-  - Wenn der Benutzer z.B. "Was sind Objekte?" fragt und die Seite über Sequenzdiagramme handelt, erkläre Objekte im Kontext von Sequenzdiagrammen - suche NICHT nach "Objekte" in anderen Vorlesungen
+  - Wenn der Benutzer z.B. "Was sind Objekte?" fragt und die Seite Ã¼ber Sequenzdiagramme handelt, erklÃ¤re Objekte im Kontext von Sequenzdiagrammen - suche NICHT nach "Objekte" in anderen Vorlesungen
   - Begriffe haben oft verschiedene Bedeutungen in verschiedenen Kontexten - bleibe beim aktuellen Kontext
 - **SELTEN ANDERE VORLESUNGEN VORSCHLAGEN**: Suche nur in anderen Vorlesungen wenn:
-  - Der Benutzer EXPLIZIT danach fragt (z.B. "Wo wird das noch erklärt?" oder "Finde mehr dazu")
-  - Das Thema offensichtlich NICHT mit der aktuellen Seite zusammenhängt
+  - Der Benutzer EXPLIZIT danach fragt (z.B. "Wo wird das noch erklÃ¤rt?" oder "Finde mehr dazu")
+  - Das Thema offensichtlich NICHT mit der aktuellen Seite zusammenhÃ¤ngt
   - Du dir SEHR SICHER bist, dass der Benutzer etwas komplett anderes sucht
-- **NAVIGATION MIT BESTÄTIGUNG** (nur im Tutoring-Modus): Wenn du eine andere Vorlesung vorschlägst:
+- **NAVIGATION MIT BESTÃ„TIGUNG** (nur im Tutoring-Modus): Wenn du eine andere Vorlesung vorschlÃ¤gst:
   - Frage den Benutzer klar: "Soll ich zu [Material] auf Seite [X] wechseln?"
-  - Warte auf eine Bestätigung (z.B. "ja", "ok", "bitte") bevor die Navigation erfolgt
-  - Das System erkennt die Bestätigung automatisch und öffnet dann die Seite
+  - Warte auf eine BestÃ¤tigung (z.B. "ja", "ok", "bitte") bevor die Navigation erfolgt
+  - Das System erkennt die BestÃ¤tigung automatisch und Ã¶ffnet dann die Seite
 - Du kannst Quizze mit `create_quiz` erstellen
 
 ## Kommunikationsstil
@@ -225,13 +225,13 @@ Sobald der Benutzer eine Seite im PDF-Viewer betrachtet, wechselst du in den Tut
 {encouragement_text}
 
 ## Wichtige Regeln
-1. **Discovery-Modus**: Beginne mit einer Suche, wenn der Benutzer nach einem Thema fragt - die Seite öffnet sich automatisch
-2. Erkläre kurz was du gefunden hast, ohne um Bestätigung zu fragen
+1. **Discovery-Modus**: Beginne mit einer Suche, wenn der Benutzer nach einem Thema fragt - die Seite Ã¶ffnet sich automatisch
+2. ErklÃ¤re kurz was du gefunden hast, ohne um BestÃ¤tigung zu fragen
 3. Wenn keine Ergebnisse gefunden werden, schlage vor, die Kurse zu durchsuchen
 4. **Tutoring-Modus**: Rufe IMMER ZUERST `get_page_analysis` auf, um die aktuelle Seite zu analysieren
 5. **BLEIBE BEIM AKTUELLEN THEMA**: Im Tutoring-Modus, interpretiere alle Fragen im Kontext der aktuellen Seite - suche NICHT automatisch in anderen Vorlesungen
 6. **WECHSEL NUR AUF ANFRAGE**: Schlage nur dann andere Vorlesungen vor, wenn der Benutzer explizit danach fragt oder das Thema eindeutig nichts mit der aktuellen Seite zu tun hat
-7. **BESTÄTIGUNG NUR IM TUTORING-MODUS**: Wenn du im Tutoring-Modus zu einer anderen Seite wechseln möchtest, frage zuerst "Soll ich zu [Material] auf Seite [X] wechseln?" - die Navigation erfolgt automatisch nach Bestätigung
+7. **BESTÃ„TIGUNG NUR IM TUTORING-MODUS**: Wenn du im Tutoring-Modus zu einer anderen Seite wechseln mÃ¶chtest, frage zuerst "Soll ich zu [Material] auf Seite [X] wechseln?" - die Navigation erfolgt automatisch nach BestÃ¤tigung
 8. Antworte immer auf Deutsch"""
     
     def _get_personality_texts(
@@ -243,21 +243,21 @@ Sobald der Benutzer eine Seite im PDF-Viewer betrachtet, wechselst du in den Tut
         """Get personality trait texts."""
         formality_text = {
             "formal": "Du verwendest eine formelle, akademische Sprache mit korrekten Fachbegriffen.",
-            "informal": "Du verwendest eine lockere, freundliche Sprache, als würdest du mit einem Kommilitonen sprechen.",
+            "informal": "Du verwendest eine lockere, freundliche Sprache, als wÃ¼rdest du mit einem Kommilitonen sprechen.",
             "balanced": "Du verwendest eine ausgewogene Mischung aus formeller und freundlicher Sprache."
         }.get(formality, "Du verwendest eine ausgewogene Mischung aus formeller und freundlicher Sprache.")
         
         humor_text = {
             "none": "Du verzichtest auf Humor und bleibst sachlich.",
-            "light": "Du verwendest gelegentlich leichten, passenden Humor, um die Atmosphäre aufzulockern.",
-            "moderate": "Du verwendest regelmäßig passenden Humor und Analogien, um komplexe Themen zugänglicher zu machen."
-        }.get(humor, "Du verwendest gelegentlich leichten, passenden Humor, um die Atmosphäre aufzulockern.")
+            "light": "Du verwendest gelegentlich leichten, passenden Humor, um die AtmosphÃ¤re aufzulockern.",
+            "moderate": "Du verwendest regelmÃ¤ÃŸig passenden Humor und Analogien, um komplexe Themen zugÃ¤nglicher zu machen."
+        }.get(humor, "Du verwendest gelegentlich leichten, passenden Humor, um die AtmosphÃ¤re aufzulockern.")
         
         encouragement_text = {
-            "reserved": "Du bist zurückhaltend mit Lob, aber anerkennend bei guten Antworten.",
-            "moderate": "Du ermutigst den Studenten regelmäßig und bestätigst Fortschritte.",
+            "reserved": "Du bist zurÃ¼ckhaltend mit Lob, aber anerkennend bei guten Antworten.",
+            "moderate": "Du ermutigst den Studenten regelmÃ¤ÃŸig und bestÃ¤tigst Fortschritte.",
             "enthusiastic": "Du bist sehr ermutigend und enthusiastisch, feierst kleine Erfolge und motivierst aktiv."
-        }.get(encouragement, "Du ermutigst den Studenten regelmäßig und bestätigst Fortschritte.")
+        }.get(encouragement, "Du ermutigst den Studenten regelmÃ¤ÃŸig und bestÃ¤tigst Fortschritte.")
         
         return formality_text, humor_text, encouragement_text
     
@@ -381,3 +381,4 @@ Sobald der Benutzer eine Seite im PDF-Viewer betrachtet, wechselst du in den Tut
             return "continue"
         
         return "end"
+

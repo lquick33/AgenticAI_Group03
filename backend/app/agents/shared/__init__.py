@@ -10,9 +10,21 @@ Provides unified, deduplicated components used across multiple agents:
 from app.agents.shared.state_aware_tool_node import StateAwareToolNode
 from app.agents.shared.message_utils import fix_incomplete_tool_calls
 from app.agents.shared.prompt_cache import compute_state_hash
+from app.agents.shared.orchestration import (
+    PhaseScopedToolRegistry,
+    TutorExecutionPlan,
+    TutorIntentDecision,
+    TutorVerificationResult,
+    build_tool_call,
+)
 
 __all__ = [
     "StateAwareToolNode",
     "fix_incomplete_tool_calls",
     "compute_state_hash",
+    "PhaseScopedToolRegistry",
+    "TutorExecutionPlan",
+    "TutorIntentDecision",
+    "TutorVerificationResult",
+    "build_tool_call",
 ]

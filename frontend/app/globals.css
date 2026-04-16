@@ -23,7 +23,20 @@
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
+    --radius: 0.75rem;
+    --app-accent: #b47ede;
+    --app-accent-hover: #9d6bc9;
+    --app-accent-foreground: #ffffff;
+    --app-chat-surface: #f7f3ee;
+    --app-surface: rgba(255, 255, 255, 0.9);
+    --app-surface-subtle: #f8f4ef;
+    --app-surface-muted: #efe8df;
+    --app-surface-strong: #ffffff;
+    --app-border-soft: rgba(15, 23, 42, 0.07);
+    --app-border-strong: rgba(15, 23, 42, 0.12);
+    --app-shadow-soft: 0 18px 45px rgba(15, 23, 42, 0.08);
+    --app-shadow-panel: 0 28px 70px rgba(15, 23, 42, 0.13);
+    --app-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.7);
   }
 
   .dark {
@@ -46,13 +59,25 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
+    --app-accent: #c18be8;
+    --app-accent-hover: #aa73d3;
+    --app-accent-foreground: #ffffff;
+    --app-chat-surface: #1c1820;
+    --app-surface: rgba(25, 30, 39, 0.92);
+    --app-surface-subtle: #222934;
+    --app-surface-muted: #1c2430;
+    --app-surface-strong: #151b24;
+    --app-border-soft: rgba(148, 163, 184, 0.14);
+    --app-border-strong: rgba(148, 163, 184, 0.2);
+    --app-shadow-soft: 0 20px 45px rgba(2, 6, 23, 0.35);
+    --app-shadow-panel: 0 30px 80px rgba(2, 6, 23, 0.45);
+    --app-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
-}
 
-@layer base {
   * {
     border-color: hsl(var(--border));
   }
+
   body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
@@ -92,108 +117,285 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-@layer base {
-  * {
-    border-color: hsl(var(--border));
-  }
-  body {
-    background-color: hsl(var(--background));
-    color: hsl(var(--foreground));
-  }
-}
-
-/* Gemini-inspired Typography Variables */
 :root {
-  /* Typography scale for markdown content */
   --gem-sys-typography-markdown-type-scale--p-font-size: 1rem;
   --gem-sys-typography-markdown-type-scale--p-font-weight: 400;
   --gem-sys-typography-markdown-type-scale--p-line-height: 1.5rem;
   --gem-sys-typography-markdown-type-scale--p-font-tracking: 0;
   --gem-sys-typography-markdown-type-scale--p-font-width: "wdth" 100;
-  
-  /* Spacing - increased for presentation-like feel */
   --gem-sys-spacing--l: 1.25rem;
   --gem-sys-spacing--xl: 1.5rem;
-  
-  /* Colors */
   --gem-sys-color--on-surface: #1f1f1f;
 }
 
-/* KaTeX Styling */
 @layer components {
-  /* Ensure KaTeX inherits text color */
+  .app-shell {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 1.5rem;
+    padding: 1.5rem 1rem 2rem;
+  }
+
+  .app-hero {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 1.75rem;
+    background-color: var(--app-surface);
+    box-shadow: var(--app-shadow-soft);
+    padding: 1.5rem;
+  }
+
+  .app-hero__eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: color-mix(in srgb, currentColor 65%, transparent);
+  }
+
+  .app-hero__header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1.5rem;
+  }
+
+  .app-hero__content {
+    display: grid;
+    gap: 0.85rem;
+    max-width: 44rem;
+  }
+
+  .app-hero__title {
+    font-size: clamp(1.8rem, 3.5vw, 2.6rem);
+    line-height: 1.05;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+  }
+
+  .app-hero__description {
+    max-width: 42rem;
+    font-size: 1rem;
+    line-height: 1.7;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .app-hero__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.85rem;
+  }
+
+  .app-stat {
+    min-width: 9rem;
+    border: 1px solid var(--app-border-soft);
+    border-radius: 1.2rem;
+    background-color: var(--app-surface);
+    padding: 0.95rem 1rem;
+  }
+
+  .app-stat__label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .app-stat__value {
+    margin-top: 0.4rem;
+    display: block;
+    font-size: 1.55rem;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+  }
+
+  .app-section {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .app-section__header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .app-section__title {
+    font-size: 1.12rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .app-section__description {
+    max-width: 42rem;
+    font-size: 0.96rem;
+    line-height: 1.65;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .app-surface-panel {
+    border: 1px solid var(--app-border-strong);
+    border-radius: 1.5rem;
+    background: var(--app-surface);
+    box-shadow: var(--app-shadow-soft);
+  }
+
+  .app-surface-panel--muted {
+    background-color: var(--app-surface-muted);
+  }
+
+  .app-table-shell {
+    overflow: hidden;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 1.5rem;
+    background: var(--app-surface);
+    box-shadow: var(--app-shadow-soft);
+  }
+
+  .app-subtle-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border: 1px solid var(--app-border-soft);
+    border-radius: 9999px;
+    background-color: var(--app-surface-subtle);
+    padding: 0.45rem 0.8rem;
+    font-size: 0.8rem;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .app-reader-shell {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1rem;
+  }
+
+  .app-reader-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 1.5rem;
+    background: var(--app-surface);
+    box-shadow: var(--app-shadow-soft);
+    padding: 1rem 1.25rem;
+  }
+
+  .app-reader-toolbar__title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .app-reader-toolbar__description {
+    font-size: 0.92rem;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .app-reader-panel {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 1.5rem;
+    background: var(--app-surface);
+    box-shadow: var(--app-shadow-soft);
+  }
+
+  .app-empty-state {
+    border: 1px dashed var(--app-border-strong);
+    border-radius: 1.5rem;
+    background: rgba(255, 255, 255, 0.52);
+    padding: 2.5rem 1.5rem;
+    text-align: center;
+  }
+
   .katex {
     color: inherit;
   }
-  
-  /* Display math spacing */
+
   .katex-display {
     margin: 1em 0;
   }
-  
-  /* Gemini-inspired markdown container styles */
+
   .markdown-gemini {
-    font-family: "Google Sans Flex", "Google Sans", "Helvetica Neue", sans-serif;
+    font-family: "Segoe UI", "Helvetica Neue", sans-serif;
     font-size: var(--gem-sys-typography-markdown-type-scale--p-font-size);
     font-weight: var(--gem-sys-typography-markdown-type-scale--p-font-weight);
     letter-spacing: var(--gem-sys-typography-markdown-type-scale--p-font-tracking);
     line-height: var(--gem-sys-typography-markdown-type-scale--p-line-height);
     overflow-wrap: break-word;
-    -webkit-margin-end: 24px;
-    -moz-margin-end: 24px;
-    margin-inline-end: 24px;
   }
-  
+
   .markdown-gemini p {
     margin: 0 0 var(--gem-sys-spacing--l);
     overflow-wrap: anywhere;
   }
-  
-  /* More spacing for headings to create clear section breaks */
+
   .markdown-gemini h1,
   .markdown-gemini h2,
   .markdown-gemini h3 {
     margin-top: var(--gem-sys-spacing--xl);
     margin-bottom: var(--gem-sys-spacing--l);
   }
-  
+
   .markdown-gemini h1:first-child,
   .markdown-gemini h2:first-child,
   .markdown-gemini h3:first-child {
     margin-top: 0;
   }
-  
-  /* Better list spacing for presentation-like feel */
+
   .markdown-gemini ul,
   .markdown-gemini ol {
     margin-top: var(--gem-sys-spacing--l);
     margin-bottom: var(--gem-sys-spacing--l);
   }
-  
+
   .markdown-gemini li {
     margin-bottom: 0.5rem;
   }
-  
-  /* More spacing for blockquotes */
+
   .markdown-gemini blockquote {
     margin-top: var(--gem-sys-spacing--l);
     margin-bottom: var(--gem-sys-spacing--l);
   }
-  
-  /* Responsive line-height for larger screens */
+
   @media screen and (min-width: 768px) {
+    .app-shell {
+      padding-inline: 1.5rem;
+      padding-top: 1.75rem;
+    }
+
+    .app-hero {
+      padding: 1.75rem;
+    }
+
+    .app-reader-shell {
+      padding: 1.25rem;
+    }
+
     .markdown-gemini:not(.force-compact-layout) {
       line-height: 1.75rem;
-      -webkit-margin-end: 0;
-      -moz-margin-end: 0;
-      margin-inline-end: 0;
     }
   }
 }
 
-/* StudyReader specific styles - prevent page scrolling */
-/* Apply this class to body element on StudyReader page only */
-/* Prevents body from scrolling, but allows internal containers to scroll */
 body.no-page-scroll {
   overflow: hidden;
 }

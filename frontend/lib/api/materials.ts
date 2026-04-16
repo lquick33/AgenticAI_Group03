@@ -6,7 +6,9 @@
  * - Material deletion
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+import { getApiUrl } from '@/lib/public-env'
+
+const API_URL = getApiUrl()
 
 /**
  * Update course material filename

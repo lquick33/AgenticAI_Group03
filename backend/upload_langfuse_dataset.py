@@ -1,188 +1,159 @@
-"""
-Script zum Hochladen des Flashcard Agent Test-Datasets in Langfuse
+﻿"""Upload repo-local datasets to Langfuse.
 
-Dieses Script lädt das Dataset mit komplexen mathematischen Ausdrücken
-in Langfuse hoch, damit es für Prompt Testing verwendet werden kann.
+Supports both the legacy flashcard dataset format (`items`) and the Tutor eval
+format (`cases`).
 
 Usage:
     python upload_langfuse_dataset.py
-
-Voraussetzungen:
-    - LANGFUSE_PUBLIC_KEY und LANGFUSE_SECRET_KEY müssen in .env gesetzt sein
-    - Das Dataset-File flashcard_prompt_test_dataset_langfuse.json muss existieren
+    python upload_langfuse_dataset.py --dataset-file evals/tutor_gold_v1.json
 """
 
+from __future__ import annotations
+
+import argparse
 import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
-# Langfuse import
+from dotenv import load_dotenv
+
 try:
     from langfuse import Langfuse
 except ImportError:
     print("ERROR: Langfuse ist nicht installiert. Bitte installieren Sie es mit: pip install langfuse")
     sys.exit(1)
 
-# Load environment variables
-from dotenv import load_dotenv
 load_dotenv()
 
+PROJECT_ROOT = Path(__file__).parent
+DEFAULT_FLASHCARD_DATASET = PROJECT_ROOT / "flashcard_prompt_test_dataset_langfuse.json"
 
-def load_dataset(file_path: Path) -> Dict[str, Any]:
-    """Lädt das Dataset aus der JSON-Datei."""
+
+def load_json(file_path: Path) -> Dict[str, Any]:
     if not file_path.exists():
         raise FileNotFoundError(f"Dataset-Datei nicht gefunden: {file_path}")
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    with file_path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def prepare_upload_payload(file_path: Path) -> Dict[str, Any]:
+    raw_dataset = load_json(file_path)
+
+    if "cases" in raw_dataset and "schema_version" in raw_dataset:
+        from evals.tutor_eval import load_tutor_eval_dataset, prepare_langfuse_upload_payload
+
+        dataset = load_tutor_eval_dataset(file_path)
+        return prepare_langfuse_upload_payload(dataset)
+
+    if "items" not in raw_dataset:
+        raise ValueError("Unbekanntes Dataset-Format: erwartet 'items' oder 'cases'.")
+
+    return {
+        "dataset_name": raw_dataset.get("dataset_name", file_path.stem),
+        "description": raw_dataset.get("description", "Langfuse dataset upload"),
+        "items": raw_dataset.get("items", []),
+    }
 
 
 def create_langfuse_dataset(
     langfuse_client: Langfuse,
     dataset_name: str,
-    description: str = None
+    description: str | None = None,
 ) -> str:
-    """
-    Erstellt ein neues Dataset in Langfuse oder gibt die ID zurück, falls es bereits existiert.
-    
-    Returns:
-        Dataset ID
-    """
     try:
-        # Versuche, das Dataset zu erstellen
         dataset = langfuse_client.create_dataset(name=dataset_name, description=description)
         print(f"OK: Dataset '{dataset_name}' erstellt")
         return dataset.id
-    except Exception as e:
-        # Falls das Dataset bereits existiert, versuche es zu finden
-        print(f"WARNING: Fehler beim Erstellen (möglicherweise existiert es bereits): {e}")
-        # In der aktuellen Langfuse API gibt es keine direkte "get_dataset" Methode
-        # Daher geben wir den Namen zurück und der Benutzer muss es manuell prüfen
-        print(f"INFO: Bitte prüfen Sie in der Langfuse UI, ob das Dataset '{dataset_name}' bereits existiert")
+    except Exception as exc:
+        print(f"WARNING: Fehler beim Erstellen (moeglicherweise existiert es bereits): {exc}")
+        print(f"INFO: Bitte pruefen Sie in der Langfuse UI, ob das Dataset '{dataset_name}' bereits existiert")
         return dataset_name
 
 
 def upload_dataset_items(
     langfuse_client: Langfuse,
     dataset_name: str,
-    items: List[Dict[str, Any]]
+    items: List[Dict[str, Any]],
 ) -> None:
-    """
-    Lädt Dataset-Items in Langfuse hoch.
-    
-    Jedes Item muss folgende Struktur haben:
-    {
-        "input": {
-            "summary": "...",
-            "key_terms": [...],
-            "exam_questions": [...],
-            "diagram_description": "...",
-            "conversation_context": "...",
-            "course_id": "...",
-            "material_id": "...",
-            "page_number": 12
-        },
-        "metadata": {...}  # optional
-    }
-    """
     print(f"\nUpload: Lade {len(items)} Dataset-Items hoch...")
-    
+
     for idx, item in enumerate(items, 1):
         try:
-            # Validiere, dass 'input' vorhanden ist
-            if 'input' not in item:
-                print(f"WARNING: Item {idx}: Kein 'input' Feld gefunden, überspringe...")
+            if "input" not in item:
+                print(f"WARNING: Item {idx}: Kein 'input' Feld gefunden, ueberspringe...")
                 continue
-            
-            input_data = item['input']
-            metadata = item.get('metadata', {})
-            
-            # Erstelle das Dataset-Item
+
+            input_data = item["input"]
+            metadata = item.get("metadata", {})
             langfuse_client.create_dataset_item(
                 dataset_name=dataset_name,
                 input=input_data,
-                metadata=metadata
+                metadata=metadata,
             )
-            
-            print(f"  OK: Item {idx}/{len(items)} hochgeladen: {metadata.get('topic', 'Unbekanntes Thema')}")
-            
-        except Exception as e:
-            print(f"  ERROR: Fehler beim Hochladen von Item {idx}: {e}")
+            label = metadata.get("case_id") or metadata.get("topic") or f"item-{idx}"
+            print(f"  OK: Item {idx}/{len(items)} hochgeladen: {label}")
+        except Exception as exc:
+            print(f"  ERROR: Fehler beim Hochladen von Item {idx}: {exc}")
             continue
-    
-    print(f"\nOK: Dataset-Upload abgeschlossen!")
+
+    print("\nOK: Dataset-Upload abgeschlossen!")
 
 
-def main():
-    """Hauptfunktion zum Hochladen des Datasets."""
-    
-    # Prüfe Langfuse Credentials
-    public_key = os.getenv('LANGFUSE_PUBLIC_KEY')
-    secret_key = os.getenv('LANGFUSE_SECRET_KEY')
-    base_url = os.getenv('LANGFUSE_BASE_URL', 'https://cloud.langfuse.com')
-    
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Upload a local dataset to Langfuse.")
+    parser.add_argument(
+        "--dataset-file",
+        type=Path,
+        default=DEFAULT_FLASHCARD_DATASET,
+        help="Pfad zur Dataset-Datei (JSON).",
+    )
+    args = parser.parse_args()
+
+    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+    base_url = os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com")
+
     if not public_key or not secret_key:
-        print("ERROR: LANGFUSE_PUBLIC_KEY und LANGFUSE_SECRET_KEY müssen in .env gesetzt sein")
-        sys.exit(1)
-    
-    # Initialisiere Langfuse Client
+        print("ERROR: LANGFUSE_PUBLIC_KEY und LANGFUSE_SECRET_KEY muessen in .env gesetzt sein")
+        return 1
+
     try:
         langfuse_client = Langfuse(
             public_key=public_key,
             secret_key=secret_key,
-            host=base_url
+            host=base_url,
         )
         print("OK: Langfuse Client initialisiert")
-    except Exception as e:
-        print(f"ERROR: Fehler beim Initialisieren des Langfuse Clients: {e}")
-        sys.exit(1)
-    
-    # Lade Dataset
-    script_dir = Path(__file__).parent
-    dataset_file = script_dir / "flashcard_prompt_test_dataset_langfuse.json"
-    
+    except Exception as exc:
+        print(f"ERROR: Fehler beim Initialisieren des Langfuse Clients: {exc}")
+        return 1
+
     try:
-        dataset_data = load_dataset(dataset_file)
-        print(f"OK: Dataset geladen: {dataset_data.get('description', 'Keine Beschreibung')}")
-    except Exception as e:
-        print(f"ERROR: Fehler beim Laden des Datasets: {e}")
-        sys.exit(1)
-    
-    # Erstelle Dataset in Langfuse
-    dataset_name = dataset_data.get('dataset_name', 'flashcard-agent-math-expressions')
-    description = dataset_data.get('description', 'Dataset für Flashcard Agent Prompt Testing')
-    
-    try:
-        create_langfuse_dataset(langfuse_client, dataset_name, description)
-    except Exception as e:
-        print(f"WARNING: Warnung beim Erstellen des Datasets: {e}")
-        print(f"INFO: Versuche fortzufahren...")
-    
-    # Lade Items hoch
-    items = dataset_data.get('items', [])
+        payload = prepare_upload_payload(args.dataset_file)
+        print(f"OK: Dataset geladen: {payload.get('description', 'Keine Beschreibung')}")
+    except Exception as exc:
+        print(f"ERROR: Fehler beim Laden des Datasets: {exc}")
+        return 1
+
+    dataset_name = payload["dataset_name"]
+    description = payload.get("description")
+    items = payload.get("items", [])
     if not items:
         print("ERROR: Keine Items im Dataset gefunden!")
-        sys.exit(1)
-    
+        return 1
+
+    try:
+        create_langfuse_dataset(langfuse_client, dataset_name, description)
+    except Exception as exc:
+        print(f"WARNING: Warnung beim Erstellen des Datasets: {exc}")
+        print("INFO: Versuche fortzufahren...")
+
     upload_dataset_items(langfuse_client, dataset_name, items)
-    
-    print(f"\nSUCCESS: Fertig! Das Dataset '{dataset_name}' ist jetzt in Langfuse verfügbar.")
-    print(f"\nNächste Schritte:")
-    print(f"   1. Öffnen Sie die Langfuse UI")
-    print(f"   2. Gehen Sie zu 'Datasets' und wählen Sie '{dataset_name}'")
-    print(f"   3. Erstellen Sie ein Prompt Experiment mit diesem Dataset")
-    print(f"   4. Stellen Sie sicher, dass Ihr Prompt Template die Variablen verwendet:")
-    print(f"      - {{summary}}")
-    print(f"      - {{key_terms}}")
-    print(f"      - {{exam_questions}}")
-    print(f"      - {{diagram_description}}")
-    print(f"      - {{conversation_context}}")
-    print(f"      - {{course_id}}")
-    print(f"      - {{material_id}}")
-    print(f"      - {{page_number}}")
+    print(f"\nSUCCESS: Fertig! Das Dataset '{dataset_name}' ist jetzt in Langfuse verfuegbar.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -25,10 +25,10 @@ def test(name: str):
                 print('='*60)
                 func()
                 results["passed"] += 1
-                print(f"✅ PASSED: {name}")
+                print(f"[PASS]: {name}")
             except Exception as e:
                 results["failed"] += 1
-                print(f"❌ FAILED: {name}")
+                print(f"[FAIL]: {name}")
                 print(f"   Error: {e}")
                 import traceback
                 traceback.print_exc()
@@ -361,15 +361,15 @@ def main():
     print("\n" + "="*60)
     print("TEST SUMMARY")
     print("="*60)
-    print(f"✅ Passed: {results['passed']}")
-    print(f"❌ Failed: {results['failed']}")
+    print(f"[PASS] Passed: {results['passed']}")
+    print(f"[FAIL] Failed: {results['failed']}")
     print("="*60)
     
     if results['failed'] > 0:
-        print("\n⚠️  Some tests failed.")
+        print("\n[WARN] Some tests failed.")
         sys.exit(1)
     else:
-        print("\n🎉 All standalone tests passed!")
+        print("\n[PASS] All standalone tests passed!")
         sys.exit(0)
 
 

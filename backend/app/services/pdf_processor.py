@@ -8,6 +8,8 @@ import asyncio
 import logging
 from typing import List
 
+from app.core.celery_app import celery_app
+
 from pdf2image import convert_from_bytes
 from PIL import Image
 
@@ -467,3 +469,37 @@ async def _generate_embeddings_background(material_id: str) -> None:
             f"Background embedding generation failed for material {material_id}: {e}",
             exc_info=True
         )
+
+
+@celery_app.task(name="process_pdf_task")
+def process_pdf_task(
+    material_id: str,
+    user_id: str,
+    course_id: str,
+    file_path: str,
+    max_concurrent: int = 5
+) -> None:
+    """
+    Celery task wrapper for PDF processing.
+    Downloads the PDF from storage locally, then runs the async processing.
+    """
+    from app.core.adapters import get_file_storage, get_material
+
+    logger.info(f"Worker downloading PDF {file_path} from storage...")
+    try:
+        file_bytes = get_file_storage().download(file_path)
+    except Exception as e:
+        logger.error(f"Failed to download PDF {file_path}: {e}")
+        get_material().update_status(material_id, "error", f"Failed to download PDF: {e}")
+        return
+        
+    # Process the PDF synchronously in the worker
+    asyncio.run(
+        process_pdf_background(
+            material_id=material_id,
+            file_bytes=file_bytes,
+            user_id=user_id,
+            course_id=course_id,
+            max_concurrent=max_concurrent
+        )
+    )

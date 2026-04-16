@@ -297,156 +297,15 @@ class SupabaseFlashcardAdapter:
     ) -> dict:
         """
         Pull changes from Anki into flashcard_cache.
-
-        Ensures cache reflects any manual edits/deletions in Anki.
-        Should be called before flashcard generation for accurate
-        deduplication.
-
-        Returns:
-            Dict with sync stats: inserted, updated, orphaned_in_cache
+        Anki integration is DISABLED. Returns empty stats.
         """
-        stats: Dict = {
+        return {
             "inserted": 0,
             "updated": 0,
             "deleted": 0,
             "unchanged": 0,
             "errors": [],
         }
-
-        try:
-            from app.services.anki.client import AnkiClient
-
-            anki = AnkiClient()
-
-            # Get all notes from Anki
-            anki_notes = anki.get_deck_notes_with_info(parent_deck)
-            anki_note_map = {note["noteId"]: note for note in anki_notes}
-            anki_note_ids = set(anki_note_map.keys())
-
-            logger.info(
-                f"Sync: Found {len(anki_notes)} notes in Anki deck "
-                f"'{parent_deck}'"
-            )
-
-            # Get all cached notes for this deck pattern
-            cache_response = (
-                self._client.table("flashcard_cache")
-                .select(
-                    "id, anki_note_id, anki_mod, front, back, tags, "
-                    "deck_name"
-                )
-                .eq("user_id", user_id)
-                .like("deck_name", f"{parent_deck}::%")
-                .execute()
-            )
-
-            cached_notes = cache_response.data or []
-            cache_map = {
-                note["anki_note_id"]: note for note in cached_notes
-            }
-            cached_note_ids = set(cache_map.keys())
-
-            logger.info(
-                f"Sync: Found {len(cached_notes)} notes in cache"
-            )
-
-            # 1. INSERT notes in Anki but not in cache
-            to_insert = anki_note_ids - cached_note_ids
-            insert_records = []
-
-            for note_id in to_insert:
-                anki_note = anki_note_map[note_id]
-                fields = anki_note.get("fields", {})
-                front = fields.get("Front", {}).get("value", "")
-                back = fields.get("Back", {}).get("value", "")
-
-                cards = anki_note.get("cards", [])
-                deck_name = parent_deck
-                if cards:
-                    card_info = anki._request(
-                        "cardsInfo", {"cards": [cards[0]]}
-                    )
-                    if card_info:
-                        deck_name = card_info[0].get(
-                            "deckName", parent_deck
-                        )
-
-                insert_records.append(
-                    {
-                        "user_id": user_id,
-                        "anki_note_id": note_id,
-                        "deck_name": deck_name,
-                        "front": front,
-                        "back": back,
-                        "tags": anki_note.get("tags", []),
-                        "anki_mod": anki_note.get("mod"),
-                        "course_id": course_id,
-                    }
-                )
-
-            if insert_records:
-                try:
-                    batch_size = 100
-                    for i in range(0, len(insert_records), batch_size):
-                        batch = insert_records[i : i + batch_size]
-                        self._client.table("flashcard_cache").insert(
-                            batch
-                        ).execute()
-                        stats["inserted"] += len(batch)
-                    logger.info(
-                        f"Batch inserted {stats['inserted']} new cards"
-                    )
-                except Exception as e:
-                    stats["errors"].append(f"Batch insert failed: {e}")
-                    logger.error(f"Batch insert failed: {e}")
-
-            # 2. UPDATE notes with changed mod timestamp
-            to_check = anki_note_ids & cached_note_ids
-            for note_id in to_check:
-                anki_note = anki_note_map[note_id]
-                cached_note = cache_map[note_id]
-
-                anki_mod = anki_note.get("mod")
-                cached_mod = cached_note.get("anki_mod")
-
-                if anki_mod != cached_mod:
-                    fields = anki_note.get("fields", {})
-                    front = fields.get("Front", {}).get("value", "")
-                    back = fields.get("Back", {}).get("value", "")
-
-                    try:
-                        self._client.table("flashcard_cache").update(
-                            {
-                                "front": front,
-                                "back": back,
-                                "tags": anki_note.get("tags", []),
-                                "anki_mod": anki_mod,
-                                "cached_at": "now()",
-                            }
-                        ).eq("id", cached_note["id"]).execute()
-                        stats["updated"] += 1
-                    except Exception as e:
-                        stats["errors"].append(f"Update {note_id}: {e}")
-                else:
-                    stats["unchanged"] += 1
-
-            # 3. Detect orphaned cache entries (NOT auto-deleted)
-            orphaned = cached_note_ids - anki_note_ids
-            if orphaned:
-                logger.warning(
-                    f"⚠️  SYNC WARNING: {len(orphaned)} cards in cache "
-                    f"but NOT in Anki. Note IDs: "
-                    f"{list(orphaned)[:5]}..."
-                )
-                stats["orphaned_in_cache"] = len(orphaned)
-
-            logger.info(f"Sync complete: {stats}")
-            return stats
-
-        except Exception as e:
-            stats["errors"].append(f"Sync failed: {e}")
-            logger.error(f"Sync failed: {e}")
-            return stats
 
     # -- Deck rename handlers --------------------------------------------------
 
@@ -476,27 +335,7 @@ class SupabaseFlashcardAdapter:
             )
             materials = materials_response.data or []
 
-            try:
-                from app.services.anki.client import AnkiClient
-
-                anki = AnkiClient()
-
-                for material in materials:
-                    lecture_name = Path(material["file_name"]).stem
-                    old_deck = f"{old_title}::{lecture_name}"
-                    new_deck = f"{new_title}::{lecture_name}"
-
-                    try:
-                        if anki.rename_deck(old_deck, new_deck):
-                            result["anki_decks_renamed"] += 1
-                    except Exception as e:
-                        result["errors"].append(
-                            f"Anki rename failed for {old_deck}: {e}"
-                        )
-
-                anki.sync()
-            except Exception as e:
-                result["errors"].append(f"Anki connection failed: {e}")
+            # Anki integration disabled
 
             try:
                 updated = self.update_cached_deck_names(
@@ -570,15 +409,7 @@ class SupabaseFlashcardAdapter:
             old_deck = f"{course_title}::{old_lecture}"
             new_deck = f"{course_title}::{new_lecture}"
 
-            try:
-                from app.services.anki.client import AnkiClient
-
-                anki = AnkiClient()
-                if anki.rename_deck(old_deck, new_deck):
-                    result["anki_deck_renamed"] = True
-                    anki.sync()
-            except Exception as e:
-                result["errors"].append(f"Anki rename failed: {e}")
+            # Anki integration disabled
 
             try:
                 updated = self.update_cached_deck_names(

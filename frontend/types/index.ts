@@ -1,4 +1,4 @@
-// Database Types (matching Supabase schema)
+﻿// Database Types (matching Supabase schema)
 export interface Profile {
   id: string
   email: string
@@ -119,7 +119,7 @@ export interface Flashcard {
 export interface ToolCall {
   id: string
   name: string
-  args: Record<string, any>
+  args: Record<string, unknown>
   result?: string
   state?: 'pending' | 'running' | 'completed' | 'error'
 }
@@ -221,3 +221,4 @@ export interface QuizResult {
   completed_at: string
   tutor_feedback?: string | null
 }
+

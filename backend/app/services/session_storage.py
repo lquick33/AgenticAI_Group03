@@ -1,38 +1,88 @@
-"""
+﻿"""
 Study session conversation and message storage for Supabase.
 
 This module provides helper functions to manage:
 - Study conversations in the `conversations` table
 - Chat messages in the `messages` table
-- Progress (last_page_number) in conversations.metadata
+- Progress and rollout metadata in conversations.metadata
 """
+
+from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.adapters.supabase.client import get_supabase_client
-
+from app.services.tutor_rollout import TutorGraphVersion, normalize_tutor_graph_version
 
 SESSION_TYPE_STUDY = "study"
+TUTOR_GRAPH_VERSION_METADATA_KEY = "tutor_graph_version"
 
 
 def _build_study_conversation_metadata(
     course_material_id: str,
     last_page_number: Optional[int] = None,
+    tutor_graph_version: TutorGraphVersion | None = None,
 ) -> Dict[str, Any]:
-    """
-    Build metadata payload for a study conversation.
-
-    Args:
-        course_material_id: ID of the course material (UUID)
-        last_page_number: Optional last visited page
-
-    Returns:
-        Dict suitable for the `metadata` JSONB column.
-    """
+    """Build metadata payload for a study conversation."""
     metadata: Dict[str, Any] = {"course_material_id": course_material_id}
     if last_page_number is not None:
         metadata["last_page_number"] = last_page_number
+    if tutor_graph_version is not None:
+        metadata[TUTOR_GRAPH_VERSION_METADATA_KEY] = tutor_graph_version
     return metadata
+
+
+def get_conversation_metadata(conversation_id: str) -> Dict[str, Any]:
+    client = get_supabase_client()
+    try:
+        response = (
+            client.table("conversations")
+            .select("metadata")
+            .eq("id", conversation_id)
+            .single()
+            .execute()
+        )
+    except Exception as e:
+        raise Exception(f"Failed to load conversation metadata: {str(e)}")
+
+    metadata = (response.data or {}).get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return {}
+    return metadata
+
+
+def update_conversation_metadata(
+    conversation_id: str,
+    metadata_updates: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge metadata updates into the existing conversation metadata."""
+    client = get_supabase_client()
+
+    try:
+        metadata = get_conversation_metadata(conversation_id)
+        metadata.update(metadata_updates)
+        client.table("conversations").update({"metadata": metadata}).eq(
+            "id", conversation_id
+        ).execute()
+        return metadata
+    except Exception as e:
+        raise Exception(f"Failed to update conversation metadata: {str(e)}")
+
+
+def get_tutor_graph_version_from_metadata(metadata: Any) -> TutorGraphVersion | None:
+    if not isinstance(metadata, dict):
+        return None
+    return normalize_tutor_graph_version(metadata.get(TUTOR_GRAPH_VERSION_METADATA_KEY))
+
+
+def set_conversation_tutor_graph_version(
+    conversation_id: str,
+    graph_version: TutorGraphVersion,
+) -> Dict[str, Any]:
+    return update_conversation_metadata(
+        conversation_id,
+        {TUTOR_GRAPH_VERSION_METADATA_KEY: graph_version},
+    )
 
 
 def get_or_create_study_conversation(
@@ -40,6 +90,7 @@ def get_or_create_study_conversation(
     course_material_id: str,
     course_id: Optional[str] = None,
     initial_page: Optional[int] = None,
+    tutor_graph_version: TutorGraphVersion | None = None,
 ) -> Dict[str, Any]:
     """
     Get or create a study conversation for a user and course material.
@@ -48,19 +99,9 @@ def get_or_create_study_conversation(
     - user_id
     - session_type = 'study'
     - metadata->>'course_material_id' = course_material_id
-
-    Args:
-        user_id: User ID (UUID)
-        course_material_id: Course material ID (UUID)
-        course_id: Optional course ID (UUID) for easier grouping
-        initial_page: Optional initial page number to store in metadata
-
-    Returns:
-        Conversation record as dict
     """
     client = get_supabase_client()
 
-    # Try to find existing conversation
     try:
         response = (
             client.table("conversations")
@@ -77,10 +118,10 @@ def get_or_create_study_conversation(
     except Exception as e:
         raise Exception(f"Failed to load study conversation: {str(e)}")
 
-    # Create new conversation
     metadata = _build_study_conversation_metadata(
         course_material_id=course_material_id,
         last_page_number=initial_page,
+        tutor_graph_version=tutor_graph_version,
     )
 
     insert_data: Dict[str, Any] = {
@@ -104,34 +145,12 @@ def update_conversation_progress(
     conversation_id: str,
     last_page_number: int,
 ) -> None:
-    """
-    Update the last_page_number in a conversation's metadata.
-
-    Args:
-        conversation_id: Conversation ID (UUID)
-        last_page_number: Last visited page number
-    """
-    client = get_supabase_client()
-
+    """Update the last_page_number in a conversation's metadata."""
     try:
-        # Fetch existing metadata to avoid overwriting unrelated fields
-        response = (
-            client.table("conversations")
-            .select("metadata")
-            .eq("id", conversation_id)
-            .single()
-            .execute()
+        update_conversation_metadata(
+            conversation_id,
+            {"last_page_number": last_page_number},
         )
-
-        metadata = response.data.get("metadata") or {}
-        if not isinstance(metadata, dict):
-            metadata = {}
-
-        metadata["last_page_number"] = last_page_number
-
-        client.table("conversations").update({"metadata": metadata}).eq(
-            "id", conversation_id
-        ).execute()
     except Exception as e:
         raise Exception(f"Failed to update conversation progress: {str(e)}")
 
@@ -162,7 +181,6 @@ def append_messages(
         context_page_id = msg.get("context_page_id")
 
         if not role or not content:
-            # Skip invalid messages silently to avoid breaking the flow
             continue
 
         record: Dict[str, Any] = {
@@ -192,18 +210,12 @@ def load_conversation_with_messages(
     """
     Load a study conversation and its messages for a user and course material.
 
-    Args:
-        user_id: User ID (UUID)
-        course_material_id: Course material ID (UUID)
-        limit: Maximum number of messages to return (most recent first)
-
     Returns:
         Tuple of (conversation_dict_or_none, messages_list)
         Messages are ordered ascending by created_at (oldest first).
     """
     client = get_supabase_client()
 
-    # Load conversation
     try:
         conv_response = (
             client.table("conversations")
@@ -223,7 +235,6 @@ def load_conversation_with_messages(
     conversation = conv_response.data[0]
     conversation_id = conversation["id"]
 
-    # Load messages
     try:
         msg_response = (
             client.table("messages")
@@ -237,8 +248,6 @@ def load_conversation_with_messages(
         raise Exception(f"Failed to load messages: {str(e)}")
 
     messages = msg_response.data or []
-    # Reverse to oldest-first for UI and agent consumption
     messages.reverse()
 
     return conversation, messages
-

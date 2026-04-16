@@ -1,14 +1,10 @@
-"use client"
+﻿"use client"
 
 import * as React from "react"
 import { format } from "date-fns"
-import {
-  CheckCircle2Icon,
-  LoaderIcon,
-  MoreVerticalIcon,
-} from "lucide-react"
-import type { LearningUnit } from "@/types"
+import { CheckCircle2Icon, LoaderIcon, MoreVerticalIcon } from "lucide-react"
 
+import type { LearningUnit } from "@/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -28,14 +24,12 @@ import {
   TableRow,
 } from "@/components/ui/table"
 
-// Dummy data based on LearningUnit type
-// Using static dates to avoid hydration mismatch between server and client
 const dummyLearningUnits: Array<LearningUnit & { course_name: string; progress: number }> = [
   {
     id: "1",
     course_id: "course-1",
     user_id: "user-1",
-    title: "Einführung in Machine Learning",
+    title: "Einfuehrung in Machine Learning",
     course_name: "KI Grundlagen",
     start_time: "2026-01-15T10:00:00.000Z",
     end_time: "2026-01-15T12:00:00.000Z",
@@ -121,42 +115,22 @@ const getStatusBadge = (status: LearningUnit["status"]) => {
   switch (status) {
     case "completed":
       return (
-        <Badge
-          variant="outline"
-          className="flex gap-1 px-1.5 text-muted-foreground [&_svg]:size-3"
-        >
-          <CheckCircle2Icon className="text-green-500 dark:text-green-400" />
+        <Badge variant="success" className="gap-1.5">
+          <CheckCircle2Icon className="h-3 w-3" />
           Abgeschlossen
         </Badge>
       )
     case "planned":
       return (
-        <Badge
-          variant="outline"
-          className="flex gap-1 px-1.5 text-muted-foreground [&_svg]:size-3"
-        >
-          <LoaderIcon className="animate-spin" />
-          In Bearbeitung
+        <Badge variant="info" className="gap-1.5">
+          <LoaderIcon className="h-3 w-3" />
+          Geplant
         </Badge>
       )
     case "skipped":
-      return (
-        <Badge
-          variant="outline"
-          className="flex gap-1 px-1.5 text-muted-foreground [&_svg]:size-3"
-        >
-          Übersprungen
-        </Badge>
-      )
+      return <Badge variant="warning">Uebersprungen</Badge>
     case "rescheduled":
-      return (
-        <Badge
-          variant="outline"
-          className="flex gap-1 px-1.5 text-muted-foreground [&_svg]:size-3"
-        >
-          Verschoben
-        </Badge>
-      )
+      return <Badge variant="secondary">Verschoben</Badge>
     default:
       return null
   }
@@ -166,103 +140,96 @@ export function LearningUnitsTable() {
   const [selectedRows, setSelectedRows] = React.useState<Set<string>>(new Set())
 
   const toggleRowSelection = (id: string) => {
-    const newSelection = new Set(selectedRows)
-    if (newSelection.has(id)) {
-      newSelection.delete(id)
+    const nextSelection = new Set(selectedRows)
+    if (nextSelection.has(id)) {
+      nextSelection.delete(id)
     } else {
-      newSelection.add(id)
+      nextSelection.add(id)
     }
-    setSelectedRows(newSelection)
+    setSelectedRows(nextSelection)
   }
 
   const toggleAllSelection = () => {
     if (selectedRows.size === dummyLearningUnits.length) {
       setSelectedRows(new Set())
-    } else {
-      setSelectedRows(new Set(dummyLearningUnits.map((unit) => unit.id)))
+      return
     }
+    setSelectedRows(new Set(dummyLearningUnits.map((unit) => unit.id)))
   }
 
   return (
-    <div className="flex w-full flex-col gap-6 px-4 lg:px-6">
-      <div className="flex items-center justify-between">
+    <section className="app-surface-panel gap-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Lerneinheiten</h2>
-          <p className="text-sm text-muted-foreground">
-            Übersicht über deine aktuellen Lerneinheiten
+          <h4 className="app-section__title">Lerneinheiten</h4>
+          <p className="app-section__description">
+            Eine ruhige Uebersicht ueber aktuelle Sessions, Prioritaeten und abgeschlossene Slots.
           </p>
         </div>
+        <span className="app-subtle-chip">{dummyLearningUnits.length} Einheiten geplant</span>
       </div>
-      <div className="overflow-hidden rounded-lg border">
+
+      <div className="app-table-shell">
         <Table>
-          <TableHeader className="sticky top-0 z-10 bg-muted">
+          <TableHeader>
             <TableRow>
               <TableHead className="w-12">
                 <Checkbox
                   checked={selectedRows.size === dummyLearningUnits.length}
                   onCheckedChange={toggleAllSelection}
-                  aria-label="Select all"
+                  aria-label="Alle Lerneinheiten auswaehlen"
                 />
               </TableHead>
               <TableHead>Lerneinheit</TableHead>
               <TableHead>Kurs</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="text-right">Fortschritt</TableHead>
-              <TableHead className="text-right">Verständnis</TableHead>
-              <TableHead>Geplant für</TableHead>
-              <TableHead className="w-12"></TableHead>
+              <TableHead className="text-right">Verstaendnis</TableHead>
+              <TableHead>Geplant fuer</TableHead>
+              <TableHead className="w-12" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {dummyLearningUnits.map((unit) => (
-              <TableRow
-                key={unit.id}
-                data-state={selectedRows.has(unit.id) && "selected"}
-              >
+              <TableRow key={unit.id} data-state={selectedRows.has(unit.id) ? "selected" : undefined}>
                 <TableCell>
                   <Checkbox
                     checked={selectedRows.has(unit.id)}
                     onCheckedChange={() => toggleRowSelection(unit.id)}
-                    aria-label={`Select ${unit.title}`}
+                    aria-label={`${unit.title} auswaehlen`}
                   />
                 </TableCell>
-                <TableCell className="font-medium">
-                  {unit.title}
+                <TableCell className="min-w-[220px] align-top">
+                  <div className="space-y-1">
+                    <p className="font-medium text-foreground">{unit.title}</p>
+                    <p className="text-xs text-muted-foreground">{format(new Date(unit.end_time), "HH:mm")} Ende</p>
+                  </div>
                 </TableCell>
-                <TableCell>
-                  <Badge variant="outline" className="px-1.5 text-muted-foreground">
-                    {unit.course_name}
-                  </Badge>
+                <TableCell className="align-top">
+                  <Badge variant="secondary">{unit.course_name}</Badge>
                 </TableCell>
-                <TableCell>{getStatusBadge(unit.status)}</TableCell>
-                <TableCell className="text-right">
+                <TableCell className="align-top">{getStatusBadge(unit.status)}</TableCell>
+                <TableCell className="align-top text-right font-medium text-foreground">
                   {unit.progress}%
                 </TableCell>
-                <TableCell className="text-right">
-                  {unit.comprehension_score !== null
-                    ? `${unit.comprehension_score}%`
-                    : "N/A"}
+                <TableCell className="align-top text-right text-sm text-muted-foreground">
+                  {unit.comprehension_score !== null ? `${unit.comprehension_score}%` : "-"}
                 </TableCell>
-                <TableCell>
+                <TableCell className="align-top text-sm text-muted-foreground">
                   {format(new Date(unit.start_time), "dd.MM.yyyy HH:mm")}
                 </TableCell>
-                <TableCell>
+                <TableCell className="align-top">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        className="flex size-8 text-muted-foreground data-[state=open]:bg-muted"
-                        size="icon"
-                      >
-                        <MoreVerticalIcon />
-                        <span className="sr-only">Open menu</span>
+                      <Button variant="ghost" size="icon-touch" aria-label={`Aktionen fuer ${unit.title}`}>
+                        <MoreVerticalIcon className="h-4 w-4" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-32">
+                    <DropdownMenuContent align="end" className="w-36">
                       <DropdownMenuItem>Bearbeiten</DropdownMenuItem>
                       <DropdownMenuItem>Details</DropdownMenuItem>
                       <DropdownMenuSeparator />
-                      <DropdownMenuItem>Löschen</DropdownMenuItem>
+                      <DropdownMenuItem>Loeschen</DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </TableCell>
@@ -271,11 +238,13 @@ export function LearningUnitsTable() {
           </TableBody>
         </Table>
       </div>
+
       <div className="flex items-center justify-between text-sm text-muted-foreground">
-        <div>
-          {selectedRows.size} von {dummyLearningUnits.length} ausgewählt
-        </div>
+        <span>
+          {selectedRows.size} von {dummyLearningUnits.length} ausgewaehlt
+        </span>
+        <span>Demo-Daten fuer die Planungsansicht</span>
       </div>
-    </div>
+    </section>
   )
 }

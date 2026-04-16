@@ -1,13 +1,15 @@
 "use client"
 
-import { useRef, useEffect } from 'react'
-import { ConversationEmptyState } from '@/components/ai/conversation'
-import { Loader } from '@/components/ui/loader'
-import { Switch } from '@/components/ui/switch'
-import { Label } from '@/components/ui/label'
-import { ChatMessage } from './chat-message'
-import { TutorPromptInput } from './tutor-prompt-input'
-import type { ChatMessage as ChatMessageType } from '@/types'
+import { useEffect, useRef } from "react"
+
+import { ConversationEmptyState } from "@/components/ai/conversation"
+import { Loader } from "@/components/ui/loader"
+import { Label } from "@/components/ui/label"
+import type { ChatMessage as ChatMessageType } from "@/types"
+import { ChatMessage } from "./chat-message"
+import { TutorPromptInput } from "./tutor-prompt-input"
+import { Tool } from "@/components/ui/tool"
+import { BugIcon } from "lucide-react"
 
 interface ChatInterfaceProps {
   messages: ChatMessageType[]
@@ -17,8 +19,14 @@ interface ChatInterfaceProps {
   contextInfo?: string
   showTools?: boolean
   onToggleTools?: (enabled: boolean) => void
-  onQuizComplete?: (quizId: string, answers: Record<string, 'A' | 'B' | 'C' | 'D'>) => void
+  onQuizComplete?: (quizId: string, answers: Record<string, "A" | "B" | "C" | "D">) => void
   submittingQuizId?: string | null
+}
+
+const NEAR_BOTTOM_THRESHOLD = 100
+
+function isNearBottom(element: HTMLDivElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= NEAR_BOTTOM_THRESHOLD
 }
 
 export function ChatInterface({
@@ -33,173 +41,116 @@ export function ChatInterface({
   submittingQuizId = null,
 }: ChatInterfaceProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
-  const isUserScrollingRef = useRef(false)
-  const lastScrollTopRef = useRef(0)
-
+  const shouldAutoScrollRef = useRef(true)
   const isInitiallyLoading = messages.length === 0 && (isLoading || isStreaming)
 
-  // Autoscroll to bottom when messages change or during streaming
-  useEffect(() => {
-    if (!scrollRef.current) return
-
-    const scrollToBottom = () => {
-      if (scrollRef.current) {
-        scrollRef.current.scrollTo({
-          top: scrollRef.current.scrollHeight,
-          behavior: 'auto', // Wichtig: 'auto' für instant scroll während Streaming
-        })
-      }
-    }
-
-    // Immer scrollen, wenn sich die Nachrichtenstruktur ändert (z.B. neue Nachricht startet)
-    scrollToBottom()
-
-    // Während des Streamings: Kontinuierliches Scrollen mit requestAnimationFrame
-    if (isStreaming) {
-      let animationFrameId: number | null = null
-
-      const scrollLoop = () => {
-        if (!scrollRef.current) return
-
-        // Prüfe, ob der User manuell hochgescrollt hat
-        const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
-        const isNearBottom = scrollHeight - scrollTop - clientHeight < 100 // 100px Threshold
-
-        // Wenn User nahe am Bottom ist, scrollen wir weiter
-        if (isNearBottom) {
-          isUserScrollingRef.current = false
-          scrollToBottom()
-        }
-
-        animationFrameId = requestAnimationFrame(scrollLoop)
-      }
-
-      animationFrameId = requestAnimationFrame(scrollLoop)
-
-      return () => {
-        if (animationFrameId !== null) {
-          cancelAnimationFrame(animationFrameId)
-        }
-      }
-    }
-  }, [messages, isStreaming])
-
-  // Track user's manual scrolling
   useEffect(() => {
     const scrollElement = scrollRef.current
-    if (!scrollElement) return
-
-    const handleScroll = () => {
-      if (!scrollElement) return
-
-      const { scrollTop, scrollHeight, clientHeight } = scrollElement
-      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100
-
-      // Wenn User manuell hochscrollt (nicht nahe am Bottom)
-      if (!isNearBottom) {
-        isUserScrollingRef.current = true
-      } else {
-        // User ist wieder am Bottom, Auto-Scroll kann wieder aktiv werden
-        isUserScrollingRef.current = false
-      }
-
-      lastScrollTopRef.current = scrollTop
+    if (!scrollElement) {
+      return
     }
 
-    scrollElement.addEventListener('scroll', handleScroll, { passive: true })
+    const handleScroll = () => {
+      shouldAutoScrollRef.current = isNearBottom(scrollElement)
+    }
+
+    shouldAutoScrollRef.current = isNearBottom(scrollElement)
+    scrollElement.addEventListener("scroll", handleScroll, { passive: true })
 
     return () => {
-      scrollElement.removeEventListener('scroll', handleScroll)
+      scrollElement.removeEventListener("scroll", handleScroll)
     }
   }, [])
 
+  useEffect(() => {
+    const scrollElement = scrollRef.current
+    if (!scrollElement || !shouldAutoScrollRef.current) {
+      return
+    }
+
+    scrollElement.scrollTo({
+      top: scrollElement.scrollHeight,
+      behavior: "auto",
+    })
+  }, [messages, isStreaming])
+
   return (
-    <div className="flex flex-col h-full w-full min-h-0 bg-[#f6f4f1]">
-      {/* Tool Toggle Switch - Dezente Position oben rechts */}
-      {onToggleTools && (
-        <div className="flex items-center justify-end gap-2 px-4 pt-3 pb-2 flex-shrink-0">
-          <Label htmlFor="show-tools" className="text-xs text-muted-foreground cursor-pointer">
-            Tools anzeigen
-          </Label>
-          <Switch
-            id="show-tools"
-            checked={showTools}
-            onCheckedChange={onToggleTools}
-          />
+    <div className="flex h-full min-h-0 flex-col bg-transparent">
+      {onToggleTools ? (
+        <div className="absolute top-2 right-2 z-50">
+          <button
+            onClick={() => onToggleTools(!showTools)}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800 dark:hover:text-zinc-300 transition-colors"
+            title="Entwicklerwerkzeuge (Tool Calls)"
+          >
+            <BugIcon className="h-4 w-4" />
+          </button>
+        </div>
+      ) : null}
+
+      {showTools && (
+        <div className="flex-shrink-0 border-b border-orange-200 bg-orange-50 dark:border-orange-900/50 dark:bg-orange-900/20 px-4 py-2 text-xs text-orange-800 dark:text-orange-400">
+          Entwicklermodus aktiv: System-Tools und interne Schritte werden angezeigt.
         </div>
       )}
 
-      {/* Optional Context Banner */}
-      {contextInfo && (
-        <div className="bg-blue-50 border-b border-blue-200 p-4 flex-shrink-0">
-          <div className="max-w-4xl mx-auto flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <span className="text-sm font-medium text-blue-900">Kontext:</span>
-              <span className="text-sm text-blue-700">{contextInfo}</span>
-            </div>
-            <button
-              type="button"
-              className="text-xs text-blue-600 hover:text-blue-800 p-0 h-auto flex items-center gap-1"
-            >
-              <span className="w-3 h-3">×</span>
-              <span>Kontext entfernen</span>
-            </button>
+      {contextInfo ? (
+        <div className="flex-shrink-0 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 px-4 py-2">
+          <div className="text-[10px] uppercase tracking-widest text-zinc-500 font-semibold mb-0.5">
+            Aktiver Kontext
           </div>
+          <p className="min-w-0 truncate text-xs text-zinc-700 dark:text-zinc-300">
+            {contextInfo}
+          </p>
         </div>
-      )}
+      ) : null}
 
-      {/* Conversation Container */}
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <div
-          ref={scrollRef}
-          className="h-full overflow-y-auto px-4 py-4 space-y-6"
-        >
-          {isInitiallyLoading ? (
-            // Vollflächiger Ladezustand beim Initialisieren der Sitzung
-            <div className="flex h-full items-center justify-center">
-              <div className="flex flex-col items-center gap-3 rounded-2xl bg-black text-white px-6 py-4 max-w-md w-full">
-                <div className="flex items-center gap-3">
-                  <Loader size={20} className="animate-spin" />
-                  <p className="text-sm font-medium">Tutor denkt nach...</p>
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <div ref={scrollRef} className="h-full overflow-y-auto px-4 py-5 lg:px-5">
+          <div className="mx-auto flex max-w-[54rem] flex-col gap-5">
+            {isInitiallyLoading ? (
+              <div className="flex min-h-[260px] items-center justify-center">
+                <div className="w-full max-w-md rounded-[1.75rem] border border-[var(--app-border-soft)] bg-[var(--app-surface)] px-6 py-5 text-center shadow-[var(--app-shadow-soft)]">
+                  <div className="flex items-center justify-center gap-3 text-foreground">
+                    <Loader size={20} className="animate-spin text-[var(--app-accent)]" />
+                    <p className="text-sm font-medium">Tutor denkt nach...</p>
+                  </div>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Die Antwort zu deinen aktuellen Folien wird vorbereitet.
+                  </p>
                 </div>
-                <p className="text-xs text-white/70 text-center">
-                  Die Antwort zu deinen aktuellen Folien wird vorbereitet.
-                </p>
               </div>
-            </div>
-          ) : messages.length === 0 ? (
-            <ConversationEmptyState
-              title="Noch keine Nachrichten"
-              description="Beginne eine Unterhaltung mit dem Tutor"
-            />
-          ) : (
-            messages.map((message, index) => {
-              // Check if this is the last message and it's streaming
-              const isLastMessage = index === messages.length - 1
-              const messageContent = typeof message.content === 'string' ? message.content : (message.content?.toString() || '')
-              // Show streaming indicator ONLY if:
-              // 1. It's the last message
-              // 2. It's an assistant message
-              // 3. Content is empty AND (message has streaming-* ID OR isStreaming is true)
-              // This way, if content is available, it will be shown directly instead of the loading indicator
-              const isStreamingMessage = isLastMessage && message.role === "assistant" && 
-                (!messageContent || messageContent.trim() === "") && 
-                (message.id.startsWith('streaming-') || isStreaming)
-              
-              // Check if this message has a quiz and create callback
-              const quiz = message.quiz
-              const isQuizSubmitting = quiz && submittingQuizId === quiz.quiz_id
-              const handleQuizCompleteForMessage = quiz && onQuizComplete
-                ? (quizId: string, answers: Record<string, 'A' | 'B' | 'C' | 'D'>) => {
-                    onQuizComplete(quizId, answers)
-                  }
-                : undefined
-              
-              return (
-                <div key={message.id} className={index > 0 ? "mt-6" : ""}>
+            ) : messages.length === 0 ? (
+              <div className="app-empty-state min-h-[260px]">
+                <ConversationEmptyState
+                  title="Noch keine Nachrichten"
+                  description="Beginne eine Unterhaltung mit dem Tutor, um die aktuelle Seite erklaeren zu lassen."
+                />
+              </div>
+            ) : (
+              messages.map((message, index) => {
+                const isLastMessage = index === messages.length - 1
+                const messageContent = message.content
+                const isStreamingMessage =
+                  isLastMessage &&
+                  message.role === "assistant" &&
+                  (!messageContent || messageContent.trim() === "") &&
+                  (message.id.startsWith("streaming-") || isStreaming)
+
+                const quiz = message.quiz
+                const isQuizSubmitting = quiz && submittingQuizId === quiz.quiz_id
+                const handleQuizCompleteForMessage =
+                  quiz && onQuizComplete
+                    ? (quizId: string, answers: Record<string, "A" | "B" | "C" | "D">) => {
+                        onQuizComplete(quizId, answers)
+                      }
+                    : undefined
+
+                return (
                   <ChatMessage
+                    key={message.id}
                     id={message.id}
-                    role={message.role}
+                    role={message.role === "user" ? "user" : "assistant"}
                     content={messageContent}
                     isStreaming={isStreamingMessage}
                     toolCalls={message.toolCalls}
@@ -208,21 +159,22 @@ export function ChatInterface({
                     onQuizComplete={handleQuizCompleteForMessage}
                     isQuizSubmitting={isQuizSubmitting}
                   />
-                </div>
-              )
-            })
-          )}
+                )
+              })
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Input Area */}
-      <div className="p-4 border-t bg-white flex-shrink-0">
-        <TutorPromptInput
-          onSubmit={onSend}
-          isLoading={isLoading}
-          isStreaming={isStreaming}
-          contextInfo={contextInfo}
-        />
+      <div className="flex-shrink-0 border-t border-[var(--app-border-soft)] bg-[var(--app-surface)] px-4 py-4 lg:px-5">
+        <div className="mx-auto max-w-[54rem]">
+          <TutorPromptInput
+            onSubmit={onSend}
+            isLoading={isLoading}
+            isStreaming={isStreaming}
+            contextInfo={contextInfo}
+          />
+        </div>
       </div>
     </div>
   )

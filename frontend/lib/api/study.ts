@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API Client Functions for Study Session
  * 
  * Handles communication with the backend API for:
@@ -7,17 +7,19 @@
  * - SSE streaming
  */
 
-import type { ChatMessage, PageAnalysisData, ToolCall, QuizResult } from '@/types'
+import type { ChatMessage, Flashcard, PageAnalysisData, ToolCall, QuizResult } from '@/types'
+import { getApiUrl } from '@/lib/public-env'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const API_URL = getApiUrl()
+export interface StudyStreamMessage {
+  role: string
+  content: unknown
+}
 
-/**
- * Parse SSE chunk to extract message data
- * Supports both delta events, regular message chunks, and tool call events
- */
-export function parseSSEChunk(chunk: string): { 
+export interface StudyStreamChunk {
+  [key: string]: unknown
   node?: string
-  messages?: Array<{ role: string; content: string }>
+  messages?: StudyStreamMessage[]
   type?: string
   delta?: string
   content?: string
@@ -27,7 +29,13 @@ export function parseSSEChunk(chunk: string): {
   tool_call_id?: string
   result?: string
   message_id?: string
-} | null {
+}
+
+/**
+ * Parse SSE chunk to extract message data
+ * Supports both delta events, regular message chunks, and tool call events
+ */
+export function parseSSEChunk(chunk: string): StudyStreamChunk | null {
   if (chunk.trim() === '' || chunk === 'data: [DONE]') {
     return null
   }
@@ -46,7 +54,7 @@ export function parseSSEChunk(chunk: string): {
  */
 function processStreamResponse(
   response: Response,
-  onChunk: (chunk: any) => void,
+  onChunk: (chunk: StudyStreamChunk) => void,
   onComplete?: () => void,
   onError?: (error: Error) => void
 ): { close: () => void; done: Promise<void> } {
@@ -112,7 +120,7 @@ export async function initiateChat(
   materialId: string,
   pageNumber: number,
   userId: string,
-  onChunk: (chunk: { node?: string; messages?: Array<{ role: string; content: string }>; error?: string; type?: string; tool_calls?: ToolCall[]; message_id?: string }) => void,
+  onChunk: (chunk: StudyStreamChunk) => void,
   onError?: (error: Error) => void,
   onComplete?: () => void,
   isInitialOpen: boolean = false
@@ -154,13 +162,13 @@ export function sendMessage(
   materialId: string,
   message: string,
   userId: string,
-  onChunk: (chunk: { node?: string; messages?: Array<{ role: string; content: string }>; error?: string; type?: string; tool_calls?: ToolCall[]; message_id?: string }) => void,
+  onChunk: (chunk: StudyStreamChunk) => void,
   onError?: (error: Error) => void,
   onComplete?: () => void,
   pageNumber?: number
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const body: Record<string, any> = {
+    const body: Record<string, unknown> = {
       material_id: materialId,
       message,
       user_id: userId,
@@ -396,7 +404,7 @@ export async function downloadFlashcards(
 export async function getFlashcardsForMaterial(
   materialId: string,
   userId: string
-): Promise<{ flashcards: any[]; count: number }> {
+): Promise<{ flashcards: Flashcard[]; count: number }> {
   const url = `${API_URL}/api/flashcards/${encodeURIComponent(materialId)}?user_id=${encodeURIComponent(userId)}`
   
   const response = await fetch(url, {
@@ -525,7 +533,7 @@ export async function retryAnkiWebSync(
 export async function exportFlashcards(
   materialId: string,
   userId: string
-): Promise<Blob> {
+): Promise<{ blob: Blob; filename: string }> {
   // Start generation task
   const { task_id } = await generateFlashcards(materialId, userId)
   
@@ -767,3 +775,4 @@ export async function getStudyHistory(
 
   return response.json()
 }
+

@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import * as React from "react"
 import {
@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils"
 export interface ToolCall {
   id: string
   name: string
-  args: Record<string, any>
+  args: Record<string, unknown>
   result?: string
   state?: "pending" | "running" | "completed" | "error"
 }
@@ -27,9 +27,8 @@ export interface ToolProps extends React.ComponentProps<typeof Collapsible> {
 }
 
 const getStatusBadge = (state: ToolCall["state"], hasResult: boolean) => {
-  // Determine actual state: if no result, it should be "running" (waiting for response)
-  const actualState = hasResult ? (state || "completed") : "running"
-  
+  const actualState = hasResult ? state || "completed" : "running"
+
   const labels: Record<string, string> = {
     pending: "Pending",
     running: "Warte auf Antwort",
@@ -55,9 +54,8 @@ const getStatusBadge = (state: ToolCall["state"], hasResult: boolean) => {
 export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
   const [isOpen, setIsOpen] = React.useState(false)
   const [hasTimedOut, setHasTimedOut] = React.useState(false)
-  const hasResult = !!toolCall.result
+  const hasResult = Boolean(toolCall.result)
 
-  // Timeout of 1 minute
   React.useEffect(() => {
     if (hasResult) {
       setHasTimedOut(false)
@@ -66,15 +64,12 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
 
     const timeoutId = setTimeout(() => {
       setHasTimedOut(true)
-    }, 60000) // 1 minute
+    }, 60000)
 
     return () => {
       clearTimeout(timeoutId)
     }
   }, [hasResult])
-
-  // Determine actual state: if no result, it should be "running" (waiting for response)
-  const actualState = hasResult ? (toolCall.state || "completed") : "running"
 
   return (
     <Collapsible
@@ -98,7 +93,6 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
       </CollapsibleTrigger>
       <CollapsibleContent className="data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:animate-in data-[state=open]:slide-in-from-top-2">
         <div className="space-y-4 overflow-hidden p-4 pt-0">
-          {/* Parameters Section */}
           <div className="space-y-2">
             <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
               Parameters
@@ -109,8 +103,7 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
               </pre>
             </div>
           </div>
-          
-          {/* Waiting State - Show when no result yet */}
+
           {!hasResult && !hasTimedOut && (
             <div className="space-y-2">
               <div className="flex items-center gap-2 rounded-md bg-blue-50 dark:bg-blue-950/20 p-3 border border-blue-200 dark:border-blue-900">
@@ -122,7 +115,6 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
             </div>
           )}
 
-          {/* Timeout Message */}
           {!hasResult && hasTimedOut && (
             <div className="space-y-2">
               <div className="flex items-center gap-2 rounded-md bg-yellow-50 dark:bg-yellow-950/20 p-3 border border-yellow-200 dark:border-yellow-900">
@@ -134,7 +126,6 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
             </div>
           )}
 
-          {/* Result Section */}
           {toolCall.result && (
             <div className="space-y-2">
               <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
@@ -143,18 +134,13 @@ export const Tool = ({ className, toolCall, ...props }: ToolProps) => {
               <div className="rounded-md bg-green-50 dark:bg-green-950/20 p-3 border border-green-200 dark:border-green-900">
                 <pre className="text-xs overflow-x-auto">
                   <code>
-                    {typeof toolCall.result === 'string' 
-                      ? (() => {
-                          try {
-                            // Try to parse as JSON for pretty formatting
-                            const parsed = JSON.parse(toolCall.result)
-                            return JSON.stringify(parsed, null, 2)
-                          } catch {
-                            // If not JSON, display as-is
-                            return toolCall.result
-                          }
-                        })()
-                      : JSON.stringify(toolCall.result, null, 2)}
+                    {(() => {
+                      try {
+                        return JSON.stringify(JSON.parse(toolCall.result), null, 2)
+                      } catch {
+                        return toolCall.result
+                      }
+                    })()}
                   </code>
                 </pre>
               </div>

@@ -1,8 +1,9 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState } from "react"
 import { format } from "date-fns"
 import { useRouter } from "next/navigation"
+import { useMutation } from "@tanstack/react-query"
 
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
@@ -20,26 +21,30 @@ export function ExamDatePicker({ courseId, initialDate }: ExamDatePickerProps) {
     initialDate ? new Date(initialDate) : undefined
   )
   const [message, setMessage] = useState<string | null>(null)
-  const [isPending, startTransition] = useTransition()
 
-  const handleSave = () => {
-    startTransition(async () => {
-      setMessage(null)
-      const dateString = selected ? format(selected, "yyyy-MM-dd") : null
-
+  const { mutate, isPending } = useMutation({
+    mutationFn: async (dateStr: string | null) => {
       const { error } = await supabase
         .from("courses")
-        .update({ exam_date: dateString })
+        .update({ exam_date: dateStr })
         .eq("id", courseId)
-
-      if (error) {
-        setMessage(error.message || "Fehler beim Speichern")
-        return
-      }
-
+      
+      if (error) throw new Error(error.message)
+      return dateStr
+    },
+    onSuccess: () => {
       setMessage("Prüfungsdatum gespeichert")
       router.refresh()
-    })
+    },
+    onError: (err) => {
+      setMessage(err.message || "Fehler beim Speichern")
+    }
+  })
+
+  const handleSave = () => {
+    setMessage(null)
+    const dateString = selected ? format(selected, "yyyy-MM-dd") : null
+    mutate(dateString)
   }
 
   return (

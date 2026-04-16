@@ -1,9 +1,106 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
-import { initiateChat, sendMessage, getStudySession, submitQuiz, saveCurrentPage } from '@/lib/api/study'
+﻿import { useState, useRef, useCallback, useEffect } from 'react'
+import { initiateChat, sendMessage, getStudySession, submitQuiz, saveCurrentPage, type StudyStreamChunk } from '@/lib/api/study'
+import { getApiUrl } from '@/lib/public-env'
 import { parseQuizToolResponse } from '@/lib/quiz-validation'
 import { EventQueue } from '@/lib/event-queue'
-import type { ChatMessage, ToolCall } from '@/types'
+import type { ChatMessage, ToolCall, ToolResponseEvent } from '@/types'
 import { useTypewriter } from './use-typewriter'
+type StreamChunkRecord = Record<string, unknown>
+type StreamMessagePayload = { role: string; content: unknown }
+
+function isRecord(value: unknown): value is StreamChunkRecord {
+  return typeof value === 'object' && value !== null
+}
+
+function isStreamMessage(value: unknown): value is StreamMessagePayload {
+  return isRecord(value) && typeof value.role === 'string' && 'content' in value
+}
+
+function extractMessagesFromChunk(chunk: StudyStreamChunk): StreamMessagePayload[] {
+  if (Array.isArray(chunk.messages)) {
+    return chunk.messages.filter(isStreamMessage)
+  }
+
+  for (const [key, value] of Object.entries(chunk)) {
+    if (key === 'tools' || !isRecord(value) || !Array.isArray(value.messages)) {
+      continue
+    }
+
+    return value.messages.filter(isStreamMessage)
+  }
+
+  return []
+}
+
+function extractMessageContentText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === 'string') return item
+        if (isRecord(item)) {
+          if (typeof item.text === 'string') return item.text
+          if (typeof item.content === 'string') return item.content
+        }
+        return ''
+      })
+      .filter((text): text is string => Boolean(text))
+      .join('')
+  }
+
+  if (isRecord(content)) {
+    if (typeof content.text === 'string') return content.text
+    if (typeof content.content === 'string') return content.content
+    return JSON.stringify(content)
+  }
+
+  return ''
+}
+
+function createRequestId(page: number): string {
+  const suffix =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${page}`
+
+  return `req-${Date.now()}-${page}-${suffix}`
+}
+
+function toToolCallEvent(
+  chunk: StudyStreamChunk
+): Extract<ToolResponseEvent, { type: 'tool_call' }> | null {
+  if (chunk.type !== 'tool_call' || !Array.isArray(chunk.tool_calls)) {
+    return null
+  }
+
+  return {
+    type: 'tool_call',
+    tool_calls: chunk.tool_calls,
+    message_id: typeof chunk.message_id === 'string' ? chunk.message_id : '',
+  }
+}
+
+function toToolResponseEvent(
+  chunk: StudyStreamChunk
+): Extract<ToolResponseEvent, { type: 'tool_response' }> | null {
+  if (
+    chunk.type !== 'tool_response' ||
+    typeof chunk.tool_call_id !== 'string' ||
+    typeof chunk.result !== 'string'
+  ) {
+    return null
+  }
+
+  return {
+    type: 'tool_response',
+    tool_call_id: chunk.tool_call_id,
+    result: chunk.result,
+    message_id: typeof chunk.message_id === 'string' ? chunk.message_id : '',
+  }
+}
 
 export function useChatSession(
   materialId: string,
@@ -190,7 +287,7 @@ export function useChatSession(
                   updated[lastStreamingIndex] = {
                     ...updated[lastStreamingIndex],
                     id: generateMessageId(),
-                    content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+                    content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blÃ¤ttere zur nÃ¤chsten Seite.',
                   }
                   return updated
                 } else {
@@ -199,7 +296,7 @@ export function useChatSession(
                     {
                       id: generateMessageId(),
                       role: 'assistant',
-                      content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+                      content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blÃ¤ttere zur nÃ¤chsten Seite.',
                       timestamp: new Date().toISOString(),
                     },
                   ]
@@ -209,29 +306,30 @@ export function useChatSession(
             }
 
             // Handle tool call events
-            if (chunk.type === 'tool_call' && chunk.tool_calls) {
-              const retryableEvents = eventQueueRef.current.add(chunk)
-              
+            const toolCallEvent = toToolCallEvent(chunk)
+            if (toolCallEvent) {
+              const retryableEvents = eventQueueRef.current.add(toolCallEvent)
+
               setMessages((prev) => {
                 const lastStreamingIndex = prev.findLastIndex(
                   (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
                 )
-                
+
                 if (lastStreamingIndex >= 0) {
                   const messageId = prev[lastStreamingIndex].id
-                  const toolCallsWithState = (chunk.tool_calls || []).map(tc => ({
+                  const toolCallsWithState = toolCallEvent.tool_calls.map((tc) => ({
                     ...tc,
-                    state: tc.result ? (tc.state || 'completed') : 'running' as const
+                    state: tc.result ? (tc.state || 'completed') : 'running' as const,
                   }))
-                  
+
                   let updated = [...prev]
                   updated[lastStreamingIndex] = {
                     ...updated[lastStreamingIndex],
                     toolCalls: [...(updated[lastStreamingIndex].toolCalls || []), ...toolCallsWithState],
                   }
-                  
+
                   if (retryableEvents.length > 0) {
-                    retryableEvents.forEach(retryEvent => {
+                    retryableEvents.forEach((retryEvent) => {
                       if (retryEvent.type === 'tool_response' && retryEvent.tool_call_id && retryEvent.result) {
                         updated = processQuizToolResponse(
                           retryEvent.tool_call_id,
@@ -242,7 +340,7 @@ export function useChatSession(
                       }
                     })
                   }
-                  
+
                   return updated
                 }
                 return prev
@@ -251,24 +349,25 @@ export function useChatSession(
             }
 
             // Handle tool response events
-            if (chunk.type === 'tool_response' && chunk.tool_call_id && chunk.result) {
-              if (!eventQueueRef.current.validateOrder(chunk)) {
-                eventQueueRef.current.add(chunk)
+            const toolResponseEvent = toToolResponseEvent(chunk)
+            if (toolResponseEvent) {
+              if (!eventQueueRef.current.validateOrder(toolResponseEvent)) {
+                eventQueueRef.current.add(toolResponseEvent)
                 return
               }
-              
-              eventQueueRef.current.add(chunk)
-              
+
+              eventQueueRef.current.add(toolResponseEvent)
+
               setMessages((prev) => {
                 const lastStreamingIndex = prev.findLastIndex(
                   (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
                 )
-                
+
                 if (lastStreamingIndex >= 0) {
                   const messageId = prev[lastStreamingIndex].id
                   return processQuizToolResponse(
-                    chunk.tool_call_id!,
-                    chunk.result!,
+                    toolResponseEvent.tool_call_id,
+                    toolResponseEvent.result,
                     messageId,
                     prev
                   )
@@ -302,7 +401,7 @@ export function useChatSession(
                   return updated
                 } else {
                   streamingMessageId = `streaming-${generateMessageId()}`
-                  newContent = chunk.delta
+                  newContent = chunk.delta ?? ''
                   
                   startTypewriter(newContent, streamingMessageId, 40)
                   
@@ -321,38 +420,11 @@ export function useChatSession(
             }
 
             // Handle regular message chunks
-            let messages: Array<{ role: string; content: any }> = []
-            if (chunk.messages) {
-              messages = chunk.messages
-            } else {
-              for (const key in chunk) {
-                // @ts-ignore
-                if (key !== 'tools' && chunk[key] && chunk[key].messages && Array.isArray(chunk[key].messages)) {
-                  // @ts-ignore
-                  messages = chunk[key].messages
-                  break
-                }
-              }
-            }
+            const streamMessages = extractMessagesFromChunk(chunk)
 
-            if (messages.length > 0) {
-              messages.forEach((msg) => {
-                let contentText = ''
-                if (typeof msg.content === 'string') {
-                  contentText = msg.content
-                } else if (Array.isArray(msg.content)) {
-                  contentText = msg.content
-                    .map((item: any) => {
-                      if (typeof item === 'string') return item
-                      if (item && typeof item === 'object') return item.text || item.content || ''
-                      return ''
-                    })
-                    .filter((text: string) => text)
-                    .join('')
-                } else if (msg.content && typeof msg.content === 'object') {
-                  // @ts-ignore
-                  contentText = msg.content.text || msg.content.content || JSON.stringify(msg.content)
-                }
+            if (streamMessages.length > 0) {
+              streamMessages.forEach((msg) => {
+                const contentText = extractMessageContentText(msg.content)
 
                 if (msg.role === 'assistant' && contentText) {
                   setMessages((prev) => {
@@ -402,7 +474,7 @@ export function useChatSession(
                 updated[lastStreamingIndex] = {
                   ...updated[lastStreamingIndex],
                   id: generateMessageId(),
-                  content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+                  content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blÃ¤ttere zur nÃ¤chsten Seite.',
                 }
                 return updated
               } else {
@@ -411,7 +483,7 @@ export function useChatSession(
                   {
                     id: generateMessageId(),
                     role: 'assistant',
-                    content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+                    content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blÃ¤ttere zur nÃ¤chsten Seite.',
                     timestamp: new Date().toISOString(),
                   },
                 ]
@@ -470,7 +542,7 @@ export function useChatSession(
             updated[lastStreamingIndex] = {
               ...updated[lastStreamingIndex],
               id: generateMessageId(),
-              content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+              content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blÃ¤ttere zur nÃ¤chsten Seite.',
             }
             return updated
           } else {
@@ -479,7 +551,7 @@ export function useChatSession(
               {
                 id: generateMessageId(),
                 role: 'assistant',
-                content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blättere zur nächsten Seite.',
+                content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuche es erneut oder blÃ¤ttere zur nÃ¤chsten Seite.',
                 timestamp: new Date().toISOString(),
               },
             ]
@@ -545,7 +617,7 @@ export function useChatSession(
         debounceTimerRef.current = null
       }
 
-      const requestId = `req-${Date.now()}-${newPage}-${Math.random().toString(36).substr(2, 9)}`
+      const requestId = createRequestId(newPage)
       currentRequestIdRef.current = requestId
 
       debounceTimerRef.current = setTimeout(async () => {
@@ -620,29 +692,30 @@ export function useChatSession(
             }
 
             // Handle tool calls
-            if (chunk.type === 'tool_call' && chunk.tool_calls) {
-              const retryableEvents = eventQueueRef.current.add(chunk)
-              
+            const toolCallEvent = toToolCallEvent(chunk)
+            if (toolCallEvent) {
+              const retryableEvents = eventQueueRef.current.add(toolCallEvent)
+
               setMessages((prev) => {
                 const lastStreamingIndex = prev.findLastIndex(
                   (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
                 )
-                
+
                 if (lastStreamingIndex >= 0) {
                   const messageId = prev[lastStreamingIndex].id
-                  const toolCallsWithState = (chunk.tool_calls || []).map(tc => ({
+                  const toolCallsWithState = toolCallEvent.tool_calls.map((tc) => ({
                     ...tc,
-                    state: tc.result ? (tc.state || 'completed') : 'running' as const
+                    state: tc.result ? (tc.state || 'completed') : 'running' as const,
                   }))
-                  
+
                   let updated = [...prev]
                   updated[lastStreamingIndex] = {
                     ...updated[lastStreamingIndex],
                     toolCalls: [...(updated[lastStreamingIndex].toolCalls || []), ...toolCallsWithState],
                   }
-                  
+
                   if (retryableEvents.length > 0) {
-                    retryableEvents.forEach(retryEvent => {
+                    retryableEvents.forEach((retryEvent) => {
                       if (retryEvent.type === 'tool_response' && retryEvent.tool_call_id && retryEvent.result) {
                         updated = processQuizToolResponse(
                           retryEvent.tool_call_id,
@@ -653,7 +726,7 @@ export function useChatSession(
                       }
                     })
                   }
-                  
+
                   return updated
                 }
                 return prev
@@ -662,24 +735,25 @@ export function useChatSession(
             }
 
             // Handle tool responses
-            if (chunk.type === 'tool_response' && chunk.tool_call_id && chunk.result) {
-              if (!eventQueueRef.current.validateOrder(chunk)) {
-                eventQueueRef.current.add(chunk)
+            const toolResponseEvent = toToolResponseEvent(chunk)
+            if (toolResponseEvent) {
+              if (!eventQueueRef.current.validateOrder(toolResponseEvent)) {
+                eventQueueRef.current.add(toolResponseEvent)
                 return
               }
-              
-              eventQueueRef.current.add(chunk)
-              
+
+              eventQueueRef.current.add(toolResponseEvent)
+
               setMessages((prev) => {
                 const lastStreamingIndex = prev.findLastIndex(
                   (m) => m.role === 'assistant' && m.id.startsWith('streaming-')
                 )
-                
+
                 if (lastStreamingIndex >= 0) {
                   const messageId = prev[lastStreamingIndex].id
                   return processQuizToolResponse(
-                    chunk.tool_call_id!,
-                    chunk.result!,
+                    toolResponseEvent.tool_call_id,
+                    toolResponseEvent.result,
                     messageId,
                     prev
                   )
@@ -713,7 +787,7 @@ export function useChatSession(
                   return updated
                 } else {
                   streamingMessageId = `streaming-${generateMessageId()}`
-                  newContent = chunk.delta
+                  newContent = chunk.delta ?? ''
                   
                   startTypewriter(newContent, streamingMessageId, 40)
                   
@@ -732,38 +806,11 @@ export function useChatSession(
             }
 
             // Handle messages
-            let messages: Array<{ role: string; content: any }> = []
-            if (chunk.messages) {
-              messages = chunk.messages
-            } else {
-              for (const key in chunk) {
-                // @ts-ignore
-                if (key !== 'tools' && chunk[key] && chunk[key].messages && Array.isArray(chunk[key].messages)) {
-                  // @ts-ignore
-                  messages = chunk[key].messages
-                  break
-                }
-              }
-            }
+            const streamMessages = extractMessagesFromChunk(chunk)
 
-            if (messages.length > 0) {
-              messages.forEach((msg) => {
-                let contentText = ''
-                if (typeof msg.content === 'string') {
-                  contentText = msg.content
-                } else if (Array.isArray(msg.content)) {
-                  contentText = msg.content
-                    .map((item: any) => {
-                      if (typeof item === 'string') return item
-                      if (item && typeof item === 'object') return item.text || item.content || ''
-                      return ''
-                    })
-                    .filter((text: string) => text)
-                    .join('')
-                } else if (msg.content && typeof msg.content === 'object') {
-                  // @ts-ignore
-                  contentText = msg.content.text || msg.content.content || JSON.stringify(msg.content)
-                }
+            if (streamMessages.length > 0) {
+              streamMessages.forEach((msg) => {
+                const contentText = extractMessageContentText(msg.content)
 
                 if (msg.role === 'assistant' && contentText) {
                   setMessages((prev) => {
@@ -1023,8 +1070,8 @@ export function useChatSession(
         user_id: userId,
         page: currentPageRef.current,
       })
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-      navigator.sendBeacon(`${API_URL}/api/study/save-page`, new Blob([data], { type: 'application/json' }))
+      const apiUrl = getApiUrl()
+      navigator.sendBeacon(`${apiUrl}/api/study/save-page`, new Blob([data], { type: 'application/json' }))
     }
 
     window.addEventListener('beforeunload', handleBeforeUnload)
@@ -1050,3 +1097,4 @@ export function useChatSession(
     handleQuizComplete
   }
 }
+

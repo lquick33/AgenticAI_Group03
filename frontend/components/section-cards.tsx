@@ -1,4 +1,4 @@
-import { TrendingDownIcon, TrendingUpIcon } from "lucide-react"
+import { TargetIcon, ZapIcon, CheckCircle2Icon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import {
@@ -11,91 +11,67 @@ import {
 
 export function SectionCards() {
   return (
-    <div className="*:data-[slot=card]:shadow-xs @xl/main:grid-cols-2 @5xl/main:grid-cols-4 grid grid-cols-1 gap-4 px-4 *:data-[slot=card]:bg-gradient-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card dark:*:data-[slot=card]:bg-card lg:px-6">
-      <Card className="@container/card">
-        <CardHeader className="relative">
-          <CardDescription>Total Revenue</CardDescription>
-          <CardTitle className="@[250px]/card:text-3xl text-2xl font-semibold tabular-nums">
-            $1,250.00
+    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6 px-4 lg:px-8 mb-8 mt-4">
+      {/* Primary Hero Metric */}
+      <Card className="md:col-span-2 lg:col-span-2 bg-zinc-950 border-zinc-800 text-zinc-50 shadow-md relative overflow-hidden transition-all duration-300 hover:-translate-y-1">
+        <CardHeader className="relative z-10">
+          <CardDescription className="text-zinc-400 text-xs font-semibold tracking-wider uppercase mb-1">
+            Dein aktuelles Lernziel
+          </CardDescription>
+          <CardTitle className="text-3xl sm:text-4xl font-bold tracking-tight mb-4">
+            Meilenstein 1: Grundlagen
           </CardTitle>
-          <div className="absolute right-4 top-4">
-            <Badge variant="outline" className="flex gap-1 rounded-lg text-xs">
-              <TrendingUpIcon className="size-3" />
-              +12.5%
+          <div>
+            <Badge variant="secondary" className="bg-zinc-800/80 text-zinc-100 hover:bg-zinc-800 px-3 py-1 rounded-md text-xs border border-zinc-700/50">
+              <TargetIcon className="size-3.5 mr-1.5" />
+              65% Abgeschlossen
             </Badge>
           </div>
         </CardHeader>
-        <CardFooter className="flex-col items-start gap-1 text-sm">
-          <div className="line-clamp-1 flex gap-2 font-medium">
-            Trending up this month <TrendingUpIcon className="size-4" />
+        <CardFooter className="relative z-10 flex-col items-start gap-2 pt-8">
+          <div className="flex gap-2 font-medium text-sm text-zinc-300">
+            Du bist auf einem sehr guten Weg für diese Woche.
           </div>
-          <div className="text-muted-foreground">
-            Visitors for the last 6 months
+          <div className="w-full bg-zinc-800/80 rounded-full h-1.5 mt-2 overflow-hidden">
+            <div className="bg-zinc-100 h-1.5 rounded-full" style={{ width: "65%" }}></div>
           </div>
         </CardFooter>
+        <div className="absolute right-0 bottom-0 opacity-[0.03] pointer-events-none translate-x-1/4 translate-y-1/4 text-white">
+          <TargetIcon className="w-72 h-72" />
+        </div>
       </Card>
-      <Card className="@container/card">
-        <CardHeader className="relative">
-          <CardDescription>New Customers</CardDescription>
-          <CardTitle className="@[250px]/card:text-3xl text-2xl font-semibold tabular-nums">
-            1,234
+
+      {/* Secondary Metrics */}
+      <Card className="border-zinc-200 dark:border-zinc-800 shadow-sm bg-white dark:bg-zinc-950 transition-all duration-300 hover:-translate-y-1 flex flex-col justify-between">
+        <CardHeader className="pb-2">
+          <div className="flex justify-between items-start">
+            <CardDescription className="font-semibold text-zinc-500 dark:text-zinc-400 text-xs tracking-wider uppercase">Streak</CardDescription>
+            <ZapIcon className="size-4 text-amber-500" />
+          </div>
+          <CardTitle className="text-3xl font-bold tracking-tight mt-2">
+            12 Tage
           </CardTitle>
-          <div className="absolute right-4 top-4">
-            <Badge variant="outline" className="flex gap-1 rounded-lg text-xs">
-              <TrendingDownIcon className="size-3" />
-              -20%
-            </Badge>
-          </div>
         </CardHeader>
-        <CardFooter className="flex-col items-start gap-1 text-sm">
-          <div className="line-clamp-1 flex gap-2 font-medium">
-            Down 20% this period <TrendingDownIcon className="size-4" />
-          </div>
-          <div className="text-muted-foreground">
-            Acquisition needs attention
-          </div>
+        <CardFooter className="pt-0 text-sm text-zinc-500 dark:text-zinc-400 font-medium pb-5">
+          Dein Bestwert: 14 Tage
         </CardFooter>
       </Card>
-      <Card className="@container/card">
-        <CardHeader className="relative">
-          <CardDescription>Active Accounts</CardDescription>
-          <CardTitle className="@[250px]/card:text-3xl text-2xl font-semibold tabular-nums">
-            45,678
+
+      <Card className="border-zinc-200 dark:border-zinc-800 shadow-sm bg-white dark:bg-zinc-950 transition-all duration-300 hover:-translate-y-1 flex flex-col justify-between">
+        <CardHeader className="pb-2">
+          <div className="flex justify-between items-start">
+            <CardDescription className="font-semibold text-zinc-500 dark:text-zinc-400 text-xs tracking-wider uppercase">Geprüftes Wissen</CardDescription>
+            <CheckCircle2Icon className="size-4 text-emerald-500" />
+          </div>
+          <CardTitle className="text-3xl font-bold tracking-tight mt-2">
+            345
           </CardTitle>
-          <div className="absolute right-4 top-4">
-            <Badge variant="outline" className="flex gap-1 rounded-lg text-xs">
-              <TrendingUpIcon className="size-3" />
-              +12.5%
-            </Badge>
-          </div>
         </CardHeader>
-        <CardFooter className="flex-col items-start gap-1 text-sm">
-          <div className="line-clamp-1 flex gap-2 font-medium">
-            Strong user retention <TrendingUpIcon className="size-4" />
-          </div>
-          <div className="text-muted-foreground">Engagement exceed targets</div>
+        <CardFooter className="pt-0 text-sm text-zinc-500 dark:text-zinc-400 font-medium flex items-center gap-1 pb-5">
+          <span className="text-emerald-600 dark:text-emerald-500">+24</span> diese Woche
         </CardFooter>
       </Card>
-      <Card className="@container/card">
-        <CardHeader className="relative">
-          <CardDescription>Growth Rate</CardDescription>
-          <CardTitle className="@[250px]/card:text-3xl text-2xl font-semibold tabular-nums">
-            4.5%
-          </CardTitle>
-          <div className="absolute right-4 top-4">
-            <Badge variant="outline" className="flex gap-1 rounded-lg text-xs">
-              <TrendingUpIcon className="size-3" />
-              +4.5%
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardFooter className="flex-col items-start gap-1 text-sm">
-          <div className="line-clamp-1 flex gap-2 font-medium">
-            Steady performance <TrendingUpIcon className="size-4" />
-          </div>
-          <div className="text-muted-foreground">Meets growth projections</div>
-        </CardFooter>
-      </Card>
+      
     </div>
   )
 }

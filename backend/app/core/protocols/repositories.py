@@ -328,7 +328,7 @@ class FlashcardRepository(Protocol):
     """
     Contract: flashcard CRUD and Anki cache operations.
 
-    Consumers: FlashcardAgent, FlashcardRouter, endpoints.py
+    Consumers: FlashcardAgent, FlashcardRouter, app/api/routers/
     Implementor: SupabaseFlashcardAdapter
     """
 
@@ -536,7 +536,7 @@ class KnowledgeTrackingRepository(Protocol):
     """
     Contract: knowledge tracking, Anki deck/card mappings, and study history.
 
-    Consumers: FlashcardAgent, FlashcardTaskService, AnkiRouter, endpoints.py
+    Consumers: FlashcardAgent, FlashcardTaskService, AnkiRouter, app/api/routers/
     Implementor: SupabaseKnowledgeAdapter
     """
 

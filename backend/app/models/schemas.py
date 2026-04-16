@@ -1,4 +1,4 @@
-"""
+﻿"""
 Pydantic Schemas
 
 Request/response models and data validation schemas for the API.
@@ -18,7 +18,7 @@ class SlideAnalysis(BaseModel):
     
     summary: str = Field(
         ...,
-        description="Eine prägnante Zusammenfassung des Folieninhalts"
+        description="Eine prÃ¤gnante Zusammenfassung des Folieninhalts"
     )
     
     key_terms: list[str] = Field(
@@ -30,7 +30,7 @@ class SlideAnalysis(BaseModel):
         ...,
         min_length=2,
         max_length=2,
-        description="Genau 2 mögliche Prüfungsfragen, die sich aus dem Inhalt ergeben"
+        description="Genau 2 mÃ¶gliche PrÃ¼fungsfragen, die sich aus dem Inhalt ergeben"
     )
     
     diagram_description: str = Field(
@@ -40,7 +40,7 @@ class SlideAnalysis(BaseModel):
     
     is_chapter_heading: bool = Field(
         default=False,
-        description="True wenn diese Folie ein Kapitel-/Abschnittstitel ist (großer Titel, wenig oder kein Fließtext)"
+        description="True wenn diese Folie ein Kapitel-/Abschnittstitel ist (groÃŸer Titel, wenig oder kein FlieÃŸtext)"
     )
     
     chapter_title: Optional[str] = Field(
@@ -100,10 +100,14 @@ class CourseUpdateRequest(BaseModel):
 
 class ChatInitiateRequest(BaseModel):
     """Request model for initiating a chat session."""
-    
+
     material_id: str = Field(..., description="Course material ID (UUID)")
     page_number: int = Field(..., description="Current page number (1-indexed)")
     user_id: str = Field(..., description="User ID (UUID)")
+    tutor_graph_version: Optional[Literal["legacy", "v2"]] = Field(
+        default=None,
+        description="Optional tutor graph version override for controlled rollouts.",
+    )
     is_initial_open: bool = Field(
         default=False,
         description="Whether this is the initial opening of the study reader (true) or just a page change (false)"
@@ -112,10 +116,14 @@ class ChatInitiateRequest(BaseModel):
 
 class ChatMessageRequest(BaseModel):
     """Request model for sending a chat message."""
-    
+
     material_id: str = Field(..., description="Course material ID (UUID)")
     message: str = Field(..., description="User message content")
     user_id: str = Field(..., description="User ID (UUID)")
+    tutor_graph_version: Optional[Literal["legacy", "v2"]] = Field(
+        default=None,
+        description="Optional tutor graph version override for controlled rollouts.",
+    )
     page_number: Optional[int] = Field(None, description="Current page number (1-indexed). If provided, overrides state/metadata page.")
 
 

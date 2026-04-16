@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tool for extracting a visual snapshot of a PDF page.
 """
 
@@ -6,6 +6,7 @@ import json
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from app.adapters.supabase.client import get_supabase_client
 from app.core.adapters import get_file_storage as _get_file_storage
 from app.services.pdf_processor import extract_page_image
 
@@ -139,3 +140,4 @@ class GetPageImageTool:
             coroutine=self._arun,
             args_schema=GetPageImageInput
         )
+

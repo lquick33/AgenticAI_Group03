@@ -1,60 +1,73 @@
 """
 Flashcard Generation Task Service
 
-Manages background tasks for flashcard generation with progress tracking.
+Manages background tasks for flashcard generation with progress tracking via Redis.
 """
 
+import atexit
 import asyncio
 import logging
 import time
 import uuid
+import json
+import base64
+from contextlib import ExitStack
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from langgraph.checkpoint.postgres import PostgresSaver
+import redis.asyncio as redis
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.postgres import PostgresSaver
 
-from app.agents.flashcards import FlashcardGeneratorAgent
-from app.services.flashcard_service import build_anki_apkg
-# NOTE: save_flashcards removed - now using cache_flashcards in agent
+from app.core.config import settings
 from app.services.db_migration_helper import get_postgres_connection_string
+from app.services.tasks.flashcard_tasks import generate_flashcards_celery
 
 logger = logging.getLogger(__name__)
 
 # Singleton checkpointer instance
 _checkpointer = None
+_checkpointer_stack: ExitStack | None = None
 
+def _close_checkpointer_stack() -> None:
+    global _checkpointer
+    global _checkpointer_stack
+
+    if _checkpointer_stack is not None:
+        _checkpointer_stack.close()
+        _checkpointer_stack = None
+
+    _checkpointer = None
 
 def _get_checkpointer():
-    """
-    Get or create checkpointer instance for flashcard agent.
-    
-    Tries to use PostgresSaver for persistent checkpointing.
-    Falls back to MemorySaver if database connection is unavailable.
-    
-    Returns:
-        BaseCheckpointSaver instance (PostgresSaver or MemorySaver)
-    """
     global _checkpointer
+    global _checkpointer_stack
+
     if _checkpointer is None:
         try:
             conn_string = get_postgres_connection_string()
-            _checkpointer = PostgresSaver.from_conn_string(conn_string)
-            # Setup database tables (idempotent - safe to call multiple times)
+            stack = ExitStack()
+            saver = stack.enter_context(PostgresSaver.from_conn_string(conn_string))
             try:
-                _checkpointer.setup()
+                saver.setup()
                 logger.info("PostgresSaver tables initialized successfully")
             except Exception as setup_error:
-                # If setup fails (e.g., tables already exist), log warning but continue
-                # PostgresSaver may auto-create tables on first use in some versions
-                logger.warning(f"PostgresSaver.setup() failed (may be normal if tables exist): {setup_error}")
+                logger.warning(
+                    f"PostgresSaver.setup() failed (may be normal if tables exist): {setup_error}"
+                )
+            _checkpointer = saver
+            _checkpointer_stack = stack
             logger.info("Using PostgresSaver for flashcard agent checkpointing")
-        except (ValueError, Exception) as e:
-            logger.warning(f"Failed to initialize PostgresSaver, falling back to MemorySaver: {e}")
+        except Exception as e:
+            logger.warning(
+                f"Failed to initialize PostgresSaver, falling back to MemorySaver: {e}"
+            )
+            _close_checkpointer_stack()
             _checkpointer = MemorySaver()
             logger.info("Using MemorySaver for flashcard agent checkpointing (fallback)")
     return _checkpointer
 
+atexit.register(_close_checkpointer_stack)
 
 class TaskStatus(str, Enum):
     """Task status enumeration."""
@@ -63,7 +76,6 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
-
 
 class FlashcardTask:
     """Represents a flashcard generation task."""
@@ -86,15 +98,15 @@ class FlashcardTask:
         self.parent_deck_name = parent_deck_name
         self.target_deck_name = target_deck_name
         self.status = TaskStatus.PENDING
-        self.progress = 0.0  # 0.0 to 1.0
+        self.progress = 0.0
         self.total_pages = 0
         self.processed_pages = 0
         self.cards_generated = 0
         self.error_message: Optional[str] = None
         self.apkg_bytes: Optional[bytes] = None
         self.filename: Optional[str] = None
-        self.anki_synced: bool = False  # Cards added to local Anki
-        self.ankiweb_synced: bool = False  # Cards synced to AnkiWeb
+        self.anki_synced: bool = False
+        self.ankiweb_synced: bool = False
         self.created_at = time.time()
         self.completed_at: Optional[float] = None
         self._cancelled = False
@@ -121,18 +133,22 @@ class FlashcardTask:
         self._cancelled = True
         self.status = TaskStatus.CANCELLED
 
-
 class FlashcardTaskService:
     """
-    Service for managing flashcard generation tasks.
-    
-    In production, this could be replaced with a proper task queue
-    (e.g., Celery, RQ, or cloud task services).
+    Stateless Service for managing flashcard generation tasks using Redis and Celery.
     """
     
     def __init__(self):
-        self._tasks: Dict[str, FlashcardTask] = {}
-        self._lock = asyncio.Lock()
+        self._redis_client: Optional[redis.Redis] = None
+
+    def _get_redis(self) -> redis.Redis:
+        if self._redis_client is None:
+            redis_url = settings.REDIS_URL or "redis://localhost:6379/0"
+            if redis_url.startswith("rediss://"):
+                self._redis_client = redis.from_url(redis_url, ssl_cert_reqs="required")
+            else:
+                self._redis_client = redis.from_url(redis_url)
+        return self._redis_client
     
     async def create_task(
         self,
@@ -143,22 +159,26 @@ class FlashcardTaskService:
         parent_deck_name: Optional[str] = None,
         target_deck_name: Optional[str] = None,
     ) -> str:
-        """
-        Create a new flashcard generation task.
-        
-        Args:
-            course_material_id: Course material ID
-            user_id: User ID
-            course_id: Course ID
-            deduplicate_course: Enable course-wide deduplication
-            parent_deck_name: Course deck name (e.g., "Marketing 101")
-            target_deck_name: Full deck name (e.g., "Marketing 101::Lecture 3")
-            
-        Returns:
-            Task ID
-        """
         task_id = str(uuid.uuid4())
-        task = FlashcardTask(
+        
+        task_data = {
+            "task_id": task_id,
+            "course_material_id": course_material_id,
+            "user_id": user_id,
+            "course_id": course_id,
+            "status": TaskStatus.PENDING.value,
+            "progress": 0.0,
+            "total_pages": 0,
+            "processed_pages": 0,
+            "cards_generated": 0,
+            "created_at": time.time(),
+        }
+        
+        r = self._get_redis()
+        await r.setex(f"flashcard_task:{task_id}", 86400, json.dumps(task_data))
+        
+        # Dispatch to Celery
+        generate_flashcards_celery.delay(
             task_id=task_id,
             course_material_id=course_material_id,
             user_id=user_id,
@@ -168,256 +188,78 @@ class FlashcardTaskService:
             target_deck_name=target_deck_name,
         )
         
-        async with self._lock:
-            self._tasks[task_id] = task
-        
-        # Start background task
-        asyncio.create_task(self._run_task(task))
-        
         return task_id
     
     async def get_task(self, task_id: str) -> Optional[FlashcardTask]:
-        """
-        Get task by ID.
-        
-        Args:
-            task_id: Task ID
+        """Get task by ID."""
+        r = self._get_redis()
+        data = await r.get(f"flashcard_task:{task_id}")
+        if data:
+            task_dict = json.loads(data)
             
-        Returns:
-            Task or None if not found
-        """
-        async with self._lock:
-            return self._tasks.get(task_id)
+            task = FlashcardTask(
+                task_id=task_dict["task_id"],
+                course_material_id=task_dict["course_material_id"],
+                user_id=task_dict["user_id"],
+                course_id=task_dict["course_id"],
+            )
+            task.status = TaskStatus(task_dict.get("status", "pending"))
+            task.progress = task_dict.get("progress", 0.0)
+            task.total_pages = task_dict.get("total_pages", 0)
+            task.processed_pages = task_dict.get("processed_pages", 0)
+            task.cards_generated = task_dict.get("cards_generated", 0)
+            task.error_message = task_dict.get("error_message")
+            task.filename = task_dict.get("filename")
+            task.anki_synced = task_dict.get("anki_synced", False)
+            task.ankiweb_synced = task_dict.get("ankiweb_synced", False)
+            task.created_at = task_dict.get("created_at", time.time())
+            task.completed_at = task_dict.get("completed_at")
+            
+            # Reconstruct apkg_bytes from base64 if present
+            b64 = task_dict.get("apkg_base64")
+            if b64:
+                task.apkg_bytes = base64.b64decode(b64)
+                
+            return task
+        return None
     
     async def get_active_task_for_material(
         self,
         course_material_id: str,
         user_id: str,
     ) -> Optional[FlashcardTask]:
-        """
-        Get the active (pending or running) task for a course material.
-        
-        Args:
-            course_material_id: Course material ID
-            user_id: User ID for authorization
-            
-        Returns:
-            Active task or None if not found
-        """
-        async with self._lock:
-            for task in self._tasks.values():
-                if (
-                    task.course_material_id == course_material_id
-                    and task.user_id == user_id
-                    and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
-                ):
-                    return task
-            return None
+        """Get the active task for a course material. Iterates over active keys."""
+        r = self._get_redis()
+        cursor = 0
+        while True:
+            cursor, keys = await r.scan(cursor, match="flashcard_task:*", count=100)
+            if keys:
+                values = await r.mget(keys)
+                for val in values:
+                    if val:
+                        t = json.loads(val)
+                        if (
+                            t.get("course_material_id") == course_material_id and
+                            t.get("user_id") == user_id and
+                            t.get("status") in ("pending", "running")
+                        ):
+                            return await self.get_task(t["task_id"])
+            if cursor == 0:
+                break
+        return None
     
     async def cancel_task(self, task_id: str) -> bool:
-        """
-        Cancel a task.
-        
-        Args:
-            task_id: Task ID
-            
-        Returns:
-            True if task was cancelled, False if not found
-        """
-        async with self._lock:
-            task = self._tasks.get(task_id)
-            if task:
-                task.cancel()
-                return True
-            return False
-    
-    async def _run_task(self, task: FlashcardTask):
-        """
-        Run the flashcard generation task in the background.
-        
-        Args:
-            task: Task to run
-        """
-        try:
-            task.status = TaskStatus.RUNNING
-            logger.info(f"Starting flashcard generation task {task.task_id}")
-            
-            # Initialize agent with checkpointer for state persistence
-            checkpointer = _get_checkpointer()
-            agent = FlashcardGeneratorAgent(checkpointer=checkpointer)
-            
-            # Get page count for progress tracking
-            from app.core.adapters import get_page_analysis
-            page_analyses = get_page_analysis().get_all_for_material(
-                task.course_material_id,
-                task.user_id
-            )
-            task.total_pages = len(page_analyses) if page_analyses else 0
-            
-            if task.total_pages == 0:
-                task.status = TaskStatus.FAILED
-                task.error_message = "No page analyses found for this material"
-                task.completed_at = time.time()
-                return
-            
-            # Generate flashcards using the graph-based agent with progress tracking
-            # The agent now handles all page processing internally with state persistence
-            
-            def progress_callback(current_page_index, total_pages, processed_pages, skipped_pages, cards_generated, progress):
-                """Update task progress from graph state."""
-                try:
-                    task.processed_pages = processed_pages
-                    task.progress = progress
-                    task.cards_generated = cards_generated
-                    # total_pages already set before graph execution, but update if needed
-                    if total_pages > 0 and task.total_pages != total_pages:
-                        task.total_pages = total_pages
-                    logger.debug(
-                        f"Progress update for task {task.task_id}: "
-                        f"{processed_pages}/{total_pages} pages ({progress*100:.1f}%), "
-                        f"{cards_generated} cards generated"
-                    )
-                except Exception as e:
-                    # Don't let callback errors crash the generation
-                    logger.warning(f"Error updating task progress in callback: {e}")
-            
-            result = await asyncio.to_thread(
-                agent.generate_flashcards_with_progress,
-                course_material_id=task.course_material_id,
-                user_id=task.user_id,
-                course_id=task.course_id,
-                save_to_db=True,  # Let agent handle Anki + cache
-                task_id=task.task_id,
-                progress_callback=progress_callback,
-                deduplicate_course=task.deduplicate_course,
-                parent_deck_name=task.parent_deck_name,
-                target_deck_name=task.target_deck_name,
-            )
-            
-            if task._cancelled:
-                task.status = TaskStatus.CANCELLED
-                task.completed_at = time.time()
-                return
-            
-            # Extract cards and sync statuses from result
-            cards = result.get("cards", []) if isinstance(result, dict) else result
-            task.anki_synced = result.get("anki_synced", False) if isinstance(result, dict) else False
-            task.ankiweb_synced = result.get("ankiweb_synced", False) if isinstance(result, dict) else False
-            
-            if not cards:
-                task.status = TaskStatus.FAILED
-                task.error_message = "No flashcards could be generated"
-                task.completed_at = time.time()
-                return
-            
-            task.cards_generated = len(cards)
-            
-            # Note: Flashcards are now saved by the agent (Anki + cache)
-            # No additional save needed here
-            
-            # Generate filename first (needed for deck name)
-            from app.core.adapters import get_page_analysis
-            from app.adapters.supabase.client import get_supabase_client
-            client = get_supabase_client()
-            
-            # Fetch ALL flashcards from DB for this material (not just newly generated ones)
-            # This ensures the .apkg includes all cards, even from previous runs
-            page_analyses = get_page_analysis().get_all_for_material(task.course_material_id, task.user_id)
-            page_analysis_ids = [pa.get("id") for pa in page_analyses if pa.get("id")]
-            
-            if page_analysis_ids:
-                all_cards_response = (
-                    client.table("flashcards")
-                    .select("front, back, source_page_analysis_id")
-                    .eq("user_id", task.user_id)
-                    .in_("source_page_analysis_id", page_analysis_ids)
-                    .execute()
-                )
-                
-                if all_cards_response.data:
-                    # Convert DB format to the format expected by build_anki_apkg
-                    all_cards = []
-                    for card in all_cards_response.data:
-                        # Get page number from page_analysis
-                        page_num = None
-                        for pa in page_analyses:
-                            if pa.get("id") == card.get("source_page_analysis_id"):
-                                page_num = pa.get("page_number")
-                                break
-                        
-                        all_cards.append({
-                            "front": card.get("front", ""),
-                            "back": card.get("back", ""),
-                            "tags": [f"page:{page_num}"] if page_num else []
-                        })
-                    
-                    cards = all_cards
-                    logger.info(f"Using {len(cards)} cards from database for .apkg generation")
-            
-            material_response = (
-                client.table("course_materials")
-                .select("file_name")
-                .eq("id", task.course_material_id)
-                .single()
-                .execute()
-            )
-            
-            course_response = (
-                client.table("courses")
-                .select("title")
-                .eq("id", task.course_id)
-                .single()
-                .execute()
-            )
-            
-            file_name = material_response.data.get("file_name", "material") if material_response.data else "material"
-            course_title = course_response.data.get("title", "course") if course_response.data else "course"
-            
-            import re
-            lecture_name = file_name.replace('.pdf', '')
-            
-            # Build .apkg with embedded images
-            deck_name = f"{course_title}::{lecture_name}"
-            task.apkg_bytes = build_anki_apkg(cards, deck_name=deck_name)
-            
-            # Use deck_name format for filename, replacing :: with - for filesystem compatibility
-            # Only remove characters that are invalid in filenames: / \ : * ? " < > |
-            safe_deck_name = re.sub(r'[/\\:*?"<>|]', '', f"{course_title} - {lecture_name}").strip()[:100]
-            task.filename = f"{safe_deck_name}.apkg"
-            
-            # Update has_flashcards flag on course_materials for instant status display
-            try:
-                client.table("course_materials").update(
-                    {"has_flashcards": True}
-                ).eq("id", task.course_material_id).execute()
-                logger.info(f"Set has_flashcards=True for material {task.course_material_id}")
-            except Exception as flag_error:
-                # Log but don't fail the task if flag update fails
-                logger.warning(f"Failed to update has_flashcards flag: {flag_error}")
-            
-            task.status = TaskStatus.COMPLETED
-            task.progress = 1.0
-            task.completed_at = time.time()
-            
-            logger.info(
-                f"Flashcard generation task {task.task_id} completed: "
-                f"{len(cards)} cards generated"
-            )
-            
-        except Exception as e:
-            logger.error(f"Flashcard generation task {task.task_id} failed: {str(e)}", exc_info=True)
-            task.status = TaskStatus.FAILED
-            task.error_message = str(e)
-            task.completed_at = time.time()
-    
-    # Note: _generate_flashcards_async method removed
-    # The agent now handles all page processing internally via LangGraph
-    # Progress tracking can be added in the future by checking graph state
-
+        r = self._get_redis()
+        data = await r.get(f"flashcard_task:{task_id}")
+        if data:
+            task_dict = json.loads(data)
+            task_dict["status"] = "cancelled"
+            await r.setex(f"flashcard_task:{task_id}", 86400, json.dumps(task_dict))
+            return True
+        return False
 
 # Global task service instance
 _task_service: Optional[FlashcardTaskService] = None
-
 
 def get_flashcard_task_service() -> FlashcardTaskService:
     """Get or create the global task service instance."""

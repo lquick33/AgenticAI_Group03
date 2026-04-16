@@ -1,11 +1,14 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { createClient } from '@/lib/supabase/client'
-import { UploadSection } from '@/components/courses/upload-section'
-import { CourseMaterialsList } from '@/components/courses/course-materials-list'
-import type { CourseMaterial } from '@/types'
-import { calculateProcessingProgress, type ProcessingProgressData } from '@/lib/utils/progress'
+import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+
+import { useBackgroundTasksOptional } from "@/components/background-tasks"
+import { CourseMaterialsList } from "@/components/courses/course-materials-list"
+import { UploadSection } from "@/components/courses/upload-section"
+import { isFinalBackgroundTaskStatus } from "@/lib/background-task-utils"
+import { createClient } from "@/lib/supabase/client"
+import type { CourseMaterial } from "@/types"
 
 interface CourseMaterialsContainerProps {
   courseId: string
@@ -22,277 +25,156 @@ export function CourseMaterialsContainer({
   initialMaterials,
   deduplicateFlashcards = false,
 }: CourseMaterialsContainerProps) {
-  const [materials, setMaterials] = useState<CourseMaterial[]>(initialMaterials)
-  const [isRefreshing, setIsRefreshing] = useState(false)
-  const [pollingCount, setPollingCount] = useState(0) // Track count to trigger polling effect
-  const [materialProgress, setMaterialProgress] = useState<Record<string, { progress: number; stage: string; stageMessage: string }>>({})
-  
-  // Refs to track materials being polled without causing effect re-runs
-  const materialsRef = useRef<CourseMaterial[]>(initialMaterials)
-  const pollingMaterialsRef = useRef<Map<string, { id: string; initialFilename: string }>>(new Map())
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const queryClient = useQueryClient()
 
-  // Update materials when initialMaterials prop changes (e.g., from server-side fetch)
-  useEffect(() => {
-    setMaterials(initialMaterials)
-    materialsRef.current = initialMaterials
-  }, [initialMaterials])
-
-  // Update ref when materials state changes and manage polling map
-  useEffect(() => {
-    materialsRef.current = materials
-    
-    // Update polling materials map based on current materials
-    const currentProcessing = materials.filter(m => 
-      m.processing_status === 'processing' || m.processing_status === 'uploading'
-    )
-    
-    let mapChanged = false
-    
-    // Add new processing materials to polling map
-    currentProcessing.forEach(m => {
-      if (!pollingMaterialsRef.current.has(m.id)) {
-        pollingMaterialsRef.current.set(m.id, {
-          id: m.id,
-          initialFilename: m.file_name
-        })
-        mapChanged = true
-      }
-    })
-    
-    // Remove materials that are no longer processing
-    const processingIds = new Set(currentProcessing.map(m => m.id))
-    for (const [id] of pollingMaterialsRef.current) {
-      if (!processingIds.has(id)) {
-        pollingMaterialsRef.current.delete(id)
-        mapChanged = true
-      }
-    }
-    
-    // Update polling count to trigger polling effect restart if needed
-    if (mapChanged) {
-      setPollingCount(pollingMaterialsRef.current.size)
-    }
-  }, [materials])
-
-  const refreshMaterials = useCallback(async () => {
-    setIsRefreshing(true)
-    try {
+  const { data: materialsData, refetch, isFetching: isRefreshing } = useQuery({
+    queryKey: ["courseMaterials", courseId],
+    queryFn: async () => {
       const supabase = createClient()
       const { data, error } = await supabase
-        .from('course_materials')
-        .select('*')
-        .eq('course_id', courseId)
-        .order('created_at', { ascending: false })
+        .from("course_materials")
+        .select("*")
+        .eq("course_id", courseId)
+        .order("created_at", { ascending: false })
+      
+      if (error) throw error
+      return data as CourseMaterial[]
+    },
+    initialData: initialMaterials,
+  })
 
-      if (error) {
-        console.error('Error refreshing materials:', error)
-        // Don't throw - keep existing materials on error
+  const materials = materialsData ?? initialMaterials
+  const backgroundTasks = useBackgroundTasksOptional()
+  const previousTaskStatusesRef = useRef<Map<string, string>>(new Map())
+
+  const refreshMaterials = useCallback(async () => {
+    await refetch()
+  }, [refetch])
+
+  const handleUploadSuccess = useCallback(() => {
+    window.setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: ["courseMaterials", courseId] })
+    }, 300)
+  }, [queryClient, courseId])
+
+  useEffect(() => {
+    if (!backgroundTasks) {
+      return
+    }
+
+    materials.forEach((material) => {
+      const isProcessing =
+        material.processing_status === "processing" || material.processing_status === "uploading"
+      if (!isProcessing) {
         return
       }
 
-      if (data) {
-        setMaterials(data as CourseMaterial[])
+      const hasTask = backgroundTasks
+        .getTasksByMaterial(material.id)
+        .some((task) => task.type === "pdf_processing")
+
+      if (!hasTask) {
+        backgroundTasks.addTask({
+          id: material.id,
+          type: "pdf_processing",
+          materialId: material.id,
+          materialName: material.file_name.replace(/\.pdf$/i, ""),
+          courseId,
+          courseName,
+          progress: material.processing_status === "uploading" ? 0 : 5,
+          status: material.processing_status,
+          stage: material.processing_status,
+          stageMessage:
+            material.processing_status === "uploading"
+              ? "Wird hochgeladen..."
+              : "Wird verarbeitet...",
+        })
       }
-    } catch (error) {
-      console.error('Error refreshing materials:', error)
-      // Don't throw - keep existing materials on error
-    } finally {
-      setIsRefreshing(false)
-    }
-  }, [courseId])
+    })
+  }, [backgroundTasks, materials, courseId, courseName])
 
-  const handleUploadSuccess = useCallback(() => {
-    // Refresh materials after a short delay to ensure database transaction is committed
-    // The material is already in the database, but a small delay ensures consistency
-    setTimeout(() => {
-      refreshMaterials()
-    }, 300)
-  }, [refreshMaterials])
+  const materialProgress = useMemo(() => {
+    const progressByMaterial: Record<string, { progress: number; stage: string; stageMessage: string }> = {}
 
-  // Poll for filename updates on materials that are processing
+    backgroundTasks?.tasks.forEach((task) => {
+      if (task.type !== "pdf_processing" || task.courseId !== courseId) {
+        return
+      }
+      if (task.materialId.startsWith("upload-") || isFinalBackgroundTaskStatus(task.status)) {
+        return
+      }
+
+      progressByMaterial[task.materialId] = {
+        progress: task.progress,
+        stage: task.stage ?? task.status,
+        stageMessage: task.stageMessage ?? "Wird verarbeitet...",
+      }
+    })
+
+    return progressByMaterial
+  }, [backgroundTasks?.tasks, courseId])
+
   useEffect(() => {
-    // Clear any existing polling interval
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current)
-      pollIntervalRef.current = null
-    }
-    
-    // Start polling if there are materials to poll
-    if (pollingMaterialsRef.current.size === 0) {
+    if (!backgroundTasks) {
       return
     }
-    
-    const pollInterval = setInterval(async () => {
-      const supabase = createClient()
-      const pollingMaterials = Array.from(pollingMaterialsRef.current.values())
-      
-      for (const { id, initialFilename } of pollingMaterials) {
-        try {
-          // Query material with all progress-related fields
-          const { data: materialData, error: materialError } = await supabase
-            .from('course_materials')
-            .select('file_name, processing_status, page_count, summary, classification')
-            .eq('id', id)
-            .single()
-          
-          if (materialError) {
-            // If material not found (deleted) or any error, stop polling it
-            // PGRST116 = "The result contains 0 rows" (row was deleted)
-            if (materialError.code === 'PGRST116' || !materialsRef.current.find(m => m.id === id)) {
-              pollingMaterialsRef.current.delete(id)
-              setPollingCount(pollingMaterialsRef.current.size)
-              setMaterialProgress(prev => {
-                const updated = { ...prev }
-                delete updated[id]
-                return updated
-              })
-            }
-            continue
-          }
-          
-          if (materialData) {
-            // Get current material from ref
-            const currentMaterial = materialsRef.current.find(m => m.id === id)
-            
-            // Query completed pages count
-            const { count: completedPages, error: pagesError } = await supabase
-              .from('page_analyses')
-              .select('*', { count: 'exact', head: true })
-              .eq('course_material_id', id)
-            
-            if (pagesError) {
-              console.error(`Error counting pages for material ${id}:`, pagesError)
-            }
-            
-            // Calculate progress
-            const progressData: ProcessingProgressData = {
-              status: materialData.processing_status as 'uploading' | 'processing' | 'completed' | 'error',
-              completedPages: completedPages || 0,
-              totalPages: materialData.page_count || 0,
-              hasSummary: !!materialData.summary,
-              hasClassification: !!materialData.classification,
-            }
-            
-            const progressResult = calculateProcessingProgress(progressData)
-            
-            // Update progress state
-            setMaterialProgress(prev => ({
-              ...prev,
-              [id]: progressResult,
-            }))
-            
-            // Check if filename changed (compare with both initial and current)
-            const filenameChanged = materialData.file_name !== initialFilename && 
-                                   (!currentMaterial || materialData.file_name !== currentMaterial.file_name)
-            
-            if (filenameChanged) {
-              // Update the initial filename in the ref to prevent duplicate updates
-              pollingMaterialsRef.current.set(id, {
-                id,
-                initialFilename: materialData.file_name
-              })
-              
-              // Immediately refresh materials to get the updated filename
-              refreshMaterials()
-              
-              // If processing is complete, remove from polling
-              if (materialData.processing_status !== 'processing' && materialData.processing_status !== 'uploading') {
-                pollingMaterialsRef.current.delete(id)
-                setPollingCount(pollingMaterialsRef.current.size)
-                // Clear progress when done
-                setMaterialProgress(prev => {
-                  const updated = { ...prev }
-                  delete updated[id]
-                  return updated
-                })
-              }
-            } else if (materialData.processing_status !== 'processing' && materialData.processing_status !== 'uploading') {
-              // Processing complete - check if status has changed
-              const statusChanged = !currentMaterial || 
-                currentMaterial.processing_status === 'processing' || 
-                currentMaterial.processing_status === 'uploading'
-              
-              if (statusChanged) {
-                // Status changed to completed/error - refresh UI to show updated status
-                refreshMaterials()
-              }
-              
-              // Remove from polling
-              pollingMaterialsRef.current.delete(id)
-              setPollingCount(pollingMaterialsRef.current.size)
-              // Clear progress when done
-              setMaterialProgress(prev => {
-                const updated = { ...prev }
-                delete updated[id]
-                return updated
-              })
-            }
-          }
-        } catch (error) {
-          // If material no longer in state, stop polling it
-          if (!materialsRef.current.find(m => m.id === id)) {
-            pollingMaterialsRef.current.delete(id)
-            setPollingCount(pollingMaterialsRef.current.size)
-            setMaterialProgress(prev => {
-              const updated = { ...prev }
-              delete updated[id]
-              return updated
-            })
-          }
-          console.error(`Error polling material ${id}:`, error)
-        }
+
+    const currentTasks = backgroundTasks.tasks.filter(
+      (task) => task.type === "pdf_processing" && task.courseId === courseId
+    )
+    const nextStatuses = new Map<string, string>()
+    let shouldRefresh = false
+
+    currentTasks.forEach((task) => {
+      nextStatuses.set(task.id, task.status)
+      const previousStatus = previousTaskStatusesRef.current.get(task.id)
+      if (
+        previousStatus &&
+        previousStatus !== task.status &&
+        isFinalBackgroundTaskStatus(task.status)
+      ) {
+        shouldRefresh = true
       }
-      
-      // Clean up polling if no materials left to poll
-      if (pollingMaterialsRef.current.size === 0) {
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current)
-          pollIntervalRef.current = null
-        }
-        setPollingCount(0)
-      }
-    }, 2000) // Poll every 2 seconds
-    
-    pollIntervalRef.current = pollInterval
-    
-    // Cleanup after 5 minutes or when component unmounts (increased timeout for filename generation)
-    const timeout = setTimeout(() => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-        pollIntervalRef.current = null
-      }
-      pollingMaterialsRef.current.clear()
-      setPollingCount(0)
-    }, 300000) // 5 minutes
-    
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-        pollIntervalRef.current = null
-      }
-      clearTimeout(timeout)
+    })
+
+    previousTaskStatusesRef.current = nextStatuses
+
+    if (shouldRefresh) {
+      void refreshMaterials()
     }
-  }, [refreshMaterials, pollingCount]) // Include pollingCount to restart when materials are added/removed
+  }, [backgroundTasks?.tasks, courseId, refreshMaterials])
 
   return (
-    <>
-      <div className="px-4 lg:px-6">
-        <UploadSection 
-          courseId={courseId} 
+    <div className="space-y-6">
+      <section className="app-section">
+        <div className="app-section__header">
+          <div>
+            <h3 className="app-section__title">Material hochladen</h3>
+            <p className="app-section__description">
+              Fuege neue PDFs hinzu und behalte laufende Verarbeitungsschritte in derselben Arbeitsflaeche im Blick.
+            </p>
+          </div>
+        </div>
+        <UploadSection
+          courseId={courseId}
           userId={userId}
           courseName={courseName}
           onUploadSuccess={handleUploadSuccess}
         />
-      </div>
-      <div className="px-4 lg:px-6">
-        <div className="mb-4">
-          <h2 className="text-lg font-semibold">Hochgeladene Materialien</h2>
-          <p className="text-sm text-muted-foreground">
-            Übersicht aller hochgeladenen Vorlesungsmaterialien
-          </p>
+      </section>
+
+      <section className="app-section">
+        <div className="app-section__header">
+          <div>
+            <h3 className="app-section__title">Hochgeladene Materialien</h3>
+            <p className="app-section__description">
+              Dateien, Verarbeitungsstatus und Flashcard-Aktionen fuer diesen Kursraum.
+              {isRefreshing ? " Die Liste wird gerade aktualisiert." : ""}
+            </p>
+          </div>
+          <span className="app-subtle-chip">{materials.length} Dateien im Kurs</span>
         </div>
-        <CourseMaterialsList 
+        <CourseMaterialsList
           materials={materials}
           courseId={courseId}
           userId={userId}
@@ -300,7 +182,7 @@ export function CourseMaterialsContainer({
           materialProgress={materialProgress}
           deduplicateFlashcards={deduplicateFlashcards}
         />
-      </div>
-    </>
+      </section>
+    </div>
   )
 }

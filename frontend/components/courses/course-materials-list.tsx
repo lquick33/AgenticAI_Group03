@@ -1,25 +1,15 @@
-"use client"
+﻿"use client"
 
-import { useState, useEffect, useCallback, useRef } from 'react'
-import Link from 'next/link'
-import { BookOpen, Download, Loader2, MoreVertical, Play, Trash2 } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Progress } from '@/components/ui/progress'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import Link from "next/link"
+import { BookOpen, Download, Loader2, MoreVertical, Play, Trash2 } from "lucide-react"
+import { toast } from "sonner"
+
+import { useBackgroundTasksOptional } from "@/components/background-tasks"
+import { EditableFilename } from "@/components/courses/editable-filename"
+import { DeckCompletionDialog } from "@/components/study/deck-completion-dialog"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
@@ -27,23 +17,36 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import type { CourseMaterial } from '@/types'
+} from "@/components/ui/dialog"
 import {
-  getFlashcardsForMaterial,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Progress } from "@/components/ui/progress"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import type { CourseMaterial } from "@/types"
+import { deleteMaterial } from "@/lib/api/materials"
+import {
   downloadFlashcardsFromDb,
   generateFlashcards,
-  getFlashcardTaskStatus,
-  downloadFlashcards,
-  cancelFlashcardTask,
   getActiveFlashcardTask,
+  getFlashcardsForMaterial,
   type FlashcardTaskStatus,
-} from '@/lib/api/study'
-import { EditableFilename } from '@/components/courses/editable-filename'
-import { DeckCompletionDialog } from '@/components/study/deck-completion-dialog'
-import { toast } from 'sonner'
-import { deleteMaterial } from '@/lib/api/materials'
-import { useBackgroundTasksOptional } from '@/components/background-tasks'
+} from "@/lib/api/study"
+import {
+  getFlashcardTaskForMaterial,
+  isFinalBackgroundTaskStatus,
+  toFlashcardTaskStatus,
+} from "@/lib/background-task-utils"
 
 interface CourseMaterialsListProps {
   materials: CourseMaterial[]
@@ -54,16 +57,19 @@ interface CourseMaterialsListProps {
   deduplicateFlashcards?: boolean
 }
 
-export function CourseMaterialsList({ materials, courseId, userId, onMaterialDeleted, materialProgress = {}, deduplicateFlashcards = false }: CourseMaterialsListProps) {
+export function CourseMaterialsList({
+  materials,
+  courseId,
+  userId,
+  onMaterialDeleted,
+  materialProgress = {},
+  deduplicateFlashcards = false,
+}: CourseMaterialsListProps) {
   const [localMaterials, setLocalMaterials] = useState<CourseMaterial[]>(materials)
   const [flashcardsStatus, setFlashcardsStatus] = useState<Record<string, boolean>>({})
   const [loadingFlashcards, setLoadingFlashcards] = useState<Record<string, boolean>>({})
   const [showConfirmDialog, setShowConfirmDialog] = useState(false)
   const [materialIdForGeneration, setMaterialIdForGeneration] = useState<string | null>(null)
-  const [isGenerating, setIsGenerating] = useState<Record<string, boolean>>({})
-  const [taskIds, setTaskIds] = useState<Record<string, string>>({})
-  const [taskStatuses, setTaskStatuses] = useState<Record<string, FlashcardTaskStatus>>({})
-  const [pollingIntervals, setPollingIntervals] = useState<Record<string, NodeJS.Timeout>>({})
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [materialIdForDeletion, setMaterialIdForDeletion] = useState<string | null>(null)
   const [materialNameForDeletion, setMaterialNameForDeletion] = useState<string | null>(null)
@@ -73,283 +79,205 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
   const [completedStatus, setCompletedStatus] = useState<FlashcardTaskStatus | null>(null)
   const [isDialogDownloading, setIsDialogDownloading] = useState(false)
   const [dialogDownloadSuccess, setDialogDownloadSuccess] = useState(false)
-  const startPollingRef = useRef<((materialId: string, taskId: string) => void) | null>(null)
-  
-  // Global background tasks context
   const backgroundTasks = useBackgroundTasksOptional()
+  const restoredFlashcardTasksRef = useRef<Set<string>>(new Set())
+  const previousFlashcardStatusesRef = useRef<Map<string, string>>(new Map())
 
-  // Update local materials when props change
   useEffect(() => {
     setLocalMaterials(materials)
   }, [materials])
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString)
-    return date.toLocaleDateString('de-DE', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
+  useEffect(() => {
+    const initialStatus: Record<string, boolean> = {}
+    localMaterials.forEach((material) => {
+      initialStatus[material.id] = material.has_flashcards ?? false
     })
-  }
+    setFlashcardsStatus(initialStatus)
+  }, [localMaterials])
 
-  const handleDownloadFlashcards = async (materialId: string) => {
-    setLoadingFlashcards(prev => ({ ...prev, [materialId]: true }))
-    try {
-      const { blob, filename } = await downloadFlashcardsFromDb(materialId, userId)
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename
-      document.body.appendChild(a)
-      a.click()
-      window.URL.revokeObjectURL(url)
-      document.body.removeChild(a)
-      toast.success('Flashcards heruntergeladen', {
-        description: 'Die Karteikarten wurden erfolgreich heruntergeladen.',
-      })
-    } catch (error) {
-      console.error('Error downloading flashcards:', error)
-      toast.error('Fehler beim Download', {
-        description: error instanceof Error ? error.message : 'Die Karteikarten konnten nicht heruntergeladen werden.',
-      })
-    } finally {
-      setLoadingFlashcards(prev => ({ ...prev, [materialId]: false }))
-    }
-  }
+  const flashcardTaskByMaterial = useMemo(() => {
+    const taskMap = new Map<string, ReturnType<typeof getFlashcardTaskForMaterial>>()
+    backgroundTasks?.tasks.forEach((task) => {
+      if (task.type === "flashcard_generation") {
+        taskMap.set(task.materialId, task)
+      }
+    })
+    return taskMap
+  }, [backgroundTasks?.tasks])
 
-  const handleGenerationComplete = useCallback(async (materialId: string, status: FlashcardTaskStatus) => {
-    // Update state - generation is complete
-    setIsGenerating(prev => ({ ...prev, [materialId]: false }))
-    setFlashcardsStatus(prev => ({ ...prev, [materialId]: true }))
-    
-    // Remove from global background tasks context (it will auto-cleanup but we can be explicit)
-    if (backgroundTasks) {
-      backgroundTasks.updateTask(`flashcard-${materialId}`, {
-        status: 'completed',
-        progress: 100,
-        stageMessage: `${status.cards_generated} Karten erstellt`,
-      })
-    }
-    
-    // Show completion dialog with sync status
+  const handleGenerationComplete = useCallback((materialId: string, status: FlashcardTaskStatus) => {
+    setFlashcardsStatus((prev) => ({ ...prev, [materialId]: true }))
     setCompletedMaterialId(materialId)
     setCompletedStatus(status)
     setDialogDownloadSuccess(false)
     setShowCompletionDialog(true)
-  }, [backgroundTasks])
+  }, [])
 
-  const startPolling = useCallback((materialId: string, taskId: string) => {
-    const interval = setInterval(async () => {
-      try {
-        const status = await getFlashcardTaskStatus(taskId, userId)
-        setTaskStatuses(prev => ({ ...prev, [materialId]: status }))
+  useEffect(() => {
+    const flashcardTasks = Array.from(flashcardTaskByMaterial.values()).filter(Boolean)
+    const nextStatuses = new Map<string, string>()
 
-        if (status.status === 'completed') {
-          clearInterval(interval)
-          setPollingIntervals(prev => {
-            const newIntervals = { ...prev }
-            delete newIntervals[materialId]
-            return newIntervals
-          })
-          await handleGenerationComplete(materialId, status)
-        } else if (status.status === 'failed' || status.status === 'cancelled') {
-          clearInterval(interval)
-          setPollingIntervals(prev => {
-            const newIntervals = { ...prev }
-            delete newIntervals[materialId]
-            return newIntervals
-          })
-          setIsGenerating(prev => ({ ...prev, [materialId]: false }))
-          toast.error('Fehler bei der Generierung', {
-            description: status.error_message || 'Die Karteikarten konnten nicht generiert werden.',
-          })
-        }
-      } catch (error) {
-        console.error('Error polling task status:', error)
-        clearInterval(interval)
-        setPollingIntervals(prev => {
-          const newIntervals = { ...prev }
-          delete newIntervals[materialId]
-          return newIntervals
-        })
-        setIsGenerating(prev => ({ ...prev, [materialId]: false }))
-        toast.error('Fehler beim Abrufen des Status', {
-          description: 'Die Verbindung zum Server wurde unterbrochen.',
-        })
+    flashcardTasks.forEach((task) => {
+      if (!task) {
+        return
       }
-    }, 2000) // Poll every 2 seconds
 
-    setPollingIntervals(prev => ({ ...prev, [materialId]: interval }))
-  }, [userId, handleGenerationComplete])
+      nextStatuses.set(task.materialId, task.status)
+      const previousStatus = previousFlashcardStatusesRef.current.get(task.materialId)
+      if (!previousStatus || previousStatus === task.status) {
+        return
+      }
 
-  // Store startPolling in ref so it can be accessed in useEffect
-  startPollingRef.current = startPolling
+      if (task.status === "completed") {
+        handleGenerationComplete(task.materialId, toFlashcardTaskStatus(task))
+      }
+    })
 
-  // Initialize flashcard status from server data (instant, no API calls needed)
+    previousFlashcardStatusesRef.current = nextStatuses
+  }, [flashcardTaskByMaterial, handleGenerationComplete])
+
   useEffect(() => {
-    const initialStatus: Record<string, boolean> = {}
-    for (const material of localMaterials) {
-      initialStatus[material.id] = material.has_flashcards ?? false
+    if (!backgroundTasks) {
+      return
     }
-    setFlashcardsStatus(initialStatus)
-  }, [localMaterials])
 
-  // Restore active flashcard generation tasks (still need API calls for in-progress tasks)
-  useEffect(() => {
-    const restoreActiveTasks = async () => {
-      for (const material of localMaterials) {
-        if (material.processing_status === 'completed') {
-          // Check for active flashcard generation task
-          try {
-            const activeTask = await getActiveFlashcardTask(material.id, userId)
-            if (activeTask) {
-              // Restore task state
-              setTaskIds(prev => ({ ...prev, [material.id]: activeTask.task_id }))
-              setTaskStatuses(prev => ({ ...prev, [material.id]: activeTask }))
-              setIsGenerating(prev => ({ ...prev, [material.id]: true }))
-              
-              // Resume polling if task is still running
-              if (activeTask.status === 'pending' || activeTask.status === 'running') {
-                startPollingRef.current?.(material.id, activeTask.task_id)
-              } else if (activeTask.status === 'completed') {
-                // Task completed but we just loaded - show completion status
-                await handleGenerationComplete(material.id, activeTask)
-              } else if (activeTask.status === 'failed' || activeTask.status === 'cancelled') {
-                // Task failed or was cancelled - reset state
-                setIsGenerating(prev => ({ ...prev, [material.id]: false }))
-              }
-            }
-          } catch (error) {
-            // If error checking for active task, just continue
-            console.error(`Error checking active task for material ${material.id}:`, error)
+    localMaterials.forEach((material) => {
+      if (
+        material.processing_status !== "completed" ||
+        restoredFlashcardTasksRef.current.has(material.id)
+      ) {
+        return
+      }
+
+      restoredFlashcardTasksRef.current.add(material.id)
+
+      void (async () => {
+        try {
+          const activeTask = await getActiveFlashcardTask(material.id, userId)
+          if (!activeTask) {
+            return
           }
-        }
-      }
-    }
 
-    if (localMaterials.length > 0) {
-      restoreActiveTasks()
-    }
-  }, [localMaterials, userId, handleGenerationComplete])
-
-  // Cleanup polling intervals on unmount
-  useEffect(() => {
-    return () => {
-      Object.values(pollingIntervals).forEach(interval => {
-        if (interval) {
-          clearInterval(interval)
+          if (activeTask.status === "pending" || activeTask.status === "running") {
+            backgroundTasks.addTask({
+              id: `flashcard-${material.id}`,
+              type: "flashcard_generation",
+              materialId: material.id,
+              materialName: material.file_name.replace(/\.pdf$/i, "") || "Unbekannt",
+              courseId,
+              progress: Math.round(activeTask.progress * 100),
+              status: activeTask.status,
+              stageMessage:
+                activeTask.status === "pending"
+                  ? "Warte auf Start..."
+                  : `Seite ${activeTask.processed_pages} von ${activeTask.total_pages}`,
+              taskId: activeTask.task_id,
+              totalPages: activeTask.total_pages,
+              completedPages: activeTask.processed_pages,
+              cardsGenerated: activeTask.cards_generated,
+              ankiSynced: activeTask.anki_synced,
+              ankiWebSynced: activeTask.ankiweb_synced,
+            })
+          } else if (activeTask.status === "completed") {
+            setFlashcardsStatus((prev) => ({ ...prev, [material.id]: true }))
+          }
+        } catch (error) {
+          console.error(`Error checking active task for material ${material.id}:`, error)
         }
+      })()
+    })
+  }, [backgroundTasks, courseId, localMaterials, userId])
+
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString)
+    return date.toLocaleDateString("de-DE", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+  }
+
+  const handleDownloadFlashcards = async (materialId: string) => {
+    setLoadingFlashcards((prev) => ({ ...prev, [materialId]: true }))
+    try {
+      const { blob, filename } = await downloadFlashcardsFromDb(materialId, userId)
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(link)
+      toast.success("Flashcards heruntergeladen", {
+        description: "Die Karteikarten wurden erfolgreich heruntergeladen.",
       })
+    } catch (error) {
+      console.error("Error downloading flashcards:", error)
+      toast.error("Fehler beim Download", {
+        description:
+          error instanceof Error
+            ? error.message
+            : "Die Karteikarten konnten nicht heruntergeladen werden.",
+      })
+    } finally {
+      setLoadingFlashcards((prev) => ({ ...prev, [materialId]: false }))
     }
-  }, [pollingIntervals])
+  }
 
   const handleGenerateFlashcards = async (materialId: string) => {
-    setIsGenerating(prev => ({ ...prev, [materialId]: true }))
     setShowConfirmDialog(false)
     setMaterialIdForGeneration(null)
 
     try {
       const { task_id } = await generateFlashcards(materialId, userId, deduplicateFlashcards)
-      setTaskIds(prev => ({ ...prev, [materialId]: task_id }))
-      
-      // Register with global background tasks context
-      const material = localMaterials.find(m => m.id === materialId)
-      if (backgroundTasks && material) {
-        backgroundTasks.addTask({
-          id: `flashcard-${materialId}`,
-          type: 'flashcard_generation',
-          materialId: materialId,
-          materialName: material.file_name?.replace(/\.pdf$/i, '') || 'Unbekannt',
-          courseId: courseId,
-          progress: 0,
-          status: 'running',
-          stageMessage: 'Wird gestartet...',
-          taskId: task_id,
-        })
-      }
-      
-      // Start polling for status
-      startPolling(materialId, task_id)
-      
-      toast.info('Generierung gestartet', {
-        description: 'Die Karteikarten werden im Hintergrund generiert.',
+      const material = localMaterials.find((entry) => entry.id === materialId)
+
+      backgroundTasks?.addTask({
+        id: `flashcard-${materialId}`,
+        type: "flashcard_generation",
+        materialId,
+        materialName: material?.file_name?.replace(/\.pdf$/i, "") || "Unbekannt",
+        courseId,
+        progress: 0,
+        status: "running",
+        stageMessage: "Wird gestartet...",
+        taskId: task_id,
+      })
+
+      toast.info("Generierung gestartet", {
+        description: "Die Karteikarten werden im Hintergrund generiert.",
       })
     } catch (error) {
-      console.error('Error starting flashcard generation:', error)
-      toast.error('Fehler beim Starten', {
-        description: error instanceof Error ? error.message : 'Die Generierung konnte nicht gestartet werden.',
-      })
-      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
-    }
-  }
-
-  const handleCancelGeneration = async (materialId: string) => {
-    const taskId = taskIds[materialId]
-    const interval = pollingIntervals[materialId]
-    
-    if (!taskId || !interval) return
-
-    try {
-      await cancelFlashcardTask(taskId, userId)
-      clearInterval(interval)
-      setPollingIntervals(prev => {
-        const newIntervals = { ...prev }
-        delete newIntervals[materialId]
-        return newIntervals
-      })
-      setIsGenerating(prev => ({ ...prev, [materialId]: false }))
-      setTaskIds(prev => {
-        const newTaskIds = { ...prev }
-        delete newTaskIds[materialId]
-        return newTaskIds
-      })
-      setTaskStatuses(prev => {
-        const newStatuses = { ...prev }
-        delete newStatuses[materialId]
-        return newStatuses
-      })
-      
-      // Remove from global background tasks context
-      if (backgroundTasks) {
-        backgroundTasks.removeTask(`flashcard-${materialId}`)
-      }
-      
-      toast.info('Generierung abgebrochen', {
-        description: 'Die Karteikarten-Generierung wurde abgebrochen.',
-      })
-    } catch (error) {
-      console.error('Error cancelling task:', error)
-      toast.error('Fehler beim Abbrechen', {
-        description: 'Die Generierung konnte nicht abgebrochen werden.',
+      console.error("Error starting flashcard generation:", error)
+      toast.error("Fehler beim Starten", {
+        description:
+          error instanceof Error
+            ? error.message
+            : "Die Generierung konnte nicht gestartet werden.",
       })
     }
   }
 
   const handleDownloadButtonClick = async (materialId: string) => {
-    // Prüfe nochmal explizit, ob Flashcards existieren
     if (flashcardsStatus[materialId]) {
-      // Flashcards existieren -> direkt downloaden
-      handleDownloadFlashcards(materialId)
+      void handleDownloadFlashcards(materialId)
       return
     }
 
-    // Zusätzliche Prüfung: Hole aktuelle Flashcards-Status von der API
     try {
       const result = await getFlashcardsForMaterial(materialId, userId)
       if (result.count > 0) {
-        // Flashcards wurden gefunden -> Status aktualisieren und direkt downloaden
-        setFlashcardsStatus(prev => ({ ...prev, [materialId]: true }))
-        handleDownloadFlashcards(materialId)
+        setFlashcardsStatus((prev) => ({ ...prev, [materialId]: true }))
+        void handleDownloadFlashcards(materialId)
         return
       }
-    } catch (error) {
-      // Wenn Fehler (z.B. 404), existieren keine Flashcards
-      // Das ist ok, wir öffnen den Dialog
+    } catch {
+      // No flashcards yet, fall through to dialog.
     }
 
-    // Keine Flashcards gefunden -> Dialog öffnen
     setMaterialIdForGeneration(materialId)
     setShowConfirmDialog(true)
   }
@@ -357,41 +285,46 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
   const getStatusBadge = (material: CourseMaterial) => {
     const status = material.processing_status
     const progress = materialProgress[material.id]
-    
+
     switch (status) {
-      case 'uploading':
+      case "uploading":
         return (
-          <div className="space-y-1">
-            <Badge variant="outline">Wird hochgeladen</Badge>
-            {progress && (
-              <>
-                <Progress value={progress.progress} className="h-1.5 w-24" />
+          <div className="space-y-2">
+            <Badge variant="info">Wird hochgeladen</Badge>
+            {progress ? (
+              <div className="min-w-[140px] space-y-1">
+                <Progress value={progress.progress} className="h-1.5 w-full" />
                 <p className="text-xs text-muted-foreground">{progress.progress}%</p>
-              </>
-            )}
+              </div>
+            ) : null}
           </div>
         )
-      case 'processing':
+      case "processing":
         return (
-          <div className="space-y-1 min-w-[120px]">
-            <Badge variant="secondary">Wird verarbeitet</Badge>
-            {progress && (
-              <Progress value={progress.progress} className="h-1.5" />
-            )}
+          <div className="min-w-[150px] space-y-2">
+            <Badge variant="warning">Wird verarbeitet</Badge>
+            {progress ? (
+              <div className="space-y-1">
+                <Progress value={progress.progress} className="h-1.5" />
+                <p className="text-xs text-muted-foreground">{progress.stageMessage}</p>
+              </div>
+            ) : null}
           </div>
         )
-      case 'completed':
-        return <Badge variant="default">Abgeschlossen</Badge>
-      case 'error':
+      case "completed":
+        return <Badge variant="success">Abgeschlossen</Badge>
+      case "error":
         return <Badge variant="destructive">Fehler</Badge>
       default:
-        return <Badge variant="outline">{status}</Badge>
+        return <Badge variant="secondary">{status}</Badge>
     }
   }
 
   const handleFilenameUpdate = (materialId: string, newFilename: string) => {
     setLocalMaterials((prev) =>
-      prev.map((m) => (m.id === materialId ? { ...m, file_name: newFilename } : m))
+      prev.map((material) =>
+        material.id === materialId ? { ...material, file_name: newFilename } : material
+      )
     )
   }
 
@@ -402,66 +335,42 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
   }
 
   const handleDeleteMaterial = async () => {
-    if (!materialIdForDeletion) return
+    if (!materialIdForDeletion) {
+      return
+    }
 
     setIsDeleting(true)
     try {
       await deleteMaterial(materialIdForDeletion, userId)
-      
-      // Optimistically remove from UI
-      setLocalMaterials((prev) => prev.filter((m) => m.id !== materialIdForDeletion))
-      
-      // Clean up any related state
+      setLocalMaterials((prev) => prev.filter((material) => material.id !== materialIdForDeletion))
+
       setFlashcardsStatus((prev) => {
-        const newStatus = { ...prev }
-        delete newStatus[materialIdForDeletion]
-        return newStatus
+        const updated = { ...prev }
+        delete updated[materialIdForDeletion]
+        return updated
       })
       setLoadingFlashcards((prev) => {
-        const newStatus = { ...prev }
-        delete newStatus[materialIdForDeletion]
-        return newStatus
+        const updated = { ...prev }
+        delete updated[materialIdForDeletion]
+        return updated
       })
-      setIsGenerating((prev) => {
-        const newStatus = { ...prev }
-        delete newStatus[materialIdForDeletion]
-        return newStatus
+
+      backgroundTasks?.removeTask(materialIdForDeletion)
+      backgroundTasks?.removeTask(`flashcard-${materialIdForDeletion}`)
+
+      toast.success("Material geloescht", {
+        description: "Das Material wurde erfolgreich geloescht.",
       })
-      
-      // Clear any polling intervals for this material
-      if (pollingIntervals[materialIdForDeletion]) {
-        clearInterval(pollingIntervals[materialIdForDeletion])
-        setPollingIntervals((prev) => {
-          const newIntervals = { ...prev }
-          delete newIntervals[materialIdForDeletion]
-          return newIntervals
-        })
-      }
-      
-      // Remove any background tasks for this material
-      if (backgroundTasks) {
-        // Remove by material ID (for processing tasks)
-        backgroundTasks.removeTask(materialIdForDeletion)
-        // Also remove flashcard tasks
-        backgroundTasks.removeTask(`flashcard-${materialIdForDeletion}`)
-      }
-      
-      toast.success('Material gelöscht', {
-        description: 'Das Material wurde erfolgreich gelöscht.',
-      })
-      
-      // Refresh parent container if callback provided
-      if (onMaterialDeleted) {
-        onMaterialDeleted()
-      }
-      
+
+      onMaterialDeleted?.()
       setShowDeleteDialog(false)
       setMaterialIdForDeletion(null)
       setMaterialNameForDeletion(null)
     } catch (error) {
-      console.error('Error deleting material:', error)
-      toast.error('Fehler beim Löschen', {
-        description: error instanceof Error ? error.message : 'Das Material konnte nicht gelöscht werden.',
+      console.error("Error deleting material:", error)
+      toast.error("Fehler beim Loeschen", {
+        description:
+          error instanceof Error ? error.message : "Das Material konnte nicht geloescht werden.",
       })
     } finally {
       setIsDeleting(false)
@@ -469,28 +378,33 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
   }
 
   const handleDialogDownload = async () => {
-    if (!completedMaterialId) return
+    if (!completedMaterialId) {
+      return
+    }
 
     setIsDialogDownloading(true)
     try {
       const { blob, filename } = await downloadFlashcardsFromDb(completedMaterialId, userId)
       const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename
-      document.body.appendChild(a)
-      a.click()
+      const link = document.createElement("a")
+      link.href = url
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
       window.URL.revokeObjectURL(url)
-      document.body.removeChild(a)
-      
+      document.body.removeChild(link)
+
       setDialogDownloadSuccess(true)
-      toast.success('Flashcards heruntergeladen', {
-        description: 'Die Karteikarten wurden erfolgreich heruntergeladen.',
+      toast.success("Flashcards heruntergeladen", {
+        description: "Die Karteikarten wurden erfolgreich heruntergeladen.",
       })
     } catch (error) {
-      console.error('Error downloading flashcards:', error)
-      toast.error('Fehler beim Download', {
-        description: error instanceof Error ? error.message : 'Die Karteikarten konnten nicht heruntergeladen werden.',
+      console.error("Error downloading flashcards:", error)
+      toast.error("Fehler beim Download", {
+        description:
+          error instanceof Error
+            ? error.message
+            : "Die Karteikarten konnten nicht heruntergeladen werden.",
       })
     } finally {
       setIsDialogDownloading(false)
@@ -506,9 +420,10 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
 
   if (localMaterials.length === 0) {
     return (
-      <div className="rounded-lg border p-6">
-        <p className="text-muted-foreground text-center">
-          Noch keine Materialien hochgeladen.
+      <div className="app-surface-panel app-empty-state min-h-[220px]">
+        <p className="text-base font-medium text-foreground">Noch keine Materialien hochgeladen.</p>
+        <p className="max-w-md text-sm text-muted-foreground">
+          Sobald du dein erstes PDF hochlaedst, erscheinen hier Status, Study-Einstieg und Flashcard-Aktionen.
         </p>
       </div>
     )
@@ -516,7 +431,7 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
 
   return (
     <>
-      <div className="rounded-lg border">
+      <div className="app-table-shell">
         <Table>
           <TableHeader>
             <TableRow>
@@ -528,124 +443,119 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
             </TableRow>
           </TableHeader>
           <TableBody>
-            {localMaterials.map((material) => (
-              <TableRow key={material.id}>
-                <TableCell className="font-medium">
-                  <EditableFilename
-                    materialId={material.id}
-                    userId={userId}
-                    initialFilename={material.file_name}
-                    onUpdate={(newFilename) => handleFilenameUpdate(material.id, newFilename)}
-                  />
-                </TableCell>
-                <TableCell>{material.page_count}</TableCell>
-                <TableCell>{getStatusBadge(material)}</TableCell>
-                <TableCell className="text-muted-foreground">
-                  {formatDate(material.created_at)}
-                </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    {material.processing_status === 'completed' ? (
-                      <>
-                        <Button asChild variant="outline" size="sm">
-                          <Link href={`/dashboard/courses/${courseId}/study/${material.id}`}>
-                            <BookOpen className="mr-2 h-4 w-4" />
+            {localMaterials.map((material) => {
+              const flashcardTask = flashcardTaskByMaterial.get(material.id)
+              const activeFlashcardTask =
+                flashcardTask && !isFinalBackgroundTaskStatus(flashcardTask.status)
+              const flashcardTaskStatus = flashcardTask ? toFlashcardTaskStatus(flashcardTask) : null
+
+              return (
+                <TableRow key={material.id}>
+                  <TableCell className="min-w-[250px] align-top">
+                    <div className="space-y-1">
+                      <EditableFilename
+                        materialId={material.id}
+                        userId={userId}
+                        initialFilename={material.file_name}
+                        onUpdate={(newFilename) => handleFilenameUpdate(material.id, newFilename)}
+                      />
+                      <p className="text-xs text-muted-foreground">Material-ID: {material.id.slice(0, 8)}</p>
+                    </div>
+                  </TableCell>
+                  <TableCell className="align-top font-medium text-foreground">{material.page_count}</TableCell>
+                  <TableCell className="align-top">{getStatusBadge(material)}</TableCell>
+                  <TableCell className="align-top text-sm text-muted-foreground">
+                    {formatDate(material.created_at)}
+                  </TableCell>
+                  <TableCell className="align-top text-right">
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      {material.processing_status === "completed" ? (
+                        <>
+                          <Button asChild variant="outline" size="sm">
+                            <Link href={`/dashboard/courses/${courseId}/study/${material.id}`}>
+                              <BookOpen className="h-4 w-4" />
+                              Studieren
+                            </Link>
+                          </Button>
+                          <Button
+                            variant="accent"
+                            size="sm"
+                            disabled={loadingFlashcards[material.id] || Boolean(activeFlashcardTask)}
+                            onClick={() => void handleDownloadButtonClick(material.id)}
+                          >
+                            {activeFlashcardTask ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                {flashcardTaskStatus?.progress !== undefined
+                                  ? `Wird erstellt... ${Math.round(flashcardTaskStatus.progress * 100)}%`
+                                  : "Wird erstellt..."}
+                              </>
+                            ) : (
+                              <>
+                                {flashcardsStatus[material.id] ? (
+                                  <Download className="h-4 w-4" />
+                                ) : (
+                                  <Play className="h-4 w-4" />
+                                )}
+                                Flashcards
+                              </>
+                            )}
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button variant="outline" size="sm" disabled>
+                            <BookOpen className="h-4 w-4" />
                             Studieren
-                          </Link>
-                        </Button>
-                        <Button
-                          variant="default"
-                          size="sm"
-                          className="text-white disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                          style={{ backgroundColor: '#B47EDE' }}
-                          onMouseEnter={(e) => {
-                            if (!loadingFlashcards[material.id] && !isGenerating[material.id]) {
-                              e.currentTarget.style.backgroundColor = '#9d6bc9'
-                            }
-                          }}
-                          onMouseLeave={(e) => {
-                            if (!loadingFlashcards[material.id] && !isGenerating[material.id]) {
-                              e.currentTarget.style.backgroundColor = '#B47EDE'
-                            }
-                          }}
-                          disabled={loadingFlashcards[material.id] || isGenerating[material.id]}
-                          onClick={() => handleDownloadButtonClick(material.id)}
-                        >
-                          {isGenerating[material.id] ? (
-                            <>
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                              {taskStatuses[material.id]?.progress !== undefined
-                                ? `Wird erstellt... ${Math.round(taskStatuses[material.id].progress * 100)}%`
-                                : 'Wird erstellt...'}
-                            </>
-                          ) : (
-                            <>
-                              {flashcardsStatus[material.id] ? (
-                                <Download className="mr-2 h-4 w-4" />
-                              ) : (
-                                <Play className="mr-2 h-4 w-4" />
-                              )}
-                              Flashcards
-                            </>
-                          )}
-                        </Button>
-                      </>
-                    ) : (
-                      <>
-                        <Button variant="outline" size="sm" disabled>
-                          <BookOpen className="mr-2 h-4 w-4" />
-                          Studieren
-                        </Button>
-                        <Button
-                          variant="default"
-                          size="sm"
-                          className="text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                          style={{ backgroundColor: '#B47EDE' }}
-                          disabled
-                        >
-                          <Play className="mr-2 h-4 w-4" />
-                          Flashcards
-                        </Button>
-                      </>
-                    )}
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="sm" className="h-8 w-8 p-0 cursor-pointer focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus:ring-offset-0 focus-visible:ring-offset-0 !ring-offset-0">
-                          <span className="sr-only">Mehr Optionen</span>
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="bg-white">
-                        <DropdownMenuItem
-                          className="text-destructive hover:bg-destructive hover:text-destructive-foreground focus:bg-destructive focus:text-destructive-foreground cursor-pointer"
-                          onClick={() => handleDeleteClick(material.id, material.file_name)}
-                          disabled={isDeleting}
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Löschen
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
+                          </Button>
+                          <Button variant="accent" size="sm" disabled>
+                            <Play className="h-4 w-4" />
+                            Flashcards
+                          </Button>
+                        </>
+                      )}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon-touch"
+                            aria-label={`Optionen fuer ${material.file_name}`}
+                          >
+                            <span className="sr-only">Mehr Optionen</span>
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            className="cursor-pointer text-destructive focus:text-destructive"
+                            onClick={() => handleDeleteClick(material.id, material.file_name)}
+                            disabled={isDeleting}
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Loeschen
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              )
+            })}
           </TableBody>
         </Table>
       </div>
 
       <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
-        <DialogContent className="bg-white">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>Karteikarten erstellen</DialogTitle>
             <DialogDescription>
-              Bist du dir sicher, dass du die Karteikarten schon erstellen willst? Für ein optimales Ergebniss, gehe erst die Vorlesung mit deinem Tutor Agent durch.
+              Fuer die beste Qualitaet lohnt es sich, das Material zuerst im Study Reader mit dem Tutor durchzugehen. Du kannst die Generierung trotzdem schon jetzt starten.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button
               variant="outline"
-              className="cursor-pointer"
               onClick={() => {
                 setShowConfirmDialog(false)
                 setMaterialIdForGeneration(null)
@@ -654,10 +564,10 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
               Abbrechen
             </Button>
             <Button
-              className="cursor-pointer"
+              variant="accent"
               onClick={() => {
                 if (materialIdForGeneration) {
-                  handleGenerateFlashcards(materialIdForGeneration)
+                  void handleGenerateFlashcards(materialIdForGeneration)
                 }
               }}
             >
@@ -668,17 +578,16 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
       </Dialog>
 
       <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <DialogContent className="bg-white">
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle>Material löschen</DialogTitle>
+            <DialogTitle>Material loeschen</DialogTitle>
             <DialogDescription>
-              Bist du dir sicher, dass du "{materialNameForDeletion}" löschen möchtest? Diese Aktion kann nicht rückgängig gemacht werden. Alle zugehörigen Daten (Flashcards, Anki-Decks, etc.) werden ebenfalls gelöscht.
+              Bist du sicher, dass du &quot;{materialNameForDeletion}&quot; loeschen moechtest? Diese Aktion kann nicht rueckgaengig gemacht werden. Alle zugehoerigen Daten werden ebenfalls geloescht.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button
               variant="outline"
-              className="cursor-pointer"
               onClick={() => {
                 setShowDeleteDialog(false)
                 setMaterialIdForDeletion(null)
@@ -688,19 +597,14 @@ export function CourseMaterialsList({ materials, courseId, userId, onMaterialDel
             >
               Abbrechen
             </Button>
-            <Button
-              variant="destructive"
-              className="cursor-pointer"
-              onClick={handleDeleteMaterial}
-              disabled={isDeleting}
-            >
+            <Button variant="destructive" onClick={() => void handleDeleteMaterial()} disabled={isDeleting}>
               {isDeleting ? (
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Wird gelöscht...
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Wird geloescht...
                 </>
               ) : (
-                'Löschen'
+                "Loeschen"
               )}
             </Button>
           </DialogFooter>

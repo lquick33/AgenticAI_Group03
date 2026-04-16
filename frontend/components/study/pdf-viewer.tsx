@@ -1,16 +1,14 @@
 "use client"
 
-import { useState, useRef } from 'react'
-import { Document, Page, pdfjs } from 'react-pdf'
-import { SnippetOverlay } from './snippet-overlay'
-import { Button } from '@/components/ui/button'
-import { Scissors, Trash2, X, Image } from 'lucide-react'
-// CSS imports removed - react-pdf v10+ handles styles internally
+import { useRef, useState } from "react"
+import { Document, Page, pdfjs } from "react-pdf"
+import { Image, Scissors, Trash2, X } from "lucide-react"
 
-// Set up PDF.js worker - use local worker from public folder
-if (typeof window !== 'undefined') {
-  // Use the worker file from public folder (served by Next.js)
-  pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
+import { Button } from "@/components/ui/button"
+import { SnippetOverlay } from "./snippet-overlay"
+
+if (typeof window !== "undefined") {
+  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
 }
 
 interface Snippet {
@@ -31,21 +29,22 @@ interface PdfViewerProps {
   onDeleteSnippet?: (snippetId: string) => Promise<void>
 }
 
-export function PdfViewer({ 
-  file, 
-  pageNumber, 
-  onLoadError, 
-  onSaveSnippet, 
+export function PdfViewer({
+  file,
+  pageNumber,
+  onLoadError,
+  onSaveSnippet,
   snippets = [],
   maxSnippets = 3,
-  onDeleteSnippet 
+  onDeleteSnippet,
 }: PdfViewerProps) {
   const [numPages, setNumPages] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isSnipping, setIsSnipping] = useState(false)
   const [showSnippetGallery, setShowSnippetGallery] = useState(false)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const pageContainerRef = useRef<HTMLDivElement | null>(null)
 
   function onDocumentLoadSuccess({ numPages }: { numPages: number }) {
     setNumPages(numPages)
@@ -53,157 +52,160 @@ export function PdfViewer({
     setError(null)
   }
 
-  function onDocumentLoadError(error: Error) {
-    setError(error.message)
+  function onDocumentLoadError(nextError: Error) {
+    setError(nextError.message)
     setLoading(false)
-    onLoadError?.(error)
+    onLoadError?.(nextError)
   }
 
-  function onPageRenderSuccess(page: any) {
-    // react-pdf doesn't expose the canvas directly via ref prop on Page component in v9+
-    // But we can find it in the DOM or use the canvasRef callback if supported
-    // In v9/v10, we can access the canvas element from the rendered page
-    const canvas = document.querySelector(`.react-pdf__Page[data-page-number="${pageNumber}"] canvas`) as HTMLCanvasElement
-    if (canvas) {
-      // Store reference to canvas for cropping
-      // We use a mutable ref object to store the element
-      (canvasRef as any).current = canvas
+  function onPageRenderSuccess() {
+    const canvas = pageContainerRef.current?.querySelector("canvas")
+    if (canvas instanceof HTMLCanvasElement) {
+      canvasRef.current = canvas
     }
   }
 
   const handleSaveSnippet = async (blob: Blob) => {
-    if (onSaveSnippet) {
-      await onSaveSnippet(blob)
-      setIsSnipping(false)
+    if (!onSaveSnippet) {
+      return
     }
+
+    await onSaveSnippet(blob)
+    setIsSnipping(false)
   }
 
   const canAddMoreSnippets = snippets.length < maxSnippets
 
   return (
-    <div className="flex flex-col items-center justify-center w-full h-full bg-muted/50 rounded-lg p-4 relative">
-      {/* Toolbar */}
-      <div className="absolute top-4 right-4 z-10 flex gap-2">
-        {/* Snippet count badge/button */}
-        {snippets.length > 0 && (
+    <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[1.5rem] border border-[var(--app-border-soft)] bg-[var(--app-surface-subtle)]">
+      <div className="flex items-center justify-end gap-2 border-b border-[var(--app-border-soft)] px-4 py-3">
+        {snippets.length > 0 ? (
           <Button
             size="sm"
             variant="secondary"
-            className="shadow-md bg-green-500 text-white hover:bg-green-600"
-            onClick={() => setShowSnippetGallery(!showSnippetGallery)}
-            title={`${snippets.length} Snippet(s) für diese Seite - Klicken zum Anzeigen`}
+            onClick={() => setShowSnippetGallery((current) => !current)}
+            aria-label="Snippet-Galerie umschalten"
           >
-            <Image className="h-4 w-4 mr-1" />
+            <Image className="h-4 w-4" />
             {snippets.length}
           </Button>
-        )}
-        
-        {onSaveSnippet && !isSnipping && (
+        ) : null}
+
+        {onSaveSnippet && !isSnipping ? (
           <Button
             size="sm"
-            variant="secondary"
-            className={`shadow-md ${canAddMoreSnippets ? 'bg-white/90 hover:bg-white' : 'bg-gray-300 cursor-not-allowed'}`}
+            variant="ghost"
+            className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 hover:bg-zinc-200 dark:hover:bg-zinc-800"
             onClick={() => canAddMoreSnippets && setIsSnipping(true)}
             disabled={!canAddMoreSnippets}
-            title={canAddMoreSnippets ? 'Neuen Snippet erstellen' : `Max. ${maxSnippets} Snippets pro Seite`}
+            aria-label={
+              canAddMoreSnippets
+                ? "Neuen Snippet erstellen"
+                : `Maximal ${maxSnippets} Snippets erreicht`
+            }
           >
-            <Scissors className="h-4 w-4 mr-2" />
-            Snippet {canAddMoreSnippets ? '' : '(max)'}
+            <Scissors className="h-4 w-4" />
+            {canAddMoreSnippets ? "Snippet erstellen" : "Limit erreicht"}
           </Button>
-        )}
+        ) : null}
       </div>
 
-      {/* Snippet Gallery Popup */}
-      {showSnippetGallery && snippets.length > 0 && (
-        <div className="absolute top-16 right-4 z-20 bg-white rounded-lg shadow-xl border p-3 max-w-xs">
-          <div className="flex justify-between items-center mb-2">
-            <span className="font-medium text-sm">Snippets ({snippets.length}/{maxSnippets})</span>
+      {showSnippetGallery && snippets.length > 0 ? (
+        <div className="absolute right-4 top-16 z-20 w-full max-w-xs rounded-[1.25rem] border border-[var(--app-border-soft)] bg-[var(--app-surface)] p-3 shadow-[var(--app-shadow-panel)]">
+          <div className="mb-3 flex items-center justify-between">
+            <span className="text-sm font-medium text-foreground">
+              Snippets ({snippets.length}/{maxSnippets})
+            </span>
             <Button
-              size="sm"
+              size="icon-touch"
               variant="ghost"
-              className="h-6 w-6 p-0"
+              className="h-9 w-9"
               onClick={() => setShowSnippetGallery(false)}
+              aria-label="Snippet-Galerie schliessen"
             >
               <X className="h-4 w-4" />
             </Button>
           </div>
           <div className="space-y-2">
             {snippets.map((snippet, index) => (
-              <div 
-                key={snippet.id} 
-                className="flex items-center justify-between bg-gray-50 rounded p-2"
+              <div
+                key={snippet.id}
+                className="flex items-center justify-between rounded-2xl border border-[var(--app-border-soft)] bg-[var(--app-surface-subtle)] p-3"
               >
-                <span className="text-sm text-gray-600">
-                  Snippet {index + 1}
-                  <span className="text-xs text-gray-400 ml-2">
-                    {new Date(snippet.created_at).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </span>
-                {onDeleteSnippet && (
+                <div>
+                  <p className="text-sm font-medium text-foreground">Snippet {index + 1}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(snippet.created_at).toLocaleTimeString("de-DE", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </p>
+                </div>
+                {onDeleteSnippet ? (
                   <Button
-                    size="sm"
+                    size="icon-touch"
                     variant="ghost"
-                    className="h-6 w-6 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
-                    onClick={() => onDeleteSnippet(snippet.id)}
-                    title="Snippet löschen"
+                    className="h-9 w-9 text-red-500 hover:bg-red-50 hover:text-red-700"
+                    onClick={() => void onDeleteSnippet(snippet.id)}
+                    aria-label={`Snippet ${index + 1} loeschen`}
                   >
-                    <Trash2 className="h-3 w-3" />
+                    <Trash2 className="h-3.5 w-3.5" />
                   </Button>
-                )}
+                ) : null}
               </div>
             ))}
           </div>
-          {!canAddMoreSnippets && (
-            <p className="text-xs text-gray-500 mt-2">
-              Max. {maxSnippets} Snippets erreicht
-            </p>
-          )}
+          {!canAddMoreSnippets ? (
+            <p className="mt-3 text-xs text-muted-foreground">Maximal {maxSnippets} Snippets pro Seite erreicht</p>
+          ) : null}
         </div>
-      )}
+      ) : null}
 
-      {loading && (
-        <div className="flex items-center justify-center h-full">
-          <div className="text-muted-foreground">Loading PDF...</div>
-        </div>
-      )}
-      
-      {error && (
-        <div className="flex items-center justify-center h-full">
-          <div className="text-red-600">Error loading PDF: {error}</div>
-        </div>
-      )}
+      <div className="min-h-0 flex-1 overflow-auto p-4">
+        {loading ? (
+          <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-muted-foreground">
+            Loading PDF...
+          </div>
+        ) : null}
 
-      <div className="relative">
-        {isSnipping && (
-          <SnippetOverlay
-            canvasRef={canvasRef}
-            onSave={handleSaveSnippet}
-            onCancel={() => setIsSnipping(false)}
-          />
-        )}
+        {error ? (
+          <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-red-600">
+            Error loading PDF: {error}
+          </div>
+        ) : null}
 
-        <Document
-          file={file}
-          onLoadSuccess={onDocumentLoadSuccess}
-          onLoadError={onDocumentLoadError}
-          loading={
-            <div className="flex items-center justify-center h-full">
-              <div className="text-muted-foreground">Loading PDF...</div>
-            </div>
-          }
-          className="max-w-full"
-        >
-          {numPages && (
-            <Page
-              pageNumber={pageNumber}
-              renderTextLayer={false}
-              renderAnnotationLayer={false}
-              className="shadow-lg"
-              width={Math.min(800, typeof window !== 'undefined' ? window.innerWidth * 0.6 : 800)}
-              onRenderSuccess={onPageRenderSuccess}
+        <div ref={pageContainerRef} className="relative flex min-h-full items-start justify-center">
+          {isSnipping ? (
+            <SnippetOverlay
+              canvasRef={canvasRef}
+              onSave={handleSaveSnippet}
+              onCancel={() => setIsSnipping(false)}
             />
-          )}
-        </Document>
+          ) : null}
+
+          <Document
+            file={file}
+            onLoadSuccess={onDocumentLoadSuccess}
+            onLoadError={onDocumentLoadError}
+            loading={
+              <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-zinc-500">
+                Loading PDF...
+              </div>
+            }
+            className="max-w-full drop-shadow-xl"
+          >
+            {numPages ? (
+              <Page
+                pageNumber={pageNumber}
+                renderTextLayer={false}
+                renderAnnotationLayer={false}
+                className="overflow-hidden rounded-md border border-zinc-200/50 dark:border-zinc-800/50 bg-white"
+                width={Math.min(900, typeof window !== "undefined" ? window.innerWidth * 0.65 : 900)}
+                onRenderSuccess={onPageRenderSuccess}
+              />
+            ) : null}
+          </Document>
+        </div>
       </div>
     </div>
   )

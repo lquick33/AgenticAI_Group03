@@ -200,7 +200,7 @@ LangGraph Workflow:
 - `backend/app/services/pdf_processor.py` - Calls classification during upload (after page analyses)
 - `backend/app/agents/flashcards/flashcard_agent.py` - Uses cached classification (lines 234-288)
 - `backend/app/services/storage.py` - Storage functions (lines 1014-1072)
-- `backend/app/api/endpoints.py` - Flashcard generation endpoint (lines 2263-2428)
+- `backend/app/api/routers/` - Flashcard generation endpoint (lines 2263-2428)
 - `backend/langfuse_prompts/material-classifier-classification.md` - Classification prompt
 - `backend/scripts/create_classification_prompt.py` - Script to create prompt in Langfuse
 
@@ -514,7 +514,7 @@ import { UploadDialog } from '@/components/dashboard/upload-dialog'
 **Related Files**: 
 - `frontend/app/(dashboard)/dashboard/page.tsx` - Dashboard page that uses this component
 - `frontend/components/courses/multi-file-upload-list.tsx` - Sortable file list component
-- `backend/app/api/endpoints.py` - Backend upload endpoint that receives the file
+- `backend/app/api/routers/` - Backend upload endpoint that receives the file
 - `frontend/types/index.ts` - Course type definition
 
 ---
@@ -1089,7 +1089,7 @@ background_tasks.add_task(
 ```
 
 **Related Files**: 
-- `backend/app/api/endpoints.py` - Upload endpoint that triggers background processing
+- `backend/app/api/routers/` - Upload endpoint that triggers background processing
 - `backend/app/services/analyzer.py` - Async page analysis function
 
 ---
@@ -1124,7 +1124,7 @@ background_tasks.add_task(
 **Related Files**:
 - `backend/app/core/config.py` - Langfuse Konfiguration
 - `backend/app/agents/tutor/tutor_agent.py` - Verwendet CallbackHandler
-- `backend/app/api/endpoints.py` - Verwendet Langfuse Tracing
+- `backend/app/api/routers/` - Verwendet Langfuse Tracing
 
 ---
 
@@ -1160,7 +1160,7 @@ background_tasks.add_task(
 
 ---
 
-### `backend/app/api/endpoints.py`
+### `backend/app/api/routers/`
 
 **Purpose**: FastAPI route handlers for PDF upload and processing.
 
@@ -1245,7 +1245,7 @@ backend/app/
 ├── main.py              # FastAPI entry point
 ├── api/
 │   ├── __init__.py
-│   └── endpoints.py     # API route handlers
+│   └── routers/     # API route handlers
 ├── services/
 │   ├── __init__.py
 │   ├── analyzer.py      # Multimodal analysis service (async)
@@ -1528,7 +1528,7 @@ import { UploadSection } from '@/components/courses/upload-section'
 **Related Files**: 
 - `frontend/app/(dashboard)/dashboard/courses/[id]/page.tsx` - Uses this component
 - `frontend/components/courses/multi-file-upload-list.tsx` - Sortable file list component
-- `backend/app/api/endpoints.py` - Upload API endpoint
+- `backend/app/api/routers/` - Upload API endpoint
 
 ---
 
@@ -1587,12 +1587,12 @@ import { UploadSection } from '@/components/courses/upload-section'
 - Type-safe function signatures
 
 **Dependencies**: 
-- `process.env.NEXT_PUBLIC_API_URL` - Backend API URL
+- `NEXT_PUBLIC_API_URL` - Backend API URL
 
 **Usage**: Imported by `EditableFilename` component
 
 **Related Files**: 
-- `backend/app/api/endpoints.py` - PUT /api/materials/{material_id} endpoint
+- `backend/app/api/routers/` - PUT /api/materials/{material_id} endpoint
 - `frontend/components/courses/editable-filename.tsx` - Component using this API
 
 ---
@@ -1973,7 +1973,7 @@ agent = TutorAgent(
 ```
 
 **Related Files**: 
-- `backend/app/api/endpoints.py` - Chat endpoints that use this agent
+- `backend/app/api/routers/` - Chat endpoints that use this agent
 - `backend/app/tools/page_analysis_tool.py` - Tool used by agent
 
 ---
@@ -2175,7 +2175,7 @@ if contains_chinese("你好"):
 **Related Files**: 
 - `backend/app/services/storage.py` - `get_course_material_summary()` service function implementation
 - `backend/app/agents/tutor/tutor_agent.py` - TutorAgent that uses this tool
-- `backend/app/api/endpoints.py` - Chat initiation endpoint that instructs agent to use this tool for first-time greetings
+- `backend/app/api/routers/` - Chat initiation endpoint that instructs agent to use this tool for first-time greetings
 
 ---
 
@@ -2258,11 +2258,11 @@ def get_course_material_summary(
 **Related Files**: 
 - `backend/app/tools/page_analysis_tool.py` - Tool that uses `get_page_analysis()`
 - `backend/app/tools/course_material_tool.py` - Tool that uses `get_course_material_summary()`
-- `backend/app/api/endpoints.py` - API endpoints that use these functions for message persistence
+- `backend/app/api/routers/` - API endpoints that use these functions for message persistence
 
 ---
 
-### `backend/app/api/endpoints.py` (Updated)
+### `backend/app/api/routers/` (Updated)
 
 **New Endpoints**:
 
@@ -2878,7 +2878,7 @@ from app.services.session_storage import (
 
 ---
 
-### `backend/app/api/endpoints.py` (Study Session Persistence Updates)
+### `backend/app/api/routers/` (Study Session Persistence Updates)
 
 **Purpose**: Extend existing chat endpoints to persist tutor conversations and study progress in Supabase and expose a session-loading endpoint for the frontend.
 
@@ -3012,7 +3012,7 @@ from app.services.session_storage import (
 
 ---
 
-### `backend/app/api/endpoints.py` (Tool Extraction)
+### `backend/app/api/routers/` (Tool Extraction)
 
 **Purpose**: Backend API endpoints extended to extract and stream tool call information from LangGraph agent responses.
 
@@ -3180,7 +3180,7 @@ from app.services.session_storage import (
 
 **Related Files**: 
 - `frontend/components/study/study-reader.tsx` - Handles parsed tool events
-- `backend/app/api/endpoints.py` - Sends tool call events
+- `backend/app/api/routers/` - Sends tool call events
 
 ---
 
@@ -3296,7 +3296,7 @@ START → initialize → check_more_pages → process_page → skip_decision
 **Related Files**: 
 - `backend/app/services/flashcard_service.py` - .apkg export with embedded images
 - `backend/app/services/snippet_service.py` - Snippet management (supports multiple per page)
-- `backend/app/api/endpoints.py` - Flashcard export endpoint
+- `backend/app/api/routers/` - Flashcard export endpoint
 - `frontend/components/study/congratulations-screen.tsx` - UI for flashcard download
 
 ---
@@ -3337,7 +3337,7 @@ apkg_bytes = build_anki_apkg(cards, deck_name="My Deck")
 
 **Related Files**: 
 - `backend/app/agents/flashcards/flashcard_agent.py` - Generates cards with image URLs
-- `backend/app/api/endpoints.py` - Uses this for .apkg export
+- `backend/app/api/routers/` - Uses this for .apkg export
 - `backend/app/services/snippet_service.py` - Downloads snippet images
 
 ---
@@ -3382,12 +3382,12 @@ flashcards = get_flashcards_for_material(course_material_id, user_id)
 **Related Files**: 
 - `backend/app/agents/flashcards/flashcard_agent.py` - Uses these functions
 - `backend/app/services/flashcard_task_service.py` - Automatically saves flashcards to DB
-- `backend/app/api/endpoints.py` - Uses get_flashcards_for_material for retrieval endpoints
+- `backend/app/api/routers/` - Uses get_flashcards_for_material for retrieval endpoints
 - `backend/supabase/migrations/20260110111927_initial_schema.sql` - Database schema
 
 ---
 
-### `backend/app/api/endpoints.py` (Flashcard Generation Endpoints)
+### `backend/app/api/routers/` (Flashcard Generation Endpoints)
 
 **Purpose**: Background task-based flashcard generation with progress tracking and database persistence.
 
@@ -3577,7 +3577,7 @@ print(f"Progress: {task.progress * 100}%")
 - Task cleanup: Old completed tasks should be purged periodically
 
 **Related Files**: 
-- `backend/app/api/endpoints.py` - Uses this service for endpoints
+- `backend/app/api/routers/` - Uses this service for endpoints
 - `backend/app/agents/flashcards/flashcard_agent.py` - Called by task service
 
 ---
@@ -3652,7 +3652,7 @@ const blob = await exportFlashcards(materialId, userId)
 **Related Files**: 
 - `frontend/components/study/congratulations-screen.tsx` - Uses exportFlashcards
 - `frontend/components/courses/course-materials-list.tsx` - Uses getActiveFlashcardTask for state restoration
-- `backend/app/api/endpoints.py` - Provides the endpoints
+- `backend/app/api/routers/` - Provides the endpoints
 
 ---
 
@@ -3914,7 +3914,7 @@ The component automatically renders math when the content contains:
 **Usage**: Used by API endpoints and services for request/response validation and data serialization.
 
 **Related Files**: 
-- `backend/app/api/endpoints.py` - Uses these models for API endpoints
+- `backend/app/api/routers/` - Uses these models for API endpoints
 - `backend/app/services/quiz_service.py` - Uses QuizData and QuizResult
 - `backend/app/agents/quiz/quiz_generator_agent.py` - Uses QuizData for structured output
 
@@ -3955,7 +3955,7 @@ The component automatically renders math when the content contains:
 **Usage**: Called by API endpoints and tools for quiz management.
 
 **Related Files**: 
-- `backend/app/api/endpoints.py` - Uses these functions in quiz endpoints
+- `backend/app/api/routers/` - Uses these functions in quiz endpoints
 - `backend/app/tools/quiz_tool.py` - Uses save_quiz()
 
 ---
@@ -4089,7 +4089,7 @@ The component automatically renders math when the content contains:
 
 **Related Files**: 
 - `backend/app/tools/quiz_tool.py` - Uses lock service
-- `backend/app/api/endpoints.py` - Uses lock service for pending quiz detection
+- `backend/app/api/routers/` - Uses lock service for pending quiz detection
 
 ---
 
@@ -4133,7 +4133,7 @@ The component automatically renders math when the content contains:
 
 ---
 
-### `backend/app/api/endpoints.py` (Quiz Endpoints)
+### `backend/app/api/routers/` (Quiz Endpoints)
 
 **Purpose**: API endpoints for quiz submission and retrieval, including tutor feedback generation.
 
@@ -4391,7 +4391,7 @@ image_bytes = download_snippet_image(snippet["image_path"])
 
 **Related Files**: 
 - `backend/app/services/flashcard_service.py` - Uses `download_snippet_image()` for .apkg generation
-- `backend/app/api/endpoints.py` - Snippet CRUD endpoints
+- `backend/app/api/routers/` - Snippet CRUD endpoints
 - `backend/supabase/migrations/20260126000000_add_slide_snippets.sql` - Initial table definition
 - Database change "Allow Multiple Snippets Per Page (2026-01-27)" - Applied via Supabase MCP
 
@@ -4429,7 +4429,7 @@ image_bytes = download_snippet_image(snippet["image_path"])
 
 ---
 
-### `backend/app/services/anki/__init__.py`
+### `backend/app/services/anki_sync_service.py`
 
 **Purpose**: Package exports for the Anki integration service. Updated to export knowledge tracking classes and helper functions.
 
@@ -4452,7 +4452,7 @@ from app.services.anki import (
 
 ---
 
-### `backend/app/services/anki/client.py` (Knowledge Tracking Extensions)
+### `backend/app/services/anki_sync_service.py` (Knowledge Tracking Extensions)
 
 **Purpose**: Extended AnkiConnect API wrapper with knowledge tracking capabilities. Queries Anki for detailed card states and calculates deck-level mastery metrics.
 
@@ -4505,7 +4505,7 @@ total_cards = sum(dk.total_cards for dk in leaf_decks.values())
 
 ---
 
-### `backend/app/services/anki/knowledge_service.py`
+### `backend/app/services/anki_sync_service.py`
 
 **Purpose**: High-level service for tracking user knowledge levels based on Anki data. Provides course-aware knowledge aggregation and study recommendations.
 
@@ -4563,7 +4563,7 @@ print(f"Weakest lecture: {course_result.weakest_lecture}")
 
 ---
 
-### `backend/app/tools/anki_tools.py` (Knowledge Tracking Tools)
+### `backend/app/tools/__init__.py` (Knowledge Tracking Tools)
 
 **Purpose**: Extended with agent tools for knowledge tracking. Allows agents to query user mastery levels and create course-aware flashcards.
 
@@ -4610,7 +4610,7 @@ if levels["status"] == "success":
 
 ---
 
-### `backend/app/tools/knowledge_tool.py`
+### `backend/app/tools/__init__.py`
 
 **Purpose**: LangChain-compatible tool wrapper for the KnowledgeService. Enables integration with LangGraph agents.
 

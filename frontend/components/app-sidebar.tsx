@@ -4,16 +4,13 @@ import * as React from "react"
 import {
   ArrowUpCircleIcon,
   BarChartIcon,
-  CameraIcon,
-  ClipboardListIcon,
-  DatabaseIcon,
-  FileCodeIcon,
-  FileIcon,
-  FileTextIcon,
-  FolderIcon,
+  MapIcon,
+  GraduationCapIcon,
+  BookOpenIcon,
+  CheckSquareIcon,
+  BotIcon,
   HelpCircleIcon,
   LayoutDashboardIcon,
-  ListIcon,
   SearchIcon,
   SettingsIcon,
   UsersIcon,
@@ -35,117 +32,69 @@ import {
 
 const data = {
   user: {
-    name: "shadcn",
-    email: "m@example.com",
-    avatar: "/avatars/shadcn.jpg",
+    name: "Lernende/r",
+    email: "student@lernkompanien.de",
+    avatar: "/avatars/student.jpg",
   },
   navMain: [
     {
-      title: "Dashboard",
+      title: "Übersicht",
       url: "#",
       icon: LayoutDashboardIcon,
     },
     {
-      title: "Lifecycle",
+      title: "Lernpfad",
       url: "#",
-      icon: ListIcon,
+      icon: MapIcon,
     },
     {
-      title: "Analytics",
+      title: "Wissensstand",
       url: "#",
       icon: BarChartIcon,
     },
     {
-      title: "Projects",
+      title: "Kurse",
       url: "#",
-      icon: FolderIcon,
+      icon: GraduationCapIcon,
     },
     {
-      title: "Team",
+      title: "Lerngruppen",
       url: "#",
       icon: UsersIcon,
     },
   ],
-  navClouds: [
-    {
-      title: "Capture",
-      icon: CameraIcon,
-      isActive: true,
-      url: "#",
-      items: [
-        {
-          title: "Active Proposals",
-          url: "#",
-        },
-        {
-          title: "Archived",
-          url: "#",
-        },
-      ],
-    },
-    {
-      title: "Proposal",
-      icon: FileTextIcon,
-      url: "#",
-      items: [
-        {
-          title: "Active Proposals",
-          url: "#",
-        },
-        {
-          title: "Archived",
-          url: "#",
-        },
-      ],
-    },
-    {
-      title: "Prompts",
-      icon: FileCodeIcon,
-      url: "#",
-      items: [
-        {
-          title: "Active Proposals",
-          url: "#",
-        },
-        {
-          title: "Archived",
-          url: "#",
-        },
-      ],
-    },
-  ],
   navSecondary: [
     {
-      title: "Settings",
+      title: "Einstellungen",
       url: "#",
       icon: SettingsIcon,
     },
     {
-      title: "Get Help",
+      title: "Hilfe",
       url: "#",
       icon: HelpCircleIcon,
     },
     {
-      title: "Search",
+      title: "Suchen",
       url: "#",
       icon: SearchIcon,
     },
   ],
   documents: [
     {
-      name: "Data Library",
+      name: "Meine Notizen",
       url: "#",
-      icon: DatabaseIcon,
+      icon: BookOpenIcon,
     },
     {
-      name: "Reports",
+      name: "Prüfungen",
       url: "#",
-      icon: ClipboardListIcon,
+      icon: CheckSquareIcon,
     },
     {
-      name: "Word Assistant",
+      name: "Lernassistent",
       url: "#",
-      icon: FileIcon,
+      icon: BotIcon,
     },
   ],
 }
@@ -162,7 +111,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             >
               <a href="#">
                 <ArrowUpCircleIcon className="h-5 w-5" />
-                <span className="text-base font-semibold">Acme Inc.</span>
+                <span className="text-base font-semibold">Lernkompanien</span>
               </a>
             </SidebarMenuButton>
           </SidebarMenuItem>
